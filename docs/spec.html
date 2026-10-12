@@ -437,8 +437,10 @@ jq -n '{q:"cimd"}' | mcpcat call docs search -d @-</code></pre>
 <ul>
   <li><strong>No sign-in inside the kernel.</strong> <code>mcpcat login</code> in seven exits 4 and points to the agent's MCP sign-in (Settings) or, later, <code>jerk</code>. mcpcat never writes tokens to the kernel file system, where the agent could read them.</li>
   <li><strong>Servers that are not in <code>mcp.json</code></strong> (ad-hoc URL targets, or entries in another file): <code>${VAR}</code> expands to the fnox placeholder, and the kernel/vault inject it when a rule covers that domain and header. Nothing special in mcpcat.</li>
-  <li><strong>Servers in <code>mcp.json</code></strong> are on the vault's MCP refusal list, so placeholder injection is refused (403, which mcpcat reports as exit 4 with the vault's reason). Until <a href="#q-mcp-op">Q9</a> is settled the only path is <code>fnox exec -- mcpcat call &lt;server&gt; …</code> with that exact argv listed in the exec policy; mcpcat's output is then scrubbed at the source (S2).</li>
-  <li><strong>Proposed (<a href="#q-mcp-op">Q9</a>):</strong> let a kernel program's request to a registered MCP URL go through the vault's <code>mcp</code> op (the server's own credential, only to its own URL, body scrubbed), the same path the agent uses. Then <code>mcpcat call github …</code> works in seven with the credential the user already entered for the agent, and mcpcat stays credential-free.</li>
+  <li><strong>Servers in <code>mcp.json</code></strong> (registered with the vault by the agent): mcpcat sends the request <strong>with no auth header</strong> to the registered URL. The kernel's forwarding hook routes an owner-bearing request to a registered MCP origin + path prefix through the vault's <code>mcp { server, request }</code> path. That path adds only that server's own credential, scrubs the body (S4) and the response (S1, then S3 as tool output), and audits the call as <code>mcp</code> with uid and agent tag (secrets design §3.16.1, accepted for <a href="#q-mcp-op">Q9</a>). So <code>mcpcat call github …</code> uses the credential the user entered for the agent, and mcpcat stays credential-free.</li>
+  <li><strong>fnox <code>secret</code> placeholders</strong> in a request to a registered MCP URL are still refused (403); <code>secret</code> records are never injected into MCP or model URLs.</li>
+  <li><strong>A vault 403</strong> (no credential registered for that server, or a refused placeholder) maps to exit 4 with the vault's one-line reason.</li>
+  <li><strong>Interim, until VAULT-1b ships §3.16.1:</strong> <code>fnox exec -- mcpcat call &lt;server&gt; …</code> with the exact argv in <code>[exec]</code>, output scrubbed at the source (S2). It is weaker, since the real token sits in mcpcat's process; drop it once the vault path is live.</li>
 </ul>
 
 <!-- ============================================================ -->
@@ -540,7 +542,7 @@ mcpcat describe --ts --budget 3000   # all enabled servers, pi's token budget, r
 '
 mcpcat code ./triage.js              # all enabled servers whose names the script mentions</code></pre>
 <ul>
-  <li>QuickJS sandbox from <code>@earendil-works/pi-codemode</code>: <code>CodemodeSandbox</code> on the host, <code>InlineCodemodeSandbox</code> in seven (JS programs may not start Workers).</li>
+  <li>QuickJS sandbox from <code>@earendil-works/pi-codemode</code>: <code>CodemodeSandbox</code> on the host, <code>InlineCodemodeSandbox</code> in seven (JS programs may not start Workers). In both, model-written code runs <strong>inside a QuickJS VM compiled to wasm</strong>, never through <code>eval</code> or <code>new Function</code> in mcpcat's own realm. "Inline" means the VM runs on mcpcat's thread, not that the script shares mcpcat's globals: it reaches only the injected tools and globals, and none of mcpcat's <code>ctx</code> powers.</li>
   <li>Globals as in pi: <code>tools</code>, <code>ALL_TOOLS</code>, <code>searchTools</code>, <code>describeTool</code>, <code>describeNamespace</code>, <code>text</code>, <code>image</code>, <code>console</code>, <code>exit</code>, <code>store</code>/<code>load</code> (persisted in the state dir), and the <code>// @options:</code> first line. No fetch, fs or timers.</li>
   <li>Output: text items to stdout; <code>--json</code> prints <code>{ok, value, output, calls}</code>. Servers connect lazily when the script first names them; one connection per server for the whole script.</li>
   <li>Optional <code>--allow-shell</code> adds a <code>shell(argv, {stdin})</code> global through the platform spawn, for parity with the agent's codemode which can call <code>bash</code>. Off by default.</li>
@@ -626,10 +628,60 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
 <ul>
   <li>Conventions from slicc-shared-web: Biome strict config, no comments in source, AGENTS.md ≤ 1,000 characters and no CLAUDE.md, unit tests out of git, <code>slicc-lint</code>.</li>
   <li><code>package.json</code>: <code>"version": "0.0.0"</code>, <code>"type": "module"</code>, <code>bin</code>, <code>slicc.commands</code>, <code>engines</code> (<code>node &gt;= 24</code>, <code>slicc-kernel &gt;= &lt;first version with ctx.spawn + ctx.net + ctx.fetch&gt;</code>), <code>fledgling</code> block, <code>publishConfig</code> with provenance.</li>
+  <li>Builds are deterministic: a rebuild from the release tag is byte-identical (homescoop checks this, <a href="#cert">§20.1</a>). No install scripts.</li>
   <li>Release: semantic-release on <code>main</code> through the shared <code>node-release.yml</code>, npm trusted publishing (<code>npm run trust</code> once), provenance. npm only: no standalone binaries and no <code>slicc install mcpcat</code> (<a href="#q-binaries">Q10</a>).</li>
   <li>Tests never touch <code>127.0.0.1:9222</code>–<code>9229</code> on a developer machine. The WebMCP tests drive their own Chromium from the slicc-shared-web harness on a pipe, and pass its endpoint to <code>playwright-cli</code> with <code>--cdp</code>.</li>
   <li>Dependencies (exact pins, Renovate): <code>@earendil-works/pi-mcp</code>, <code>@earendil-works/pi-codemode</code> (+ <code>quickjs-wasi</code>), <code>esbuild</code> (dev), <code>@ai-ecoverse/slicc-kernel</code> (dev, for kernel tests), <code>@ai-ecoverse/slicc-shared-web</code> (dev). No MCP SDK, no CLI framework: argument parsing is hand-written to keep the kernel bundle small and the six-compatible coercion exact.</li>
   <li>Size budget: kernel bundle ≤ 400 KB minified before QuickJS; QuickJS wasm loaded only by <code>code</code>.</li>
+</ul>
+
+<h3 id="cert">20.1 Certification for seven (homescoop)</h3>
+<p>mcpcat is a gated package (<a href="#q-cert">Q11</a>). Each release that bios moves to must pass homescoop's cert, which is modelled on slicc-jsh's:</p>
+<ol>
+  <li><strong>Bytes:</strong>
+    <ul>
+      <li>the registry tarball's sha256, and <code>gitHead</code> = the release tag;</li>
+      <li>a <strong>byte-identical rebuild from the tag</strong> (deterministic esbuild);</li>
+      <li>no install scripts, and a tight <code>files</code> list;</li>
+      <li><code>engines</code> minimums that are true;</li>
+      <li>no runtime deps, or exact pins only;</li>
+      <li>no <code>Math.random</code> for anything secret, and no network or disk I/O at import.</li>
+    </ul></li>
+  <li><strong>Kernel lockdown:</strong> runs on the current certified kernel (≥ 1.64.2) using only <code>ctx.*</code>, never needs a withheld global, and a too-old kernel gets a clean error.</li>
+  <li><strong>Host/kernel parity, golden:</strong> the same <code>--help</code>, JSON output and exit codes on Node ≥ 24 and in the kernel, against the fixture servers:
+    <ul>
+      <li>stdio via <code>ctx.spawn</code>;</li>
+      <li>HTTP/SSE via <code>ctx.fetch</code> through the kernel proxy;</li>
+      <li>all three protocol families, resources, prompts and elicitation;</li>
+      <li><code>serve</code> reachable on <code>http://&lt;port&gt;.kernel.localhost</code> from another kernel program.</li>
+    </ul></li>
+  <li><strong>Secrets:</strong>
+    <ul>
+      <li>no credential at rest on the kernel file system;</li>
+      <li>placeholders pass through untouched;</li>
+      <li>a planted marker value never appears in stdout, stderr, logs, files, <code>mcp.json</code> or argv;</li>
+      <li><code>${VAR}</code> in <code>-H</code> is redacted;</li>
+      <li>401/403 → exit 4 with the vault's reason;</li>
+      <li>the host token store is 0600, and nothing is written outside it.</li>
+    </ul></li>
+  <li><strong>serve and proxy:</strong>
+    <ul>
+      <li>loopback only by default, and the <code>--bearer</code> and <code>Origin</code> checks hold;</li>
+      <li>proxy mode hides credentials;</li>
+      <li>SIGINT/SIGTERM shut down cleanly with <strong>no orphaned stdio children</strong>;</li>
+      <li>memory stays steady over a long run, and reconnects work.</li>
+    </ul></li>
+  <li><strong>Code mode:</strong> scripts run in the QuickJS wasm VM only (<a href="#codemode">§16</a>).</li>
+  <li><strong>Users</strong> (once enforcement ships): config paths obey DAC as cone and as scoop, and no user can read another user's <code>mcp.json</code>.</li>
+  <li><strong>bios's real setup:</strong> installed through the catalog path (PATH, PNPM_HOME), with a smoke test.</li>
+  <li><strong>Host:</strong> <code>npm i -g</code> on Node 24, and exit codes pass through.</li>
+</ol>
+<p>What mcpcat provides:</p>
+<ul>
+  <li>fixture servers and the fixture authorization server under <code>test/</code> (in the repo, not the package);</li>
+  <li>a <code>cert</code> npm script that can be pointed at a kernel tarball;</li>
+  <li>semantic-release with npm provenance;</li>
+  <li>each release's version and sha256, sent to homescoop.</li>
 </ul>
 
 <!-- ============================================================ -->
@@ -649,7 +701,7 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
   <tr><td>M9</td><td>Discovery</td><td>Event reader for slicc-cdp#87 schema; candidate extraction per standard; inbox; <code>add --candidate</code>; <code>discover &lt;url&gt;</code> probes.</td><td>M3</td></tr>
   <tr><td>M10</td><td>Resources, prompts, elicitation</td><td><code>resources</code>/<code>read</code>, <code>prompts</code>/<code>prompt</code>; MRTR and elicitation on TTY, exit 6 + <code>--respond</code>.</td><td>M2</td></tr>
   <tr><td>M11</td><td>WebMCP bridge</td><td><code>serve --webmcp</code> over playwright-cli.</td><td>M6, slicc-cdp#93</td></tr>
-  <tr><td>M12</td><td>Seven rollout</td><td>Skill (<code>help --skill</code>) and seven skill file; homescoop certification (Q11); bios optional catalog entry; man page for www.sliccy.com replacing <code>mcp</code>; close out slicc#3889 follow-ups.</td><td>M2–M5</td></tr>
+  <tr><td>M12</td><td>Seven rollout</td><td>Skill (<code>help --skill</code>) and seven skill file; homescoop certification (§20.1); bios optional catalog entry; man page for www.sliccy.com replacing <code>mcp</code>; close out slicc#3889 follow-ups.</td><td>M2–M5</td></tr>
 </table>
 
 <!-- ============================================================ -->
@@ -680,14 +732,14 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
   <dt id="q-upstream">Q8 · pi-mcp gaps</dt>
   <dd><strong>Local only.</strong> mcpcat carries its own 2026-07-28 client, server-side JSON-RPC, stdio stubbing and the <code>Buffer</code> SSE patch; no upstream PRs.</dd>
 
-  <dt id="q-mcp-op">Q9 · Credentialed <code>mcp.json</code> servers in seven · <em>ask: secrets design owner, agent coordinator</em></dt>
-  <dd><strong>Propose the <code>mcp</code>-op route:</strong> an owner-bearing kernel request to a registered MCP URL goes through the vault's <code>mcp { server, request }</code> (that server's credential, only to its URL, body scrubbed) instead of being refused. Interim: <code>fnox exec -- mcpcat call &lt;server&gt; …</code> with an exact-argv policy.</dd>
+  <dt id="q-mcp-op">Q9 · Credentialed <code>mcp.json</code> servers in seven · <em>accepted by the secrets design owner as §3.16.1</em></dt>
+  <dd><strong>The <code>mcp</code>-op route:</strong> an owner-bearing kernel request to a registered MCP URL goes through the vault's <code>mcp { server, request }</code> (that server's credential, only to its URL, body scrubbed) instead of being refused. mcpcat sends no auth header; the kernel and the vault do the rest. Interim until VAULT-1b: <code>fnox exec</code> with an exact-argv policy (<a href="#auth">§11.3</a>).</dd>
 
   <dt id="q-binaries">Q10 · Standalone binaries</dt>
   <dd><strong>npm only.</strong> Node ≥ 24 on the host; no SEA/bun binaries and no <code>slicc install</code> entry.</dd>
 
-  <dt id="q-cert">Q11 · Certifying the <code>abi: "js"</code> package · <em>ask: homescoop</em></dt>
-  <dd><strong>homescoop decides</strong> what it certifies for a JS-program tool package and whether it joins bios's gated list; mcpcat follows.</dd>
+  <dt id="q-cert">Q11 · Certifying the <code>abi: "js"</code> package · <em>answered by homescoop</em></dt>
+  <dd><strong>Gated.</strong> bios pins an exact certified version plus a <code>certs.json</code> line, and each later release gets a short delta cert. mcpcat publishes freely. The cert's scope is <a href="#cert">§20.1</a>.</dd>
 </dl>
 
 <!-- ============================================================ -->
