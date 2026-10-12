@@ -430,7 +430,13 @@ jq -n '{q:"cimd"}' | mcpcat call docs search -d @-</code></pre>
   <li>Loopback callback on <code>127.0.0.1:&lt;port&gt;/callback</code>, opening the browser, or <code>--no-browser</code> with the redirected URL pasted on stdin (pi's SSH flow).</li>
   <li><strong>Token store, v1:</strong> pi's <code>~/.pi/agent/mcp-auth.json</code> (0600), keyed by server name + URL, so <code>pi mcp login</code> and <code>mcpcat login</code> are interchangeable. URL-only targets use <code>url:&lt;origin+path&gt;</code>.</li>
   <li><strong>Target state:</strong> MCP sign-ins become a slicc-jerk provider kind, and mcpcat asks <code>jerk mcp:&lt;name&gt; get</code> (placeholder or token per jerk's §2.1 rules) instead of keeping its own store. This keeps one owner for OAuth tokens on every OS (<a href="#q-auth">Q2</a>).</li>
-  <li><strong>CIMD identity:</strong> mcpcat presents its own Client ID Metadata Document at <code>https://mcpcat.sliccy.ai/oauth/client.json</code>, served by sliccy-ai (<a href="#q-cimd">Q6</a>). DCR is the fallback until it is live.</li>
+  <li><strong>CIMD identity:</strong> mcpcat presents its own Client ID Metadata Document at <code>https://mcpcat.sliccy.ai/oauth/client.json</code>, served by sliccy-ai (<a href="#q-cimd">Q6</a>). DCR is the fallback until it is live. The document is static and lives in the sliccy-ai repo:
+<pre><code>{ "client_id": "https://mcpcat.sliccy.ai/oauth/client.json", "client_name": "mcpcat",
+  "client_uri": "https://github.com/ai-ecoverse/mcpcat", "application_type": "native",
+  "redirect_uris": ["http://127.0.0.1/callback", "http://localhost/callback"],
+  "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"],
+  "token_endpoint_auth_method": "none" }</code></pre>
+Port-less loopback redirects (RFC 8252 §7.3). <code>--no-browser</code> uses the same redirect, and the user pastes the URL the browser ended on. Scopes are requested per authorization, not stated in the document. An authorization server that does not send <code>iss</code> (RFC 9207) falls back to DCR, rather than using per-server documents as pi does.</li>
 </ul>
 
 <h3>11.3 Credentials in seven</h3>
