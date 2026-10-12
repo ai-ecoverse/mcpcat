@@ -478,7 +478,7 @@ mcpcat serve --tool 'disk_usage: du -sh {path}' --tool 'uptime: uptime' --http 8
 <h3>12.3 Transports</h3>
 <ul>
   <li><strong>stdio:</strong> newline-delimited JSON-RPC; mcpcat's own logs go to stderr only.</li>
-  <li><strong>HTTP:</strong> <code>POST /mcp</code>, JSON responses, <code>Origin</code> checked against loopback unless <code>--allow-origin</code>, <code>--bearer</code> required off loopback. Prints the URL on stderr (and as JSON with <code>--json</code>) once listening. In seven it binds the kernel loopback (<a href="#seven">§17</a>).</li>
+  <li><strong>HTTP:</strong> <code>POST /mcp</code>, JSON responses. <code>Origin</code> is checked against loopback (<code>localhost</code>, <code>127.0.0.1</code>, <code>[::1]</code>, <code>*.localhost</code>) when present; a missing <code>Origin</code> is allowed, as from seven's agent, curl and Node. <code>--allow-origin</code> adds origins. <code>Host</code> must be <code>127.0.0.1:&lt;port&gt;</code>, <code>localhost:&lt;port&gt;</code> or <code>*.localhost</code> (DNS-rebinding defence) unless bound off loopback. <code>Connection: close</code> is honoured, and keep-alive otherwise. The server is stateless: no <code>Mcp-Session-Id</code> on <code>initialize</code>, <code>405</code> on <code>GET</code> and <code>DELETE /mcp</code>. <code>--bearer</code> is required off loopback. Prints the URL on stderr (and as JSON with <code>--json</code>) once listening. In seven it binds the kernel loopback (<a href="#seven">§17</a>).</li>
 </ul>
 
 <!-- ============================================================ -->
@@ -565,7 +565,7 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
   <tr><th>Need</th><th>Kernel facility</th><th>Caveat</th></tr>
   <tr><td>HTTPS to servers</td><td><code>ctx.fetch</code> over the kernel transport</td><td>On the page transport, servers without CORS fail; with slicc-node/slicc-swift/extension they work. mcpcat maps the transport's 502 hint to exit 3 with that advice. Silent SSE bodies die after <code>bodyIdleMs</code> (30 s on the local-proxy route).</td></tr>
   <tr><td>stdio servers</td><td><code>ctx.spawn</code> with piped stdio, <code>ctx.kill</code>, <code>ctx.wait</code></td><td>Only kernel programs can be spawned (<code>npx</code> needs the optional Node package; <code>uvx</code> needs uv + Python). <code>add</code> checks <code>command</code> resolves.</td></tr>
-  <tr><td>Serving</td><td><code>ctx.net.listen</code> on the kernel loopback</td><td>Reachable by kernel processes, by the page as <code>&lt;port&gt;.kernel.localhost</code>, and from the host through slicc-cli's kernel services. slicc-agent must be able to reach it (<a href="#q-agent">Q1</a>).</td></tr>
+  <tr><td>Serving</td><td><code>ctx.net.listen</code> on the kernel loopback</td><td>Reachable by kernel processes, by the page as <code>&lt;port&gt;.kernel.localhost</code>, and from the host through slicc-cli's kernel services. slicc-agent reaches it through the kernel client's <code>loopbackFetch</code>, with no <code>Origin</code> and no CORS, on every transport (<a href="#q-agent">Q1</a>).</td></tr>
   <tr><td>Files</td><td><code>ctx.fs</code>, <code>ctx.open</code></td><td><code>HOME</code> follows kernel users; <code>~/.pi/agent/mcp.json</code> is the agent's file for that user.</td></tr>
   <tr><td>Host loopback servers</td><td><code>http://host.slicc.internal:&lt;port&gt;</code></td><td>Through the proxy or local proxy only; mcpcat rewrites nothing, the user writes that URL.</td></tr>
   <tr><td>TTY, signals</td><td><code>ctx.tty</code>, <code>ctx.signals</code></td><td>SIGINT → cancel request, then exit 130.</td></tr>
@@ -714,8 +714,8 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
 <h2 id="open">22. Resolved questions</h2>
 <p>Decided by Lars on 2026-10-12. Items marked <em>ask</em> go to another lane through the Seven PM.</p>
 <dl class="decisions">
-  <dt id="q-agent">Q1 · Agent access to MCP servers on the kernel loopback · <em>ask: agent coordinator</em></dt>
-  <dd><strong>Required from slicc-agent.</strong> An <code>mcp.json</code> URL such as <code>http://8810.kernel.localhost/mcp</code> must work as an agent MCP server, so <code>mcpcat serve --proxy</code> makes stdio servers usable by the agent in seven. M7's <code>add --bridge</code> depends on it.</dd>
+  <dt id="q-agent">Q1 · Agent access to MCP servers on the kernel loopback · <em>agreed with slicc-agent</em></dt>
+  <dd><strong>Required from slicc-agent.</strong> An <code>mcp.json</code> URL such as <code>http://8810.kernel.localhost/mcp</code> must work as an agent MCP server, so <code>mcpcat serve --proxy</code> makes stdio servers usable by the agent in seven. M7's <code>add --bridge</code> depends on it. slicc-agent routes every <code>http(s)://&lt;port&gt;.kernel.localhost/…</code> request to the kernel client's <code>loopbackFetch({ port })</code>. Wire shape: no <code>Origin</code>, <code>Host: &lt;port&gt;.kernel.localhost</code>, one request per connection with <code>Connection: close</code>, <code>Content-Length</code> bodies, and JSON or SSE responses with no CORS. A <code>--bearer</code> bridge is configured as <code>"headers": {"Authorization": "Bearer ${NAME}"}</code>. There is no OAuth on kernel-loopback URLs (§12.3).</dd>
 
   <dt id="q-auth">Q2 · MCP OAuth · <em>ask: slicc-jerk</em></dt>
   <dd><strong>jerk gets an MCP provider kind; pi's file until then.</strong> v1: host-only <code>mcpcat login</code> on <code>~/.pi/agent/mcp-auth.json</code>, no sign-in in seven. Propose <code>kind = "mcp"</code> (keyed by server name + URL, PRM discovery, CIMD/DCR) to jerk; when it ships, mcpcat calls <code>jerk mcp:&lt;name&gt; get</code> and drops its own store.</dd>
