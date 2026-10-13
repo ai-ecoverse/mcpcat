@@ -1,0 +1,54 @@
+#!/usr/bin/env node
+import { readFileSync, writeFileSync, chmodSync, mkdirSync, rmSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as esbuild from 'esbuild';
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const dist = join(root, 'dist');
+const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+
+rmSync(dist, { recursive: true, force: true });
+mkdirSync(join(dist, 'host'), { recursive: true });
+mkdirSync(join(dist, 'kernel'), { recursive: true });
+
+const define = {
+  MCPCAT_VERSION: JSON.stringify(pkg.version),
+};
+
+await esbuild.build({
+  entryPoints: [join(root, 'src/host.ts')],
+  outfile: join(dist, 'host/mcpcat.mjs'),
+  bundle: true,
+  format: 'esm',
+  platform: 'node',
+  target: ['node24'],
+  banner: { js: '#!/usr/bin/env node' },
+  define,
+  logLevel: 'info',
+});
+
+chmodSync(join(dist, 'host/mcpcat.mjs'), 0o755);
+
+await esbuild.build({
+  entryPoints: [join(root, 'src/kernel.ts')],
+  outfile: join(dist, 'kernel/mcpcat.mjs'),
+  bundle: true,
+  format: 'esm',
+  platform: 'neutral',
+  target: ['es2024'],
+  define,
+  logLevel: 'info',
+  external: [],
+  alias: {
+    'node:fs': join(root, 'src/stubs/node-stub.ts'),
+    'node:fs/promises': join(root, 'src/stubs/node-stub.ts'),
+    'node:child_process': join(root, 'src/stubs/node-stub.ts'),
+    'node:stream': join(root, 'src/stubs/node-stub.ts'),
+    'node:tty': join(root, 'src/stubs/node-stub.ts'),
+    'node:path': join(root, 'src/stubs/node-stub.ts'),
+    'node:url': join(root, 'src/stubs/node-stub.ts'),
+  },
+});
+
+console.log('built dist/host/mcpcat.mjs and dist/kernel/mcpcat.mjs');

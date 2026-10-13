@@ -1,0 +1,67 @@
+{
+  "name": "@ai-ecoverse/mcpcat",
+  "version": "0.0.0",
+  "description": "A curl for the Model Context Protocol",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ai-ecoverse/mcpcat.git"
+  },
+  "homepage": "https://github.com/ai-ecoverse/mcpcat",
+  "bugs": {
+    "url": "https://github.com/ai-ecoverse/mcpcat/issues"
+  },
+  "bin": {
+    "mcpcat": "dist/host/mcpcat.mjs"
+  },
+  "engines": {
+    "node": ">=24",
+    "slicc-kernel": ">=1.64.2"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "fledgling": {
+    "provider": "github",
+    "workflow": "release.yml",
+    "repo": "ai-ecoverse/mcpcat",
+    "publish": true
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "dist"
+  ],
+  "slicc": {
+    "commands": {
+      "mcpcat": {
+        "abi": "js",
+        "module": "dist/kernel/mcpcat.mjs"
+      }
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepack": "npm run build && node scripts/strip-own-scripts.mjs",
+    "prepare": "npm run build",
+    "lint": "sh scripts/lint.sh",
+    "typecheck": "tsc",
+    "test": "npm run test:integration",
+    "test:unit": "mcr -c node_modules/@ai-ecoverse/slicc-shared-web/mcr.config.mjs node --test 'test/unit/**/*.test.mjs'",
+    "test:integration": "node --test --test-timeout=30000 test/integration/*.test.mjs",
+    "cert": "node test/integration/cert.test.mjs",
+    "release": "semantic-release",
+    "trust": "npx fledgling sync -y --skip-publish",
+    "trust:dry": "npx fledgling sync --dry-run -y --skip-publish"
+  },
+  "devDependencies": {
+    "@ai-ecoverse/slicc-kernel": "1.71.0",
+    "@ai-ecoverse/slicc-shared-web": "1.13.1",
+    "esbuild": "0.28.2",
+    "semantic-release": "25.0.9",
+    "typescript": "7.0.2",
+    "@types/node": "26.6.5"
+  }
+}
