@@ -68,11 +68,11 @@ describe('host: mcpcat', () => {
   it('unknown command exits 2', () => {
     const { stderr, status } = runHost(['bogus']);
     assert.equal(status, 2);
-    assert.ok(stderr.includes("unknown command 'bogus'"));
+    assert.ok(stderr.includes('unknown target'));
   });
 
   it('known but unimplemented verb exits 1', () => {
-    const { stderr, status } = runHost(['info']);
+    const { stderr, status } = runHost(['resources']);
     assert.equal(status, 1);
     assert.ok(stderr.includes('not implemented yet'));
   });
