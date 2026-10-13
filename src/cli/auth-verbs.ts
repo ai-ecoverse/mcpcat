@@ -1,3 +1,4 @@
+import { JERK_EXIT_SIGN_IN, JerkTokenSource, jerkAvailable } from '../auth/jerk-token-source.ts';
 import { SignInCancelledError, signIn } from '../auth/oauth.ts';
 import { PiFileTokenSource } from '../auth/pi-store.ts';
 import type { TokenSource } from '../auth/token-source.ts';
@@ -6,8 +7,21 @@ import { MergedConfigSource } from '../config/index.ts';
 import type { McpOAuthConfig } from '../config/types.ts';
 import type { Platform } from '../platform/types.ts';
 
-export function createTokenSource(platform: Platform): TokenSource {
-  return new PiFileTokenSource(platform);
+let resolvedSource: TokenSource | undefined;
+
+export async function createTokenSource(platform: Platform): Promise<TokenSource> {
+  if (isKernel(platform)) return new PiFileTokenSource(platform);
+  if (resolvedSource) return resolvedSource;
+  if (await jerkAvailable(platform)) {
+    resolvedSource = new JerkTokenSource(platform);
+  } else {
+    resolvedSource = new PiFileTokenSource(platform);
+  }
+  return resolvedSource;
+}
+
+export function resetTokenSourceCache(): void {
+  resolvedSource = undefined;
 }
 
 function resolveServerName(target: string): { name: string; isUrl: boolean } {
@@ -48,6 +62,78 @@ async function resolveLoginTarget(
   throw new Error(`unknown target '${target}': not a URL and not found in mcp.json`);
 }
 
+function jerkMcpId(name: string): string {
+  if (name.startsWith('mcp:')) return name;
+  if (name.startsWith('url:')) return `mcp:${name}`;
+  return `mcp:${name}`;
+}
+
+async function readStream(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+  const total = chunks.reduce((s, c) => s + c.length, 0);
+  const buf = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    buf.set(c, off);
+    off += c.length;
+  }
+  return new TextDecoder().decode(buf);
+}
+
+async function jerkLogin(platform: Platform, target: string, args: string[]): Promise<number> {
+  const resolved = await resolveLoginTarget(platform, target);
+  const id = jerkMcpId(resolved.name);
+  const argv = ['jerk', id, 'create'];
+  const scopeIdx = args.indexOf('--scope');
+  if (scopeIdx !== -1 && args[scopeIdx + 1]) {
+    argv.push('--scope', args[scopeIdx + 1]);
+  }
+  if (args.includes('--no-browser')) {
+    argv.push('--no-browser');
+  }
+  const proc = await platform.spawn({ argv });
+  proc.stdin.close().catch(() => {});
+  const [, errText, result] = await Promise.all([
+    readStream(proc.stdout),
+    readStream(proc.stderr),
+    proc.wait(),
+  ]);
+  if (result.status === 0) {
+    await platform.write(1, `Signed in to ${target}\n`);
+    return 0;
+  }
+  if (errText.trim()) {
+    await platform.write(2, errText);
+  }
+  if (result.status === JERK_EXIT_SIGN_IN) return 4;
+  return result.status;
+}
+
+async function jerkLogout(platform: Platform, target: string): Promise<number> {
+  const resolved = await resolveLoginTarget(platform, target);
+  const id = jerkMcpId(resolved.name);
+  const argv = ['jerk', id, 'drop', '--yes'];
+  const proc = await platform.spawn({ argv });
+  proc.stdin.close().catch(() => {});
+  const [, , result] = await Promise.all([
+    readStream(proc.stdout),
+    readStream(proc.stderr),
+    proc.wait(),
+  ]);
+  if (result.status === 0) {
+    await platform.write(1, `Signed out of ${target}\n`);
+  } else {
+    await platform.write(1, `No credentials stored for ${target}\n`);
+  }
+  return 0;
+}
+
 export async function runLogin(
   platform: Platform,
   args: string[],
@@ -61,15 +147,24 @@ export async function runLogin(
     return 4;
   }
 
-  const noBrowser = args.includes('--no-browser');
   const positional = args.filter((a) => !a.startsWith('-'));
-
   if (positional.length === 0) {
     await platform.write(2, 'mcpcat: login requires a target\n');
     return 2;
   }
 
   const target = positional[0];
+
+  if (source instanceof JerkTokenSource) {
+    try {
+      return await jerkLogin(platform, target, args);
+    } catch (err) {
+      await platform.write(2, `mcpcat: login failed: ${(err as Error).message}\n`);
+      return 4;
+    }
+  }
+
+  const noBrowser = args.includes('--no-browser');
   let resolved;
   try {
     resolved = await resolveLoginTarget(platform, target);
@@ -154,6 +249,16 @@ export async function runLogout(
   }
 
   const target = positional[0];
+
+  if (source instanceof JerkTokenSource) {
+    try {
+      return await jerkLogout(platform, target);
+    } catch (err) {
+      await platform.write(2, `mcpcat: logout failed: ${(err as Error).message}\n`);
+      return 1;
+    }
+  }
+
   let resolved;
   try {
     resolved = await resolveLoginTarget(platform, target);
