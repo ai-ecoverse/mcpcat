@@ -41,7 +41,13 @@ await esbuild.build({
   format: 'esm',
   platform: 'neutral',
   target: ['es2024'],
-  define,
+  define: {
+    ...define,
+    'Buffer.byteLength': '__mcpcat_byteLength',
+  },
+  banner: {
+    js: 'var __mcpcat_byteLength = (s) => new TextEncoder().encode(s).length;',
+  },
   logLevel: 'info',
   external: [],
   alias: {

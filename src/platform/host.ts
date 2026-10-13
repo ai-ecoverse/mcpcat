@@ -14,11 +14,14 @@ import type {
   SpawnResult,
 } from './types.ts';
 
+const USE_PROCESS_GROUPS = process.platform !== 'win32';
+
 function nodeSpawn(options: SpawnOptions): Promise<SpawnResult> {
   const child = cpSpawn(options.argv[0], options.argv.slice(1), {
     env: options.env ?? (process.env as Record<string, string>),
     cwd: options.cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
+    detached: USE_PROCESS_GROUPS,
   });
 
   const stdout = Readable.toWeb(child.stdout!) as ReadableStream<Uint8Array>;
@@ -40,7 +43,17 @@ function nodeSpawn(options: SpawnOptions): Promise<SpawnResult> {
       });
     },
     kill(signal?: string) {
-      child.kill((signal as NodeJS.Signals) ?? 'SIGTERM');
+      const sig = (signal as NodeJS.Signals) ?? 'SIGTERM';
+      const pid = child.pid;
+      if (USE_PROCESS_GROUPS && pid !== undefined) {
+        try {
+          process.kill(-pid, sig);
+          return;
+        } catch {}
+      }
+      try {
+        child.kill(sig);
+      } catch {}
     },
   });
 }
