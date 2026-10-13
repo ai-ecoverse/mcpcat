@@ -3,7 +3,7 @@ export interface SpawnResult {
   stdout: ReadableStream<Uint8Array>;
   stderr: ReadableStream<Uint8Array>;
   wait(): Promise<{ status: number; signal?: string }>;
-  kill(signal?: string): void;
+  kill(signal?: string): void | Promise<void>;
 }
 
 export interface SpawnOptions {
