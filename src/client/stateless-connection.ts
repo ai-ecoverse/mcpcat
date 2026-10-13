@@ -1,4 +1,5 @@
-import type { CallToolResult, Tool } from '@earendil-works/pi-mcp';
+import type { AuthProvider, CallToolResult, Tool } from '@earendil-works/pi-mcp';
+import { AuthStepUpError } from '../auth/auth-provider.ts';
 import type { VerboseLogger } from '../cli/verbose.ts';
 import type { CallToolOptions, McpConnection, ServerInfo } from './connection.ts';
 
@@ -59,6 +60,15 @@ export class McpAuthError extends Error {
   }
 }
 
+class AuthRetryableError extends Error {
+  readonly response: Response;
+  constructor(response: Response) {
+    super(`HTTP ${response.status}: auth retry`);
+    this.name = 'AuthRetryableError';
+    this.response = response;
+  }
+}
+
 function selectSseFrame(body: Uint8Array, targetId: number): JsonRpcResponse {
   const text = new TextDecoder().decode(body);
   const blocks = text.replace(/\r\n/g, '\n').split(/\n\n/);
@@ -84,6 +94,55 @@ function mcpNameForMethod(method: string, params: Record<string, unknown>): stri
   return undefined;
 }
 
+function makeAbort(
+  timeoutMs: number,
+  externalSignal?: AbortSignal
+): {
+  controller: AbortController;
+  timer: ReturnType<typeof setTimeout>;
+} {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      clearTimeout(timer);
+      controller.abort();
+    } else {
+      externalSignal.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          controller.abort();
+        },
+        { once: true }
+      );
+    }
+  }
+  return { controller, timer };
+}
+
+function logHeaders(
+  verbose: VerboseLogger,
+  dir: '>' | '<',
+  entries: Iterable<[string, string]>
+): void {
+  for (const [k, v] of entries) {
+    if (dir === '>') verbose.headerOut(k, v);
+    else verbose.headerIn(k, v);
+  }
+}
+
+function buildServerInfo(discoverResult: Record<string, unknown> | null): ServerInfo {
+  return {
+    name: (discoverResult?.serverInfo as Record<string, unknown>)?.name as string | undefined,
+    version: (discoverResult?.serverInfo as Record<string, unknown>)?.version as string | undefined,
+    title: (discoverResult?.serverInfo as Record<string, unknown>)?.title as string | undefined,
+    protocolVersion: STATELESS_PROTOCOL_VERSION,
+    capabilities: (discoverResult?.capabilities as Record<string, unknown>) ?? {},
+    instructions: discoverResult?.instructions as string | undefined,
+  };
+}
+
 export interface StatelessConnectionOptions {
   url: string;
   headers?: Record<string, string>;
@@ -92,6 +151,7 @@ export interface StatelessConnectionOptions {
   clientInfo?: { name: string; version: string };
   signal?: AbortSignal;
   verbose?: VerboseLogger;
+  authProvider?: AuthProvider;
 }
 
 export async function createStatelessConnection(
@@ -105,12 +165,17 @@ export async function createStatelessConnection(
     clientInfo = { name: 'mcpcat', version: '0.0.0' },
     signal: externalSignal,
     verbose,
+    authProvider,
   } = options;
 
   let nextId = 1;
   let negotiatedVersion: string | undefined;
 
-  function buildHeaders(method: string, params: Record<string, unknown>): Record<string, string> {
+  function buildHeaders(
+    method: string,
+    params: Record<string, unknown>,
+    token?: string
+  ): Record<string, string> {
     const h: Record<string, string> = {
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
@@ -120,42 +185,13 @@ export async function createStatelessConnection(
     const n = mcpNameForMethod(method, params);
     if (n) h['Mcp-Name'] = n;
     if (negotiatedVersion) h['Mcp-Protocol-Version'] = negotiatedVersion;
+    if (token) h['Authorization'] = `Bearer ${token}`;
     return h;
   }
 
-  function makeAbort(): {
-    controller: AbortController;
-    timer: ReturnType<typeof setTimeout>;
-  } {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    if (externalSignal) {
-      if (externalSignal.aborted) {
-        clearTimeout(timer);
-        controller.abort();
-      } else {
-        externalSignal.addEventListener(
-          'abort',
-          () => {
-            clearTimeout(timer);
-            controller.abort();
-          },
-          { once: true }
-        );
-      }
-    }
-    return { controller, timer };
-  }
-
-  function logHeaders(dir: '>' | '<', entries: Iterable<[string, string]>): void {
-    if (!verbose?.enabled) return;
-    for (const [k, v] of entries) {
-      if (dir === '>') verbose.headerOut(k, v);
-      else verbose.headerIn(k, v);
-    }
-  }
-
   async function handleErrorStatus(res: Response, method: string): Promise<never> {
+    if ((res.status === 401 || res.status === 403) && authProvider)
+      throw new AuthRetryableError(res);
     if (res.status === 401 || res.status === 403) throw new McpAuthError(res.status, url);
     const text = await res.text();
     let rpc: { code: number; message: string; data?: unknown } | undefined;
@@ -167,9 +203,75 @@ export async function createStatelessConnection(
     throw new StatelessHttpError(res.status, res.statusText, method, text.slice(0, 512));
   }
 
+  async function doFetch(
+    method: string,
+    params: Record<string, unknown>,
+    body: string
+  ): Promise<{ res: Response; token: string | undefined }> {
+    const token = await authProvider?.token();
+    const headers = buildHeaders(method, params, token);
+    if (verbose?.enabled) {
+      verbose.request(method, body);
+      logHeaders(verbose, '>', Object.entries(headers));
+    }
+    const { controller, timer } = makeAbort(timeoutMs, externalSignal);
+    try {
+      const res = await fetchImpl(url, {
+        method: 'POST',
+        headers,
+        body,
+        signal: controller.signal,
+      });
+      if (verbose?.enabled) {
+        verbose.http('<', `HTTP/1.1 ${res.status} ${res.statusText}`);
+        logHeaders(verbose, '<', res.headers.entries());
+      }
+      return { res, token };
+    } catch (err) {
+      if (controller.signal.aborted && !externalSignal?.aborted) {
+        throw new McpTimeoutError(method, timeoutMs);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function parseResponse(res: Response, id: number): Promise<unknown> {
+    const ct = res.headers.get('content-type') ?? '';
+    let frame: JsonRpcResponse;
+    if (ct.toLowerCase().includes('text/event-stream')) {
+      frame = selectSseFrame(new Uint8Array(await res.arrayBuffer()), id);
+    } else {
+      frame = (await res.json()) as JsonRpcResponse;
+    }
+    if (verbose?.enabled) verbose.response(JSON.stringify(frame));
+    if (frame.error) {
+      throw new StatelessRpcError(frame.error.code, frame.error.message, frame.error.data);
+    }
+    return frame.result;
+  }
+
+  async function handleAuthError(
+    err: AuthRetryableError,
+    token: string | undefined
+  ): Promise<void> {
+    if (!authProvider?.onUnauthorized) throw new McpAuthError(err.response.status, url);
+    try {
+      await authProvider.onUnauthorized({
+        response: err.response,
+        serverUrl: new URL(url),
+        fetch: fetchImpl,
+        token,
+      });
+    } catch (authErr) {
+      if (authErr instanceof AuthStepUpError) throw authErr;
+      throw new McpAuthError(err.response.status, url);
+    }
+  }
+
   async function request(method: string, params: Record<string, unknown>): Promise<unknown> {
     const id = nextId++;
-    const headers = buildHeaders(method, params);
     const meta: Record<string, unknown> = {
       protocolVersion: negotiatedVersion ?? STATELESS_PROTOCOL_VERSION,
       clientInfo,
@@ -181,78 +283,43 @@ export async function createStatelessConnection(
       params: { ...params, _meta: meta },
     });
 
-    if (verbose?.enabled) {
-      verbose.request(method, body);
-      logHeaders('>', Object.entries(headers));
-    }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const { res, token } = await doFetch(method, params, body);
 
-    const { controller, timer } = makeAbort();
-    let res: Response;
-    try {
-      res = await fetchImpl(url, {
-        method: 'POST',
-        headers,
-        body,
-        signal: controller.signal,
-      });
-    } catch (err) {
-      clearTimeout(timer);
-      if (controller.signal.aborted && !externalSignal?.aborted) {
-        throw new McpTimeoutError(method, timeoutMs);
+      if (res.status >= 400) {
+        try {
+          await handleErrorStatus(res, method);
+        } catch (err) {
+          if (err instanceof AuthRetryableError && attempt === 0) {
+            await handleAuthError(err, token);
+            continue;
+          }
+          throw err;
+        }
       }
-      throw err;
-    } finally {
-      clearTimeout(timer);
-    }
 
-    if (verbose?.enabled) {
-      verbose.http('<', `HTTP/1.1 ${res.status} ${res.statusText}`);
-      logHeaders('<', res.headers.entries());
+      return parseResponse(res, id);
     }
-    if (res.status >= 400) await handleErrorStatus(res, method);
-
-    const ct = res.headers.get('content-type') ?? '';
-    let frame: JsonRpcResponse;
-    if (ct.toLowerCase().includes('text/event-stream')) {
-      frame = selectSseFrame(new Uint8Array(await res.arrayBuffer()), id);
-    } else {
-      frame = (await res.json()) as JsonRpcResponse;
-    }
-
-    if (verbose?.enabled) verbose.response(JSON.stringify(frame));
-    if (frame.error) {
-      throw new StatelessRpcError(frame.error.code, frame.error.message, frame.error.data);
-    }
-    return frame.result;
+    throw new McpAuthError(401, url);
   }
 
   const discoverResult = (await request('server/discover', {
     protocolVersion: STATELESS_PROTOCOL_VERSION,
   })) as { supportedVersions?: string[] } | null;
-  const supported = Array.isArray(discoverResult?.supportedVersions)
-    ? discoverResult.supportedVersions.filter((v): v is string => typeof v === 'string')
-    : [];
+  const supported =
+    discoverResult?.supportedVersions?.filter((v): v is string => typeof v === 'string') ?? [];
   if (!supported.includes(STATELESS_PROTOCOL_VERSION)) {
     throw new Error(
       `Server does not support ${STATELESS_PROTOCOL_VERSION} (advertised: ${supported.join(', ') || 'none'})`
     );
   }
   negotiatedVersion = STATELESS_PROTOCOL_VERSION;
-
   let serverInfoCache: ServerInfo | undefined;
 
   return {
     async info(): Promise<ServerInfo> {
       if (serverInfoCache) return serverInfoCache;
-      const r = discoverResult as Record<string, unknown> | null;
-      serverInfoCache = {
-        name: (r?.serverInfo as Record<string, unknown>)?.name as string | undefined,
-        version: (r?.serverInfo as Record<string, unknown>)?.version as string | undefined,
-        title: (r?.serverInfo as Record<string, unknown>)?.title as string | undefined,
-        protocolVersion: STATELESS_PROTOCOL_VERSION,
-        capabilities: (r?.capabilities as Record<string, unknown>) ?? {},
-        instructions: r?.instructions as string | undefined,
-      };
+      serverInfoCache = buildServerInfo(discoverResult as Record<string, unknown> | null);
       return serverInfoCache;
     },
     async listTools(): Promise<Tool[]> {

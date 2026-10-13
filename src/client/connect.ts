@@ -1,10 +1,12 @@
 import type { AuthProvider } from '@earendil-works/pi-mcp';
+import { AuthStepUpError } from '../auth/auth-provider.ts';
 import type { VerboseLogger } from '../cli/verbose.ts';
 import type { Platform } from '../platform/types.ts';
 import type { McpConnection } from './connection.ts';
 import { createPiConnection } from './pi-connection.ts';
 import {
   createStatelessConnection,
+  McpAuthError,
   StatelessHttpError,
   StatelessRpcError,
 } from './stateless-connection.ts';
@@ -45,24 +47,12 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
 
   if (!options.url) throw new Error('connect requires either a url or a command');
 
-  if (options.authProvider) {
-    const token = await options.authProvider.token();
-    if (token) {
-      return createPiConnection({
-        url: options.url,
-        headers: options.headers,
-        fetchImpl: platform.fetch,
-        authProvider: options.authProvider,
-        ...shared,
-      });
-    }
-  }
-
   if (options.protocolVersion && !options.protocolVersion.startsWith('2026')) {
     return createPiConnection({
       url: options.url,
       headers: options.headers,
       fetchImpl: platform.fetch,
+      authProvider: options.authProvider,
       ...shared,
     });
   }
@@ -76,12 +66,15 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
       timeoutMs: options.timeoutMs,
       signal: options.signal,
       verbose: options.verbose,
+      authProvider: options.authProvider,
     });
   } catch (err) {
     const isMethodNotFound =
       (err instanceof StatelessRpcError && err.code === -32601) ||
       (err instanceof StatelessHttpError && err.status >= 400 && err.status < 500);
     if (options.protocolVersion?.startsWith('2026')) throw err;
+    if (err instanceof McpAuthError || err instanceof AuthStepUpError) throw err;
+    if ((err as Error).name === 'McpOAuthAuthorizationRequiredError') throw err;
     if (isMethodNotFound) {
       return createPiConnection({
         url: options.url,
