@@ -268,7 +268,7 @@ describe('host: npm pack layout', () => {
 
   before(() => {
     mkdirSync(tmpDir, { recursive: true });
-    const raw = execFileSync('npm', ['pack', '--pack-destination', tmpDir], {
+    const raw = execFileSync('npm', ['pack', '--ignore-scripts', '--pack-destination', tmpDir], {
       cwd: root,
       encoding: 'utf8',
       env: { ...process.env, NODE_NO_WARNINGS: '1' },
