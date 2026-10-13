@@ -31,6 +31,11 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
+      - name: Stamp release version
+        run: npm version "${TAG#v}" --no-git-tag-version
+        env:
+          TAG: ${{ inputs.tag }}
+
       - run: npm ci
 
       - name: Build SEA blob
@@ -201,15 +206,32 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
+      - name: Stamp release version
+        run: npm version "${TAG#v}" --no-git-tag-version
+        env:
+          TAG: ${{ inputs.tag }}
+
       - run: npm ci
 
       - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
         with:
           name: ${{ matrix.asset }}
 
-      - name: Run integration tests against binary
+      - name: Verify binary version matches tag
         run: |
           chmod +x "${{ matrix.asset }}"
+          EXPECTED="${TAG#v}"
+          ACTUAL="$(./${{ matrix.asset }} --version)"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "Version mismatch: binary reports '$ACTUAL', expected '$EXPECTED'" >&2
+            exit 1
+          fi
+          echo "Binary version verified: $ACTUAL"
+        env:
+          TAG: ${{ inputs.tag }}
+
+      - name: Run integration tests against binary
+        run: |
           MCPCAT_BIN="$(pwd)/${{ matrix.asset }}" npm run test:integration
 
   test-windows:
@@ -220,8 +242,18 @@ jobs:
         with:
           name: mcpcat-windows-amd64.exe
 
-      - name: Version check
-        run: .\mcpcat-windows-amd64.exe --version
+      - name: Verify binary version matches tag
+        shell: bash
+        run: |
+          EXPECTED="${TAG#v}"
+          ACTUAL="$(./mcpcat-windows-amd64.exe --version)"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "Version mismatch: binary reports '$ACTUAL', expected '$EXPECTED'" >&2
+            exit 1
+          fi
+          echo "Binary version verified: $ACTUAL"
+        env:
+          TAG: ${{ inputs.tag }}
 
   test-installer:
     needs: build
