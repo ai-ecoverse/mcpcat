@@ -17,11 +17,10 @@ permissions:
   contents: write
 
 env:
-  NODE_VERSION: '26'
-  NODE_FULL: '26.7.0'
+  NODE_VERSION: '24'
 
 jobs:
-  sea-blob:
+  package:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -38,250 +37,94 @@ jobs:
 
       - run: npm ci
 
-      - name: Build SEA blob
+      - name: Build and pack
+        run: |
+          npm run build
+          npm pack
+          mv ai-ecoverse-mcpcat-*.tgz "mcpcat-${TAG#v}.tgz"
         env:
-          MCPCAT_SEA_VERSION: ${{ inputs.tag }}
-        run: |
-          VERSION="${MCPCAT_SEA_VERSION#v}"
-          MCPCAT_SEA_VERSION="$VERSION" node scripts/build-sea.mjs
+          TAG: ${{ inputs.tag }}
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: sea-blob
-          path: dist/sea/sea-prep.blob
+          name: mcpcat-bundle
+          path: "mcpcat-*.tgz"
 
-  build:
-    needs: sea-blob
+  test-installer:
+    needs: package
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target_os: linux
-            target_arch: amd64
-            node_arch: x64
-            node_platform: linux
-          - os: ubuntu-latest
-            target_os: linux
-            target_arch: arm64
-            node_arch: arm64
-            node_platform: linux
-          - os: ubuntu-latest
-            target_os: linux
-            target_arch: amd64
-            node_arch: x64
-            node_platform: linux
-            musl: true
-          - os: ubuntu-latest
-            target_os: linux
-            target_arch: arm64
-            node_arch: arm64
-            node_platform: linux
-            musl: true
-          - os: macos-latest
-            target_os: darwin
-            target_arch: arm64
-            node_arch: arm64
-            node_platform: darwin
-          - os: macos-latest
-            target_os: darwin
-            target_arch: amd64
-            node_arch: x64
-            node_platform: darwin
-          - os: windows-latest
-            target_os: windows
-            target_arch: amd64
-            node_arch: x64
-            node_platform: win
-          - os: windows-latest
-            target_os: windows
-            target_arch: arm64
-            node_arch: arm64
-            node_platform: win
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-
-      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
-        with:
-          name: sea-blob
-          path: dist/sea
-
-      - name: Set asset name
-        id: name
-        shell: bash
-        run: |
-          SUFFIX=""
-          if [ "${{ matrix.target_os }}" = "windows" ]; then SUFFIX=".exe"; fi
-          MUSL=""
-          if [ "${{ matrix.musl }}" = "true" ]; then MUSL="-musl"; fi
-          echo "asset=mcpcat-${{ matrix.target_os }}-${{ matrix.target_arch }}${MUSL}${SUFFIX}" >> "$GITHUB_OUTPUT"
-
-      - name: Download and verify Node binary
-        shell: bash
-        run: |
-          verify_checksum() {
-            local file="$1" sums="$2" archive="$3"
-            expected=$(grep "  ${archive}$" "$sums" | cut -d' ' -f1)
-            if [ -z "$expected" ]; then
-              echo "No checksum found for $archive" >&2; exit 1
-            fi
-            actual=$(sha256sum "$file" | cut -d' ' -f1)
-            if [ "$actual" != "$expected" ]; then
-              echo "Checksum mismatch for $archive" >&2
-              echo "  expected: $expected" >&2
-              echo "  actual:   $actual" >&2
-              exit 1
-            fi
-            echo "Verified $archive"
-          }
-
-          V="${{ env.NODE_FULL }}"
-          MUSL=""
-          if [ "${{ matrix.musl }}" = "true" ]; then MUSL="-musl"; fi
-
-          if [ "${{ matrix.target_os }}" = "windows" ]; then
-            ARCHIVE="node-v${V}-win-${{ matrix.node_arch }}.zip"
-            SUMS_URL="https://nodejs.org/dist/v${V}/SHASUMS256.txt"
-            curl -fsSL "$SUMS_URL" -o SHASUMS256.txt
-            curl -fsSL "https://nodejs.org/dist/v${V}/${ARCHIVE}" -o "$ARCHIVE"
-            verify_checksum "$ARCHIVE" SHASUMS256.txt "$ARCHIVE"
-            unzip -q "$ARCHIVE"
-            cp "node-v${V}-win-${{ matrix.node_arch }}/node.exe" "${{ steps.name.outputs.asset }}"
-          elif [ -n "$MUSL" ]; then
-            ARCHIVE="node-v${V}-linux-${{ matrix.node_arch }}-musl.tar.xz"
-            SUMS_URL="https://unofficial-builds.nodejs.org/download/release/v${V}/SHASUMS256.txt"
-            curl -fsSL "$SUMS_URL" -o SHASUMS256.txt
-            curl -fsSL "https://unofficial-builds.nodejs.org/download/release/v${V}/${ARCHIVE}" -o "$ARCHIVE"
-            verify_checksum "$ARCHIVE" SHASUMS256.txt "$ARCHIVE"
-            tar xf "$ARCHIVE"
-            cp "node-v${V}-linux-${{ matrix.node_arch }}-musl/bin/node" "${{ steps.name.outputs.asset }}"
-          else
-            PLAT="${{ matrix.target_os }}"
-            ARCHIVE="node-v${V}-${PLAT}-${{ matrix.node_arch }}.tar.xz"
-            SUMS_URL="https://nodejs.org/dist/v${V}/SHASUMS256.txt"
-            curl -fsSL "$SUMS_URL" -o SHASUMS256.txt
-            curl -fsSL "https://nodejs.org/dist/v${V}/${ARCHIVE}" -o "$ARCHIVE"
-            verify_checksum "$ARCHIVE" SHASUMS256.txt "$ARCHIVE"
-            tar xf "$ARCHIVE"
-            cp "node-v${V}-${PLAT}-${{ matrix.node_arch }}/bin/node" "${{ steps.name.outputs.asset }}"
-          fi
-
-      - name: Inject SEA blob
-        shell: bash
-        run: |
-          EXTRA_ARGS=""
-          if [ "${{ matrix.target_os }}" = "darwin" ]; then
-            EXTRA_ARGS="--macho-segment-name NODE_SEA"
-          fi
-          npx --yes postject "${{ steps.name.outputs.asset }}" NODE_SEA_BLOB dist/sea/sea-prep.blob \
-            --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2 \
-            $EXTRA_ARGS
-
-      - name: Ad-hoc sign (macOS)
-        if: matrix.target_os == 'darwin'
-        run: codesign --sign - "${{ steps.name.outputs.asset }}"
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: ${{ steps.name.outputs.asset }}
-          path: ${{ steps.name.outputs.asset }}
-
-  test-binary:
-    needs: build
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            asset: mcpcat-linux-amd64
-          - os: macos-latest
-            asset: mcpcat-darwin-arm64
+          - name: ubuntu-with-node
+            os: ubuntu-latest
+            has_node: true
+          - name: ubuntu-no-node
+            os: ubuntu-latest
+            has_node: false
+          - name: macos-with-node
+            os: macos-latest
+            has_node: true
+          - name: macos-no-node
+            os: macos-latest
+            has_node: false
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        if: matrix.has_node
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-
-      - name: Stamp release version
-        run: npm version "${TAG#v}" --no-git-tag-version
-        env:
-          TAG: ${{ inputs.tag }}
-
-      - run: npm ci
 
       - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
         with:
-          name: ${{ matrix.asset }}
-
-      - name: Verify binary version matches tag
-        run: |
-          chmod +x "${{ matrix.asset }}"
-          EXPECTED="${TAG#v}"
-          ACTUAL="$(./${{ matrix.asset }} --version)"
-          if [ "$ACTUAL" != "$EXPECTED" ]; then
-            echo "Version mismatch: binary reports '$ACTUAL', expected '$EXPECTED'" >&2
-            exit 1
-          fi
-          echo "Binary version verified: $ACTUAL"
-        env:
-          TAG: ${{ inputs.tag }}
-
-      - name: Run integration tests against binary
-        run: |
-          MCPCAT_BIN="$(pwd)/${{ matrix.asset }}" npm run test:integration
-
-  test-windows:
-    needs: build
-    runs-on: windows-latest
-    steps:
-      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
-        with:
-          name: mcpcat-windows-amd64.exe
-
-      - name: Verify binary version matches tag
-        shell: bash
-        run: |
-          EXPECTED="${TAG#v}"
-          ACTUAL="$(./mcpcat-windows-amd64.exe --version)"
-          if [ "$ACTUAL" != "$EXPECTED" ]; then
-            echo "Version mismatch: binary reports '$ACTUAL', expected '$EXPECTED'" >&2
-            exit 1
-          fi
-          echo "Binary version verified: $ACTUAL"
-        env:
-          TAG: ${{ inputs.tag }}
-
-  test-installer:
-    needs: build
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            asset: mcpcat-linux-amd64
-          - os: macos-latest
-            asset: mcpcat-darwin-arm64
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-
-      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
-        with:
-          name: ${{ matrix.asset }}
+          name: mcpcat-bundle
           path: assets
 
       - name: Build SHA256SUMS
         run: cd assets && sha256sum * > SHA256SUMS
 
+      - name: Hide system node
+        if: "!matrix.has_node"
+        run: |
+          mkdir -p "$HOME/.local/share/mcpcat"
+          echo "Hiding node from PATH"
+          sudo rm -f /usr/local/bin/node /usr/bin/node 2>/dev/null || true
+          for d in /opt/hostedtoolcache/node /usr/local/n; do
+            sudo rm -rf "$d" 2>/dev/null || true
+          done
+          hash -r 2>/dev/null || true
+          if command -v node >/dev/null 2>&1; then
+            echo "WARNING: node still on PATH at $(command -v node)"
+          else
+            echo "node removed from PATH"
+          fi
+
       - name: Run installer test
-        run: sh test/integration/test-install.sh assets
+        run: sh test/integration/test-install.sh assets "${TAG#v}"
+        env:
+          TAG: ${{ inputs.tag }}
+
+      - name: Verify node was NOT downloaded when pre-installed
+        if: matrix.has_node
+        run: |
+          if [ -d "$HOME/.local/share/mcpcat/node" ]; then
+            echo "FAIL: node was downloaded even though it was on PATH" >&2
+            exit 1
+          fi
+          echo "OK: used system node, no download"
 
   test-installer-alpine:
-    needs: build
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: alpine-with-nodejs
+            install_node: true
+          - name: alpine-no-node
+            install_node: false
     runs-on: ubuntu-latest
     container: alpine:latest
     steps:
@@ -289,17 +132,40 @@ jobs:
 
       - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
         with:
-          name: mcpcat-linux-amd64-musl
+          name: mcpcat-bundle
           path: assets
+
+      - name: Install dependencies
+        run: apk add --no-cache python3 tar xz
+
+      - name: Install nodejs (alpine)
+        if: matrix.install_node
+        run: apk add --no-cache nodejs
 
       - name: Build SHA256SUMS
         run: cd assets && sha256sum * > SHA256SUMS
 
-      - name: Install dependencies
-        run: apk add --no-cache python3
+      - name: Run installer test (with node)
+        if: matrix.install_node
+        run: sh test/integration/test-install.sh assets "${TAG#v}"
+        env:
+          TAG: ${{ inputs.tag }}
 
-      - name: Run installer test
-        run: sh test/integration/test-install.sh assets
+      - name: Verify musl rejection (no node)
+        if: "!matrix.install_node"
+        run: |
+          if SLICC_INSTALL_BASE_URL="http://dummy" sh install.sh 2>err.txt; then
+            echo "FAIL: should have exited 1 on musl without node" >&2
+            exit 1
+          fi
+          if grep -q "apk add nodejs" err.txt; then
+            echo "OK: musl rejection message shown"
+            cat err.txt
+          else
+            echo "FAIL: expected apk hint" >&2
+            cat err.txt >&2
+            exit 1
+          fi
 
   shellcheck:
     runs-on: ubuntu-latest
@@ -308,24 +174,20 @@ jobs:
       - run: shellcheck -s sh install.sh
 
   attach:
-    needs: [build, test-binary, test-windows, test-installer, test-installer-alpine, shellcheck]
+    needs: [package, test-installer, test-installer-alpine, shellcheck]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
         with:
-          path: artifacts
-          merge-multiple: true
+          name: mcpcat-bundle
+          path: release
 
       - name: Prepare release assets
         run: |
-          mkdir -p release
-          for f in artifacts/mcpcat-*; do
-            [ -f "$f" ] && cp "$f" release/
-          done
           cp install.sh release/
-          cd release && sha256sum mcpcat-* > SHA256SUMS
+          cd release && sha256sum mcpcat-*.tgz > SHA256SUMS
 
       - name: Attach to release
         env:
