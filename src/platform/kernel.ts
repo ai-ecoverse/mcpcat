@@ -129,7 +129,6 @@ async function kernelSpawn(ctx: KernelContext, options: SpawnOptions): Promise<S
   };
 }
 
-
 async function kernelListen(ctx: KernelContext, options: ListenOptions): Promise<Listener> {
   const raw = await ctx.net.listen({ port: options.port, host: options.host });
   let closed = false;

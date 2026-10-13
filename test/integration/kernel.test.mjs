@@ -3,7 +3,9 @@ import { execFileSync as exec, spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { attachKernel } from '@ai-ecoverse/slicc-kernel';
 import { createNodeKernel, nodeTransport } from '@ai-ecoverse/slicc-kernel/node';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -77,6 +79,49 @@ async function installStdioFixture(kernel) {
           'mcpcat-test-stdio': {
             abi: 'js',
             module: 'dist/server.mjs',
+          },
+        },
+      },
+    })
+  );
+}
+
+async function installGrandchildFixtures(kernel) {
+  const gcData = readFileSync(join(fixturesDir, 'kernel-stdio-grandchild.mjs'));
+  await kernel.writeFile('/node_modules/@ai-ecoverse/mcpcat-test-gc/dist/server.mjs', gcData);
+  await kernel.writeFile(
+    '/node_modules/@ai-ecoverse/mcpcat-test-gc/package.json',
+    JSON.stringify({
+      name: '@ai-ecoverse/mcpcat-test-gc',
+      version: '1.0.0',
+      type: 'module',
+      slicc: {
+        commands: {
+          'mcpcat-test-gc': {
+            abi: 'js',
+            module: 'dist/server.mjs',
+          },
+        },
+      },
+    })
+  );
+
+  const sleeperData = readFileSync(join(fixturesDir, 'kernel-sleeper.mjs'));
+  await kernel.writeFile(
+    '/node_modules/@ai-ecoverse/mcpcat-test-sleeper/dist/main.mjs',
+    sleeperData
+  );
+  await kernel.writeFile(
+    '/node_modules/@ai-ecoverse/mcpcat-test-sleeper/package.json',
+    JSON.stringify({
+      name: '@ai-ecoverse/mcpcat-test-sleeper',
+      version: '1.0.0',
+      type: 'module',
+      slicc: {
+        commands: {
+          'mcpcat-test-sleeper': {
+            abi: 'js',
+            module: 'dist/main.mjs',
           },
         },
       },
@@ -377,5 +422,42 @@ describe('kernel: stdio client', () => {
     );
     assert.equal(status, 0, `stderr: ${stderr}`);
     assert.ok(stdout.includes('12'));
+  });
+});
+
+describe('kernel: stdio process group cleanup', () => {
+  let kernel;
+  let client;
+
+  before(async () => {
+    kernel = await createNodeKernel({});
+    await installMcpcat(kernel);
+    await installGrandchildFixtures(kernel);
+    const port = await kernel.connect();
+    client = await attachKernel(port);
+  });
+
+  after(() => {
+    client?.close();
+    kernel?.terminate();
+  });
+
+  it('server is gone after mcpcat exits', async () => {
+    const pidsResult = await kernel.run(
+      ['mcpcat', 'call', 'stdio:mcpcat-test-gc', 'pids', '-d', '{}'],
+      { stdout: 'pipe', stderr: 'pipe' }
+    );
+    assert.equal(pidsResult.status, 0, `stderr: ${pidsResult.stderr}`);
+    const pids = JSON.parse(pidsResult.stdout.trim());
+    const serverPid = pids.server;
+    const grandchildPid = pids.grandchild;
+    assert.ok(serverPid > 0, 'server pid should be positive');
+    assert.ok(grandchildPid > 0, 'grandchild pid should be positive');
+
+    await sleep(500);
+
+    const ps = await client.ps();
+    const alivePids = new Set(ps.map((p) => p.pid));
+    assert.ok(!alivePids.has(serverPid), `server pid ${serverPid} should be dead`);
   });
 });

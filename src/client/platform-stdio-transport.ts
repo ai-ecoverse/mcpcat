@@ -143,6 +143,8 @@ export class PlatformStdioTransport {
       }
     }
 
+    proc.kill('SIGTERM');
+
     this.emitClose();
   }
 

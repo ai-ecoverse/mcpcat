@@ -545,12 +545,8 @@ export async function run(platform: Platform, version: string, args: string[]): 
       version,
     });
   } catch (err) {
-    const hint = transportHint(err);
-    if (hint) {
-      await platform.write(2, `mcpcat: ${hint}\n`);
-      return 3;
-    }
-    await platform.write(2, `mcpcat: connection failed: ${(err as Error).message}\n`);
+    const msg = transportHint(err) ?? `connection failed: ${(err as Error).message}`;
+    await platform.write(2, `mcpcat: ${msg}\n`);
     return 3;
   }
 
