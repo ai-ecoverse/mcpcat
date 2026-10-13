@@ -154,7 +154,7 @@ describe('kernel: codemode timeout', () => {
       ['mcpcat', 'code', '-s', 'alpha', '-m', '1', '-e', 'while(true){}'],
       runOpts()
     );
-    assert.notEqual(status, 0, 'should fail');
+    assert.equal(status, 124, `expected exit 124, got ${status}; stderr: ${stderr}`);
     assert.ok(
       stderr.includes('timed out') ||
         stderr.includes('timeout') ||

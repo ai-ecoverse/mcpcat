@@ -116,7 +116,7 @@ describe('codemode integration', () => {
 
     it('timeout stops a runaway script', () => {
       const { status, stderr } = run(['code', '-s', 'alpha', '-m', '1', '-e', 'while(true){}']);
-      assert.notEqual(status, 0);
+      assert.equal(status, 124);
     });
 
     it('store persists across runs', () => {

@@ -262,7 +262,7 @@ async function formatOutput(
   result: {
     ok: boolean;
     value?: unknown;
-    error?: { message: string };
+    error?: { kind?: string; message: string };
     output: { type: string; text?: string; console?: boolean }[];
     calls: unknown[];
   },
@@ -291,7 +291,8 @@ async function formatOutput(
       await platform.write(2, `mcpcat: script failed: ${result.error!.message}\n`);
     }
   }
-  return result.ok ? 0 : 1;
+  const isTimeout = !result.ok && result.error && result.error.kind === 'timeout';
+  return result.ok ? 0 : isTimeout ? 124 : 1;
 }
 
 async function createSandbox(
