@@ -433,3 +433,29 @@ describe('proxy: reconnect on upstream failure (idempotent)', { timeout: 30_000 
     upstream.kill('SIGTERM');
   });
 });
+
+describe('add --bridge: host refuses', () => {
+  it('exits 2 on the host with helpful message', () => {
+    const { stderr, status } = runHost(['add', 'myserver', '--bridge', '--', 'echo', 'hi']);
+    assert.equal(status, 2);
+    assert.ok(stderr.includes('not available on the host'));
+    assert.ok(stderr.includes('mcpcat serve --proxy'));
+  });
+});
+
+describe('add --bridge: --bearer refused on kernel loopback', () => {
+  it('exits 2 when --bearer is given with --bridge', () => {
+    const { stderr, status } = runHost([
+      'add',
+      'myserver',
+      '--bridge',
+      '--bearer',
+      '${TOKEN}',
+      '--',
+      'echo',
+      'hi',
+    ]);
+    assert.equal(status, 2);
+    assert.ok(stderr.includes('not available on the host') || stderr.includes('not needed'));
+  });
+});

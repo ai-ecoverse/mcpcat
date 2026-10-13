@@ -31,6 +31,8 @@ export interface ServeOptions {
   port: number;
   commands: { path: string; name?: string }[];
   proxy?: string;
+  proxyCommand?: string[];
+  onListening?: (port: number) => Promise<void>;
   toolTemplates: string[];
   bearer?: string;
   allowOrigins: string[];
@@ -714,7 +716,13 @@ async function buildProxyConnectOpts(
     target.startsWith('http://') || target.startsWith('https://') || target.includes('.');
 
   let connectOpts: ConnectOptions;
-  if (target.startsWith('stdio:')) {
+  if (options.proxyCommand && options.proxyCommand.length > 0) {
+    connectOpts = {
+      command: options.proxyCommand[0],
+      args: options.proxyCommand.slice(1),
+      version,
+    };
+  } else if (target.startsWith('stdio:')) {
     connectOpts = resolveProxyStdio(target, version);
   } else if (isUrl) {
     connectOpts = resolveProxyUrl(target, connectHeaders, version);
@@ -834,6 +842,10 @@ async function runProxyHttp(
     await platform.write(1, `${JSON.stringify({ url: listenUrl })}\n`);
   }
   await platform.write(2, `mcpcat serve --proxy: listening on ${listenUrl}\n`);
+
+  if (options.onListening) {
+    await options.onListening(actualPort);
+  }
 
   let shutdownRequested = false;
 

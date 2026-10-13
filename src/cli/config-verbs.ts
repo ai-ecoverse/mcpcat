@@ -481,6 +481,16 @@ export async function runBridge(
   args: string[],
   version: string
 ): Promise<number> {
+  if (platform.kind === 'host') {
+    await platform.write(
+      2,
+      'mcpcat add --bridge: not available on the host.\n' +
+        'On the host, add stdio entries directly with: mcpcat add <name> -- <cmd>\n' +
+        'To expose a stdio server over HTTP: mcpcat serve --proxy <target> --http <port>\n'
+    );
+    return 2;
+  }
+
   const flags = parseAddFlags(args);
   if (typeof flags === 'string') {
     await platform.write(2, `mcpcat add --bridge: ${flags}\n`);
@@ -497,43 +507,33 @@ export async function runBridge(
     return 2;
   }
 
-  const stdioParts = [flags.cmdArgs[0], ...flags.cmdArgs.slice(1)];
-  const stdioTarget = `stdio:${stdioParts.join(' ')}`;
-
-  const serveArgs: string[] = ['--proxy', stdioTarget, '--http', '0', '--json'];
   if (flags.bearer) {
-    serveArgs.push('--bearer', flags.bearer);
+    await platform.write(
+      2,
+      'mcpcat add --bridge: --bearer is not needed on the kernel loopback.\n' +
+        'The kernel loopback is only reachable from inside the kernel and the agent.\n'
+    );
+    return 2;
   }
 
-  const serveOptions = parseServeFlags(serveArgs);
-
-  if (!platform.listen) {
-    await platform.write(2, 'mcpcat add --bridge: HTTP transport requires platform.listen\n');
-    return 3;
-  }
-
-  const listener = await platform.listen({ host: '127.0.0.1', port: 0 });
-  const actualPort = listener.port;
-  listener.close();
-
-  const bridgeUrl = `http://${actualPort}.kernel.localhost/mcp`;
-
-  const httpConfig: McpHttpServerConfig = { url: bridgeUrl };
-  if (flags.bearer) {
-    httpConfig.headers = { Authorization: `Bearer ${flags.bearer}` };
-  }
-  if (flags.description) httpConfig.description = flags.description;
-  if (flags.exposure) httpConfig.exposure = flags.exposure as McpHttpServerConfig['exposure'];
+  const serveOptions = parseServeFlags(['--proxy', '__bridge__', '--http', '0', '--json']);
+  serveOptions.proxyCommand = flags.cmdArgs;
 
   const path =
     flags.configFile ?? (flags.local ? projectConfigPath(platform) : userConfigPath(platform));
-  const { replaced } = await addServer(platform.fs, path, name, httpConfig);
 
-  await platform.write(
-    1,
-    `${replaced ? 'replaced' : 'added'} ${name} in ${path}\nbridge does not survive a reload\n`
-  );
+  serveOptions.onListening = async (actualPort: number) => {
+    const bridgeUrl = `http://${actualPort}.kernel.localhost/mcp`;
+    const httpConfig: McpHttpServerConfig = { url: bridgeUrl };
+    if (flags.description) httpConfig.description = flags.description;
+    if (flags.exposure) httpConfig.exposure = flags.exposure as McpHttpServerConfig['exposure'];
+    const { replaced } = await addServer(platform.fs, path, name, httpConfig);
+    await platform.write(
+      1,
+      `${replaced ? 'replaced' : 'added'} ${name} in ${path}\n` +
+        'bridge does not survive a reload; runs in the foreground (start with &)\n'
+    );
+  };
 
-  serveOptions.port = actualPort;
   return runServe(platform, serveOptions, version);
 }
