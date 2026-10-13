@@ -59,14 +59,15 @@ function callbackSettings(oauth: McpOAuthConfig | undefined): {
 }
 
 function cimdForServer(
-  metadata: AuthorizationServerMetadata | undefined
+  metadata: AuthorizationServerMetadata | undefined,
+  redirectUrl: string
 ): OAuthClientMetadataDocument | undefined {
   if (!metadata?.client_id_metadata_document_supported) return undefined;
   if (!metadata.token_endpoint_auth_methods_supported?.includes('none')) return undefined;
   if (!metadata.authorization_response_iss_parameter_supported) return undefined;
   return {
     url: CIMD_URL,
-    redirectUrl: `http://${CALLBACK_HOST}${CALLBACK_PATH}`,
+    redirectUrl,
   };
 }
 
@@ -89,7 +90,7 @@ function buildClientMetadataDocumentFn(
       if (!metadata.authorization_response_iss_parameter_supported) return undefined;
       return { url: CIMD_URL, redirectUrl };
     }
-    return cimdForServer(metadata);
+    return cimdForServer(metadata, redirectUrl);
   };
 }
 

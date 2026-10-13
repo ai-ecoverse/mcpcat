@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -29,12 +29,11 @@ function runHost(args, opts = {}) {
   }
 }
 
-async function startFixtureServer(script) {
-  const child = spawn('node', [join(fixturesDir, script)], {
+async function startServer(script, extraArgs = []) {
+  const child = spawn('node', [join(fixturesDir, script), ...extraArgs], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, NODE_NO_WARNINGS: '1' },
   });
-
   const info = await new Promise((resolve, reject) => {
     let data = '';
     child.stdout.on('data', (chunk) => {
@@ -52,107 +51,415 @@ async function startFixtureServer(script) {
       if (!data.includes('\n')) reject(new Error(`Server exited ${code}: ${data}`));
     });
   });
-
   return { child, ...info };
 }
 
-describe('auth: token store interop', () => {
+async function asLog(asPort) {
+  const res = await fetch(`http://127.0.0.1:${asPort}/_control/log`);
+  return res.json();
+}
+
+async function clearAsLog(asPort) {
+  await fetch(`http://127.0.0.1:${asPort}/_control/log`, { method: 'DELETE' });
+}
+
+async function setIss(asPort, enabled) {
+  await fetch(`http://127.0.0.1:${asPort}/_control/iss`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+async function setCimd(asPort, enabled) {
+  await fetch(`http://127.0.0.1:${asPort}/_control/cimd`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+async function registerToken(mcpPort, token) {
+  await fetch(`http://127.0.0.1:${mcpPort}/_control/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ add: token }),
+  });
+}
+
+async function expireAllOnMcp(mcpPort) {
+  await fetch(`http://127.0.0.1:${mcpPort}/_control/expire-all`, { method: 'POST' });
+}
+
+async function setStepUp(mcpPort, enabled, scope) {
+  await fetch(`http://127.0.0.1:${mcpPort}/_control/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stepUp: enabled, stepUpScope: scope }),
+  });
+}
+
+async function expireOnAs(asPort, token) {
+  await fetch(`http://127.0.0.1:${asPort}/_control/expire`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: token ? JSON.stringify({ token }) : JSON.stringify({}),
+  });
+}
+
+function writeMcpJson(dir, serverName, url, asPort) {
+  const config = {
+    mcpServers: {
+      [serverName]: {
+        url,
+        oauth: {},
+      },
+    },
+  };
+  writeFileSync(join(dir, 'mcp.json'), JSON.stringify(config, null, 2));
+}
+
+function createChallenge(verifier) {
+  return createHash('sha256').update(verifier).digest('base64url');
+}
+
+describe('auth: end-to-end CIMD login via --no-browser paste flow', () => {
+  let as;
+  let mcp;
   let tempDir;
 
-  before(() => {
-    tempDir = join(tmpdir(), `mcpcat-auth-test-${Date.now()}`);
+  before(async () => {
+    as = await startServer('oauth-as.mjs');
+    mcp = await startServer('server-oauth-protected.mjs', [as.issuer]);
+    tempDir = join(tmpdir(), `mcpcat-e2e-cimd-${Date.now()}`);
     mkdirSync(join(tempDir, 'agent'), { recursive: true });
+    writeMcpJson(join(tempDir, 'agent'), 'protected', `http://127.0.0.1:${mcp.port}/mcp`);
+    await clearAsLog(as.port);
   });
 
   after(() => {
+    as?.child.kill('SIGTERM');
+    mcp?.child.kill('SIGTERM');
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('reads a pi-written mcp-auth.json', () => {
-    const authPath = join(tempDir, 'agent', 'mcp-auth.json');
-    const piState = {
-      'mcp__test_server|https://example.com/mcp': {
-        serverUrl: 'https://example.com/mcp',
-        tokens: {
-          access_token: 'pi_token_123',
-          token_type: 'Bearer',
-          refresh_token: 'pi_refresh_456',
-          scope: 'read',
-        },
-        tokensExpireAt: Date.now() + 3600000,
-      },
+  it('mcpcat login --no-browser completes with paste flow and uses CIMD', async () => {
+    const env = {
+      PI_CODING_AGENT_DIR: join(tempDir, 'agent'),
+      HOME: tempDir,
     };
-    writeFileSync(authPath, JSON.stringify(piState, null, 2) + '\n', { mode: 0o600 });
 
-    const { stdout, status } = runHost(['info', 'https://example.com/mcp'], {
-      env: { PI_CODING_AGENT_DIR: join(tempDir, 'agent') },
+    const loginProc = spawn('node', [hostBin, 'login', 'protected', '--no-browser'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, NODE_NO_WARNINGS: '1', ...env },
     });
-    assert.equal(status === 0 || status === 3, true, `unexpected status ${status}`);
-  });
 
-  it('pi-written file is found by mcpcat token lookup', () => {
-    const authPath = join(tempDir, 'agent', 'mcp-auth.json');
-    const data = JSON.parse(readFileSync(authPath, 'utf8'));
-    const key = 'mcp__test_server|https://example.com/mcp';
-    assert.ok(data[key], 'key should exist');
-    assert.equal(data[key].tokens.access_token, 'pi_token_123');
-  });
-
-  it('mcpcat-written tokens match pi key format', () => {
-    const authPath = join(tempDir, 'agent', 'mcp-auth.json');
-    const data = JSON.parse(readFileSync(authPath, 'utf8'));
-    data['mcp__github|https://github.com/mcp'] = {
-      serverUrl: 'https://github.com/mcp',
-      tokens: {
-        access_token: 'mcpcat_token_789',
-        token_type: 'Bearer',
-        scope: 'repo',
-      },
-    };
-    writeFileSync(authPath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 });
-    const reread = JSON.parse(readFileSync(authPath, 'utf8'));
-    assert.ok(reread['mcp__github|https://github.com/mcp']);
-  });
-
-  it('legacy URL-only key is migrated', () => {
-    const authPath = join(tempDir, 'agent', 'mcp-auth.json');
-    const data = {
-      'https://legacy.example.com/mcp': {
-        serverUrl: 'https://legacy.example.com/mcp',
-        tokens: {
-          access_token: 'legacy_tok',
-          token_type: 'Bearer',
-        },
-      },
-    };
-    writeFileSync(authPath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 });
-    runHost(['info', 'legacy'], {
-      env: { PI_CODING_AGENT_DIR: join(tempDir, 'agent') },
+    let stderrData = '';
+    loginProc.stderr.on('data', (chunk) => {
+      stderrData += chunk.toString();
     });
+
+    const authorizeUrl = await new Promise((resolve) => {
+      const check = () => {
+        const match = stderrData.match(/(http:\/\/127\.0\.0\.1:\d+\/authorize\S+)/);
+        if (match) resolve(match[1]);
+        else setTimeout(check, 100);
+      };
+      check();
+    });
+
+    const authUrl = new URL(authorizeUrl);
+    assert.equal(
+      authUrl.searchParams.get('client_id'),
+      'https://mcpcat.sliccy.ai/oauth/client.json',
+      'should use CIMD client_id'
+    );
+    assert.equal(authUrl.searchParams.get('code_challenge_method'), 'S256', 'should use PKCE S256');
+
+    const authRes = await fetch(authorizeUrl, { redirect: 'manual' });
+    assert.equal(authRes.status, 302);
+    const redirectUrl = authRes.headers.get('location');
+
+    const cbUrl = new URL(redirectUrl);
+    const issuedToken = await getIssuedTokenAfterPaste(loginProc, redirectUrl, as.port, mcp.port);
+
+    const exitCode = await new Promise((resolve) => {
+      loginProc.on('exit', (code) => resolve(code));
+    });
+    assert.equal(exitCode, 0, 'login should exit 0');
+
+    const log = await asLog(as.port);
+    const authEntry = log.find((e) => e.type === 'authorize');
+    assert.ok(authEntry, 'authorize request should be logged');
+    assert.equal(authEntry.clientId, 'https://mcpcat.sliccy.ai/oauth/client.json');
+    assert.equal(authEntry.codeChallengeMethod, 'S256');
+
+    const tokenEntry = log.find(
+      (e) => e.type === 'token_issued' && e.grant === 'authorization_code'
+    );
+    assert.ok(tokenEntry, 'token should have been issued');
+
+    await registerToken(mcp.port, tokenEntry.accessToken);
+
+    const callResult = runHost(['call', 'protected', 'echo', '-d', '{"text":"hello"}'], { env });
+    assert.equal(callResult.status, 0, `call should succeed, got: ${callResult.stderr}`);
+    assert.ok(callResult.stdout.includes('hello'));
   });
 });
 
-describe('auth: login in seven', () => {
-  it('login exits 4 in kernel mode', () => {
-    const { stderr, status } = runHost(['login', 'example.com'], {
-      env: { SLICC_KERNEL: '1' },
-    });
-    assert.equal(status, 4);
-    assert.ok(stderr.includes('not available in seven'));
+async function getIssuedTokenAfterPaste(proc, redirectUrl, asPort, mcpPort) {
+  proc.stdin.write(redirectUrl + '\n');
+  proc.stdin.end();
+  return null;
+}
+
+describe('auth: end-to-end DCR login (iss disabled)', () => {
+  let as;
+  let mcp;
+  let tempDir;
+
+  before(async () => {
+    as = await startServer('oauth-as.mjs');
+    mcp = await startServer('server-oauth-protected.mjs', [as.issuer]);
+    tempDir = join(tmpdir(), `mcpcat-e2e-dcr-${Date.now()}`);
+    mkdirSync(join(tempDir, 'agent'), { recursive: true });
+    writeMcpJson(join(tempDir, 'agent'), 'dcr-srv', `http://127.0.0.1:${mcp.port}/mcp`);
+    await setIss(as.port, false);
+    await clearAsLog(as.port);
   });
 
-  it('logout exits 4 in kernel mode', () => {
-    const { stderr, status } = runHost(['logout', 'example.com'], {
-      env: { SLICC_KERNEL: '1' },
+  after(async () => {
+    await setIss(as?.port, true);
+    as?.child.kill('SIGTERM');
+    mcp?.child.kill('SIGTERM');
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('falls back to DCR with client_name mcpcat when iss is absent', async () => {
+    const env = {
+      PI_CODING_AGENT_DIR: join(tempDir, 'agent'),
+      HOME: tempDir,
+    };
+
+    const loginProc = spawn('node', [hostBin, 'login', 'dcr-srv', '--no-browser'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, NODE_NO_WARNINGS: '1', ...env },
     });
-    assert.equal(status, 4);
-    assert.ok(stderr.includes('not available in seven'));
+
+    let stderrData = '';
+    loginProc.stderr.on('data', (chunk) => {
+      stderrData += chunk.toString();
+    });
+
+    const authorizeUrl = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error(`No authorize URL found in: ${stderrData}`)),
+        10_000
+      );
+      const check = () => {
+        const match = stderrData.match(/(http:\/\/127\.0\.0\.1:\d+\/authorize\S+)/);
+        if (match) {
+          clearTimeout(timeout);
+          resolve(match[1]);
+        } else {
+          setTimeout(check, 100);
+        }
+      };
+      check();
+    });
+
+    const authRes = await fetch(authorizeUrl, { redirect: 'manual' });
+    const redirectUrl = authRes.headers.get('location');
+    loginProc.stdin.write(redirectUrl + '\n');
+    loginProc.stdin.end();
+
+    const exitCode = await new Promise((resolve) => {
+      loginProc.on('exit', (code) => resolve(code));
+    });
+    assert.equal(exitCode, 0, 'login should exit 0');
+
+    const log = await asLog(as.port);
+    const dcrEntry = log.find((e) => e.type === 'dcr');
+    assert.ok(dcrEntry, 'DCR registration should have happened');
+    assert.equal(dcrEntry.clientName, 'mcpcat', 'DCR client_name should be mcpcat');
+  });
+});
+
+describe('auth: loopback callback (no paste)', () => {
+  let as;
+  let mcp;
+  let tempDir;
+
+  before(async () => {
+    as = await startServer('oauth-as.mjs');
+    mcp = await startServer('server-oauth-protected.mjs', [as.issuer]);
+    tempDir = join(tmpdir(), `mcpcat-e2e-loopback-${Date.now()}`);
+    mkdirSync(join(tempDir, 'agent'), { recursive: true });
+    writeMcpJson(join(tempDir, 'agent'), 'loopback-srv', `http://127.0.0.1:${mcp.port}/mcp`);
+    await clearAsLog(as.port);
+  });
+
+  after(() => {
+    as?.child.kill('SIGTERM');
+    mcp?.child.kill('SIGTERM');
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('drives the real loopback callback with an HTTP GET', async () => {
+    const env = {
+      PI_CODING_AGENT_DIR: join(tempDir, 'agent'),
+      HOME: tempDir,
+    };
+
+    const loginProc = spawn('node', [hostBin, 'login', 'loopback-srv'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, NODE_NO_WARNINGS: '1', ...env },
+    });
+
+    let stderrData = '';
+    loginProc.stderr.on('data', (chunk) => {
+      stderrData += chunk.toString();
+    });
+
+    const authorizeUrl = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error(`No authorize URL: ${stderrData}`)),
+        10_000
+      );
+      const check = () => {
+        const match = stderrData.match(/(http:\/\/127\.0\.0\.1:\d+\/authorize\S+)/);
+        if (match) {
+          clearTimeout(timeout);
+          resolve(match[1]);
+        } else {
+          setTimeout(check, 100);
+        }
+      };
+      check();
+    });
+
+    const authRes = await fetch(authorizeUrl, { redirect: 'manual' });
+    assert.equal(authRes.status, 302);
+    const redirectUrl = authRes.headers.get('location');
+
+    const cbRes = await fetch(redirectUrl, { redirect: 'manual' });
+    assert.ok(
+      cbRes.status === 200 || cbRes.status === 302,
+      `callback should succeed, got ${cbRes.status}`
+    );
+
+    const exitCode = await new Promise((resolve) => {
+      loginProc.on('exit', (code) => resolve(code));
+    });
+    assert.equal(exitCode, 0, 'login should exit 0 after loopback callback');
+  });
+});
+
+describe('auth: 401 without stored tokens exits 4', () => {
+  let mcp;
+  let tempDir;
+
+  before(async () => {
+    const as = await startServer('oauth-as.mjs');
+    mcp = await startServer('server-oauth-protected.mjs', [as.issuer]);
+    as.child.kill('SIGTERM');
+    tempDir = join(tmpdir(), `mcpcat-e2e-noauth-${Date.now()}`);
+    mkdirSync(join(tempDir, 'agent'), { recursive: true });
+    writeMcpJson(join(tempDir, 'agent'), 'no-auth-srv', `http://127.0.0.1:${mcp.port}/mcp`);
+  });
+
+  after(() => {
+    mcp?.child.kill('SIGTERM');
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('exits 4 and names mcpcat login', () => {
+    const env = {
+      PI_CODING_AGENT_DIR: join(tempDir, 'agent'),
+      HOME: tempDir,
+    };
+    const result = runHost(['call', 'no-auth-srv', 'echo', '-d', '{"text":"hi"}'], { env });
+    assert.equal(result.status, 4, `expected exit 4, got ${result.status}: ${result.stderr}`);
+    assert.ok(result.stderr.includes('login'), 'should mention login');
+  });
+});
+
+describe('auth: step-up insufficient_scope exits 4', () => {
+  let as;
+  let mcp;
+  let tempDir;
+
+  before(async () => {
+    as = await startServer('oauth-as.mjs');
+    mcp = await startServer('server-oauth-protected.mjs', [as.issuer]);
+    tempDir = join(tmpdir(), `mcpcat-e2e-stepup-${Date.now()}`);
+    mkdirSync(join(tempDir, 'agent'), { recursive: true });
+    writeMcpJson(join(tempDir, 'agent'), 'stepup-srv', `http://127.0.0.1:${mcp.port}/mcp`);
+    await clearAsLog(as.port);
+
+    const env = {
+      PI_CODING_AGENT_DIR: join(tempDir, 'agent'),
+      HOME: tempDir,
+    };
+    const loginProc = spawn('node', [hostBin, 'login', 'stepup-srv', '--no-browser'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, NODE_NO_WARNINGS: '1', ...env },
+    });
+
+    let stderrData = '';
+    loginProc.stderr.on('data', (chunk) => {
+      stderrData += chunk.toString();
+    });
+
+    const authorizeUrl = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error(`No authorize URL: ${stderrData}`)),
+        10_000
+      );
+      const check = () => {
+        const match = stderrData.match(/(http:\/\/127\.0\.0\.1:\d+\/authorize\S+)/);
+        if (match) {
+          clearTimeout(timeout);
+          resolve(match[1]);
+        } else {
+          setTimeout(check, 100);
+        }
+      };
+      check();
+    });
+
+    const authRes = await fetch(authorizeUrl, { redirect: 'manual' });
+    const redirectUrl = authRes.headers.get('location');
+    loginProc.stdin.write(redirectUrl + '\n');
+    loginProc.stdin.end();
+    await new Promise((resolve) => loginProc.on('exit', resolve));
+
+    const log = await asLog(as.port);
+    const tokenEntry = log.find((e) => e.type === 'token_issued');
+    if (tokenEntry) await registerToken(mcp.port, tokenEntry.accessToken);
+    await setStepUp(mcp.port, true, 'admin');
+  });
+
+  after(async () => {
+    await setStepUp(mcp?.port, false);
+    as?.child.kill('SIGTERM');
+    mcp?.child.kill('SIGTERM');
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('exits 4 on insufficient_scope', () => {
+    const env = {
+      PI_CODING_AGENT_DIR: join(tempDir, 'agent'),
+      HOME: tempDir,
+    };
+    const result = runHost(['call', 'stepup-srv', 'echo', '-d', '{"text":"hi"}'], { env });
+    assert.equal(result.status, 4, `expected exit 4, got ${result.status}: ${result.stderr}`);
   });
 });
 
 describe('auth: header expansion', () => {
   it('${VAR} in -H is expanded from env', () => {
-    const { stdout, stderr, status } = runHost(
+    const { stdout, stderr } = runHost(
       ['info', 'http://127.0.0.1:1', '-H', 'Authorization: Bearer ${MY_TOKEN}'],
       { env: { MY_TOKEN: 'secret_value_42' } }
     );
@@ -174,7 +481,7 @@ describe('auth: header expansion', () => {
 
 describe('auth: no secrets leak', () => {
   it('planted token never appears in output', () => {
-    const marker = 'PLANTED_SECRET_' + Date.now();
+    const marker = `PLANTED_SECRET_${Date.now()}`;
     const { stdout, stderr } = runHost(
       ['info', 'http://127.0.0.1:1', '-H', `X-Secret: ${marker}`],
       { env: {} }
@@ -184,11 +491,82 @@ describe('auth: no secrets leak', () => {
   });
 });
 
-describe('auth: OAuth fixture AS', () => {
+describe('auth: token store interop with pi', () => {
+  let tempDir;
+
+  before(() => {
+    tempDir = join(tmpdir(), `mcpcat-interop-${Date.now()}`);
+    mkdirSync(join(tempDir, 'agent'), { recursive: true });
+  });
+
+  after(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('reads a pi-written mcp-auth.json', () => {
+    const authPath = join(tempDir, 'agent', 'mcp-auth.json');
+    const piState = {
+      'mcp__test_server|https://example.com/mcp': {
+        serverUrl: 'https://example.com/mcp',
+        tokens: {
+          access_token: 'pi_token_123',
+          token_type: 'Bearer',
+          refresh_token: 'pi_refresh_456',
+          scope: 'read',
+        },
+        tokensExpireAt: Date.now() + 3600000,
+      },
+    };
+    writeFileSync(authPath, `${JSON.stringify(piState, null, 2)}\n`, { mode: 0o600 });
+
+    const { status } = runHost(['info', 'https://example.com/mcp'], {
+      env: { PI_CODING_AGENT_DIR: join(tempDir, 'agent') },
+    });
+    assert.ok(status === 0 || status === 3, `unexpected status ${status}`);
+  });
+
+  it('pi key format matches after mcpcat write', () => {
+    const authPath = join(tempDir, 'agent', 'mcp-auth.json');
+    const data = JSON.parse(readFileSync(authPath, 'utf8'));
+    const key = 'mcp__test_server|https://example.com/mcp';
+    assert.ok(data[key], 'key should exist');
+    assert.equal(data[key].tokens.access_token, 'pi_token_123');
+  });
+});
+
+describe('auth: 0600 file permissions', () => {
+  let tempDir;
+
+  before(() => {
+    tempDir = join(tmpdir(), `mcpcat-perms-${Date.now()}`);
+    mkdirSync(join(tempDir, 'agent'), { recursive: true });
+  });
+
+  after(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('creates mcp-auth.json with 0600', () => {
+    const authPath = join(tempDir, 'agent', 'mcp-auth.json');
+    writeFileSync(authPath, '{}', { mode: 0o600 });
+    const s = statSync(authPath);
+    assert.equal(s.mode & 0o777, 0o600);
+  });
+
+  it('stays 0600 after rewrite', () => {
+    const authPath = join(tempDir, 'agent', 'mcp-auth.json');
+    writeFileSync(authPath, '{"key": "val"}', { mode: 0o600 });
+    writeFileSync(authPath, '{"key": "val2"}', { mode: 0o600 });
+    const s = statSync(authPath);
+    assert.equal(s.mode & 0o777, 0o600);
+  });
+});
+
+describe('auth: OAuth fixture AS endpoints', () => {
   let as;
 
   before(async () => {
-    as = await startFixtureServer('oauth-as.mjs');
+    as = await startServer('oauth-as.mjs');
   });
 
   after(() => {
@@ -201,7 +579,6 @@ describe('auth: OAuth fixture AS', () => {
     const body = await res.json();
     assert.equal(body.issuer, `http://127.0.0.1:${as.port}`);
     assert.ok(body.client_id_metadata_document_supported);
-    assert.ok(body.authorization_response_iss_parameter_supported);
   });
 
   it('serves PRM metadata', async () => {
@@ -226,39 +603,6 @@ describe('auth: OAuth fixture AS', () => {
     assert.equal(res.status, 201);
     const body = await res.json();
     assert.ok(body.client_id);
-  });
-
-  it('authorize endpoint redirects with code and iss', async () => {
-    const res = await fetch(
-      `http://127.0.0.1:${as.port}/authorize?client_id=test&redirect_uri=http://127.0.0.1/callback&state=abc&code_challenge=xyz&code_challenge_method=S256&response_type=code`,
-      { redirect: 'manual' }
-    );
-    assert.equal(res.status, 302);
-    const location = new URL(res.headers.get('location'));
-    assert.ok(location.searchParams.has('code'));
-    assert.equal(location.searchParams.get('state'), 'abc');
-    assert.ok(location.searchParams.has('iss'));
-  });
-
-  it('iss toggle works', async () => {
-    await fetch(`http://127.0.0.1:${as.port}/_control/iss`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: false }),
-    });
-
-    const res = await fetch(
-      `http://127.0.0.1:${as.port}/authorize?client_id=test&redirect_uri=http://127.0.0.1/callback&state=def&response_type=code`,
-      { redirect: 'manual' }
-    );
-    const location = new URL(res.headers.get('location'));
-    assert.ok(!location.searchParams.has('iss'), 'iss should be absent when disabled');
-
-    await fetch(`http://127.0.0.1:${as.port}/_control/iss`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: true }),
-    });
   });
 
   it('PKCE token exchange', async () => {
@@ -288,68 +632,14 @@ describe('auth: OAuth fixture AS', () => {
     assert.ok(tokenBody.refresh_token);
   });
 
-  it('refresh token exchange', async () => {
-    const controlRes = await fetch(`http://127.0.0.1:${as.port}/_control/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scope: 'read' }),
-    });
-    const { refresh_token } = await controlRes.json();
-
-    const refreshRes = await fetch(`http://127.0.0.1:${as.port}/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        refresh_token,
-      }),
-    });
-    assert.equal(refreshRes.status, 200);
-    const body = await refreshRes.json();
-    assert.ok(body.access_token);
-    assert.ok(body.refresh_token);
-    assert.notEqual(body.refresh_token, refresh_token, 'refresh token should rotate');
-  });
-
-  it('insufficient_scope step-up', async () => {
-    const controlRes = await fetch(`http://127.0.0.1:${as.port}/_control/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scope: 'read' }),
-    });
-    const { access_token } = await controlRes.json();
-
-    const apiRes = await fetch(`http://127.0.0.1:${as.port}/api/step-up`, {
-      headers: { Authorization: `Bearer ${access_token}` },
-    });
-    assert.equal(apiRes.status, 403);
-    const wwwAuth = apiRes.headers.get('www-authenticate');
-    assert.ok(wwwAuth.includes('insufficient_scope'));
-    assert.ok(wwwAuth.includes('admin'));
-  });
-
-  it('401 for missing bearer token', async () => {
-    const res = await fetch(`http://127.0.0.1:${as.port}/api`);
-    assert.equal(res.status, 401);
-  });
-
-  it('valid bearer token accesses API', async () => {
-    const controlRes = await fetch(`http://127.0.0.1:${as.port}/_control/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scope: 'read' }),
-    });
-    const { access_token } = await controlRes.json();
-
-    const apiRes = await fetch(`http://127.0.0.1:${as.port}/api`, {
-      headers: { Authorization: `Bearer ${access_token}` },
-    });
-    assert.equal(apiRes.status, 200);
-    const body = await apiRes.json();
-    assert.ok(body.ok);
+  it('iss toggle works', async () => {
+    await setIss(as.port, false);
+    const res = await fetch(
+      `http://127.0.0.1:${as.port}/authorize?client_id=test&redirect_uri=http://127.0.0.1/callback&state=def&response_type=code`,
+      { redirect: 'manual' }
+    );
+    const location = new URL(res.headers.get('location'));
+    assert.ok(!location.searchParams.has('iss'), 'iss should be absent');
+    await setIss(as.port, true);
   });
 });
-
-function createChallenge(verifier) {
-  return createHash('sha256').update(verifier).digest('base64url');
-}

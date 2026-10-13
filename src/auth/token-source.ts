@@ -32,5 +32,5 @@ export function urlOnlyKey(serverUrl: string): string {
 }
 
 export function isKernel(platform: Platform): boolean {
-  return !platform.openUrl && platform.env.SLICC_KERNEL !== undefined;
+  return platform.kind === 'kernel';
 }

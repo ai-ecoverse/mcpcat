@@ -167,7 +167,6 @@ describe('kernel: mcpcat', () => {
     assert.equal(status, 0);
     assert.ok(stdout.includes('mcpcat'));
     assert.ok(stdout.includes('Usage:'));
-    assert.ok(stdout.includes('not implemented yet'));
   });
 
   it('unknown command exits 2', async () => {
@@ -461,7 +460,6 @@ describe('kernel: stdio process group cleanup', () => {
     assert.ok(!alivePids.has(serverPid), `server pid ${serverPid} should be dead`);
   });
 });
-
 describe('kernel: discover', () => {
   let kernel;
   let server;
@@ -495,5 +493,36 @@ describe('kernel: discover', () => {
       stderr: 'pipe',
     });
     assert.equal(status, 0, 'should exit 0 even with unreachable URL');
+  });
+});
+
+describe('kernel: login/logout exits 4 in seven', () => {
+  let kernel;
+
+  before(async () => {
+    kernel = await createNodeKernel({});
+    await installMcpcat(kernel);
+  });
+
+  after(() => {
+    kernel?.terminate();
+  });
+
+  it('login exits 4 with pointer to agent sign-in', async () => {
+    const { status, stderr } = await kernel.run(['mcpcat', 'login', 'example.com'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.equal(status, 4);
+    assert.ok(stderr.includes('not available in seven'));
+  });
+
+  it('logout exits 4 in seven', async () => {
+    const { status, stderr } = await kernel.run(['mcpcat', 'logout', 'example.com'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.equal(status, 4);
+    assert.ok(stderr.includes('not available in seven'));
   });
 });

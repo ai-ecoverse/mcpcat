@@ -6,10 +6,12 @@ const ISSUER_BASE = 'http://127.0.0.1';
 let issuerPort;
 
 let sendIss = true;
+let cimdSupported = true;
 const tokens = new Map();
 const refreshTokens = new Map();
 const clients = new Map();
 const codes = new Map();
+const requestLog = [];
 
 const CIMD_URL = 'https://mcpcat.sliccy.ai/oauth/client.json';
 
@@ -27,7 +29,7 @@ function asMetadata() {
     grant_types_supported: ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none', 'client_secret_post'],
-    client_id_metadata_document_supported: true,
+    client_id_metadata_document_supported: cimdSupported,
     authorization_response_iss_parameter_supported: sendIss,
   };
 }
@@ -80,6 +82,11 @@ const server = createServer(async (req, res) => {
       token_endpoint_auth_method: body.token_endpoint_auth_method || 'none',
     };
     clients.set(clientId, info);
+    requestLog.push({
+      type: 'dcr',
+      clientName: body.client_name,
+      redirectUris: body.redirect_uris,
+    });
     res.statusCode = 201;
     res.end(JSON.stringify(info));
     return;
@@ -90,7 +97,17 @@ const server = createServer(async (req, res) => {
     const redirectUri = url.searchParams.get('redirect_uri');
     const state = url.searchParams.get('state');
     const codeChallenge = url.searchParams.get('code_challenge');
+    const codeChallengeMethod = url.searchParams.get('code_challenge_method');
     const scope = url.searchParams.get('scope');
+    const resource = url.searchParams.get('resource');
+
+    requestLog.push({
+      type: 'authorize',
+      clientId,
+      codeChallengeMethod,
+      scope,
+      resource,
+    });
 
     const code = randomToken().slice(0, 16);
     codes.set(code, {
@@ -139,6 +156,12 @@ const server = createServer(async (req, res) => {
       const refreshToken = `refresh_${randomToken()}`;
       tokens.set(accessToken, { scope: stored.scope, clientId: stored.clientId });
       refreshTokens.set(refreshToken, { scope: stored.scope, clientId: stored.clientId });
+      requestLog.push({
+        type: 'token_issued',
+        accessToken,
+        refreshToken,
+        grant: 'authorization_code',
+      });
 
       res.end(
         JSON.stringify({
@@ -166,6 +189,12 @@ const server = createServer(async (req, res) => {
       const newRefreshToken = `refresh_${randomToken()}`;
       tokens.set(accessToken, stored);
       refreshTokens.set(newRefreshToken, stored);
+      requestLog.push({
+        type: 'token_issued',
+        accessToken,
+        refreshToken: newRefreshToken,
+        grant: 'refresh_token',
+      });
 
       res.end(
         JSON.stringify({
@@ -237,6 +266,32 @@ const server = createServer(async (req, res) => {
     const body = JSON.parse(await readBody(req));
     sendIss = body.enabled !== false;
     res.end(JSON.stringify({ sendIss }));
+    return;
+  }
+
+  if (path === '/_control/cimd' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req));
+    cimdSupported = body.enabled !== false;
+    res.end(JSON.stringify({ cimdSupported }));
+    return;
+  }
+
+  if (path === '/_control/log' && req.method === 'GET') {
+    res.end(JSON.stringify(requestLog));
+    return;
+  }
+
+  if (path === '/_control/log' && req.method === 'DELETE') {
+    requestLog.length = 0;
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (path === '/_control/expire' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req));
+    if (body.token) tokens.delete(body.token);
+    else tokens.clear();
+    res.end(JSON.stringify({ ok: true }));
     return;
   }
 

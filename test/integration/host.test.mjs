@@ -44,7 +44,6 @@ describe('host: mcpcat', () => {
     assert.equal(status, 0);
     assert.ok(stdout.includes('mcpcat'));
     assert.ok(stdout.includes('Usage:'));
-    assert.ok(stdout.includes('not implemented yet'));
   });
 
   it('-h prints help text', () => {
