@@ -22,3 +22,34 @@ jobs:
       node-version: '24'
       chromium: false
     secrets: inherit
+
+  detect-tag:
+    needs: release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Find release tag
+        id: tag
+        run: |
+          git fetch --tags --force
+          TAG=$(git tag --points-at HEAD 'v*' | head -1)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if [ -n "$TAG" ]; then
+            echo "Detected release tag: $TAG"
+          else
+            echo "No release tag on HEAD"
+          fi
+
+  binaries:
+    needs: detect-tag
+    if: needs.detect-tag.outputs.tag != ''
+    uses: ./.github/workflows/binaries.yml
+    with:
+      tag: ${{ needs.detect-tag.outputs.tag }}
+    secrets: inherit

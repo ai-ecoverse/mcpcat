@@ -315,13 +315,20 @@ async function createSandbox(
   }
 
   const { CodemodeSandbox, loadQuickJSWasm } = await import('@earendil-works/pi-codemode');
-  const wasmPath = await resolveWasmPath(platform);
+  const getSeaDir = (globalThis as Record<string, unknown>).__mcpcat_get_sea_asset_dir as
+    | (() => string | undefined)
+    | undefined;
+  const seaDir = getSeaDir?.();
+  const wasmPath = seaDir ? `${seaDir}/quickjs.wasm` : await resolveWasmPath(platform);
+  const workerUrl = seaDir
+    ? new URL(`file://${seaDir}/codemode-worker.mjs`)
+    : new URL('./codemode-worker.mjs', import.meta.url);
   return new CodemodeSandbox({
     tools,
     globals,
     timeoutMs,
     wasm: loadQuickJSWasm(wasmPath),
-    workerUrl: new URL('./codemode-worker.mjs', import.meta.url),
+    workerUrl,
   });
 }
 

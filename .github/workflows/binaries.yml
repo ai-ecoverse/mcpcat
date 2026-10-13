@@ -1,0 +1,316 @@
+name: Binaries
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: '26'
+  NODE_FULL: '26.7.0'
+
+jobs:
+  sea-blob:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build SEA blob
+        env:
+          MCPCAT_SEA_VERSION: ${{ inputs.tag }}
+        run: |
+          VERSION="${MCPCAT_SEA_VERSION#v}"
+          MCPCAT_SEA_VERSION="$VERSION" node scripts/build-sea.mjs
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sea-blob
+          path: dist/sea/sea-prep.blob
+
+  build:
+    needs: sea-blob
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target_os: linux
+            target_arch: amd64
+            node_arch: x64
+            node_platform: linux
+          - os: ubuntu-latest
+            target_os: linux
+            target_arch: arm64
+            node_arch: arm64
+            node_platform: linux
+          - os: ubuntu-latest
+            target_os: linux
+            target_arch: amd64
+            node_arch: x64
+            node_platform: linux
+            musl: true
+          - os: ubuntu-latest
+            target_os: linux
+            target_arch: arm64
+            node_arch: arm64
+            node_platform: linux
+            musl: true
+          - os: macos-latest
+            target_os: darwin
+            target_arch: arm64
+            node_arch: arm64
+            node_platform: darwin
+          - os: macos-latest
+            target_os: darwin
+            target_arch: amd64
+            node_arch: x64
+            node_platform: darwin
+          - os: windows-latest
+            target_os: windows
+            target_arch: amd64
+            node_arch: x64
+            node_platform: win
+          - os: windows-latest
+            target_os: windows
+            target_arch: arm64
+            node_arch: arm64
+            node_platform: win
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
+        with:
+          name: sea-blob
+          path: dist/sea
+
+      - name: Set asset name
+        id: name
+        shell: bash
+        run: |
+          SUFFIX=""
+          if [ "${{ matrix.target_os }}" = "windows" ]; then SUFFIX=".exe"; fi
+          MUSL=""
+          if [ "${{ matrix.musl }}" = "true" ]; then MUSL="-musl"; fi
+          echo "asset=mcpcat-${{ matrix.target_os }}-${{ matrix.target_arch }}${MUSL}${SUFFIX}" >> "$GITHUB_OUTPUT"
+
+      - name: Download and verify Node binary
+        shell: bash
+        run: |
+          verify_checksum() {
+            local file="$1" sums="$2" archive="$3"
+            expected=$(grep "  ${archive}$" "$sums" | cut -d' ' -f1)
+            if [ -z "$expected" ]; then
+              echo "No checksum found for $archive" >&2; exit 1
+            fi
+            actual=$(sha256sum "$file" | cut -d' ' -f1)
+            if [ "$actual" != "$expected" ]; then
+              echo "Checksum mismatch for $archive" >&2
+              echo "  expected: $expected" >&2
+              echo "  actual:   $actual" >&2
+              exit 1
+            fi
+            echo "Verified $archive"
+          }
+
+          V="${{ env.NODE_FULL }}"
+          MUSL=""
+          if [ "${{ matrix.musl }}" = "true" ]; then MUSL="-musl"; fi
+
+          if [ "${{ matrix.target_os }}" = "windows" ]; then
+            ARCHIVE="node-v${V}-win-${{ matrix.node_arch }}.zip"
+            SUMS_URL="https://nodejs.org/dist/v${V}/SHASUMS256.txt"
+            curl -fsSL "$SUMS_URL" -o SHASUMS256.txt
+            curl -fsSL "https://nodejs.org/dist/v${V}/${ARCHIVE}" -o "$ARCHIVE"
+            verify_checksum "$ARCHIVE" SHASUMS256.txt "$ARCHIVE"
+            unzip -q "$ARCHIVE"
+            cp "node-v${V}-win-${{ matrix.node_arch }}/node.exe" "${{ steps.name.outputs.asset }}"
+          elif [ -n "$MUSL" ]; then
+            ARCHIVE="node-v${V}-linux-${{ matrix.node_arch }}-musl.tar.xz"
+            SUMS_URL="https://unofficial-builds.nodejs.org/download/release/v${V}/SHASUMS256.txt"
+            curl -fsSL "$SUMS_URL" -o SHASUMS256.txt
+            curl -fsSL "https://unofficial-builds.nodejs.org/download/release/v${V}/${ARCHIVE}" -o "$ARCHIVE"
+            verify_checksum "$ARCHIVE" SHASUMS256.txt "$ARCHIVE"
+            tar xf "$ARCHIVE"
+            cp "node-v${V}-linux-${{ matrix.node_arch }}-musl/bin/node" "${{ steps.name.outputs.asset }}"
+          else
+            PLAT="${{ matrix.target_os }}"
+            ARCHIVE="node-v${V}-${PLAT}-${{ matrix.node_arch }}.tar.xz"
+            SUMS_URL="https://nodejs.org/dist/v${V}/SHASUMS256.txt"
+            curl -fsSL "$SUMS_URL" -o SHASUMS256.txt
+            curl -fsSL "https://nodejs.org/dist/v${V}/${ARCHIVE}" -o "$ARCHIVE"
+            verify_checksum "$ARCHIVE" SHASUMS256.txt "$ARCHIVE"
+            tar xf "$ARCHIVE"
+            cp "node-v${V}-${PLAT}-${{ matrix.node_arch }}/bin/node" "${{ steps.name.outputs.asset }}"
+          fi
+
+      - name: Inject SEA blob
+        shell: bash
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ matrix.target_os }}" = "darwin" ]; then
+            EXTRA_ARGS="--macho-segment-name NODE_SEA"
+          fi
+          npx --yes postject "${{ steps.name.outputs.asset }}" NODE_SEA_BLOB dist/sea/sea-prep.blob \
+            --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2 \
+            $EXTRA_ARGS
+
+      - name: Ad-hoc sign (macOS)
+        if: matrix.target_os == 'darwin'
+        run: codesign --sign - "${{ steps.name.outputs.asset }}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.name.outputs.asset }}
+          path: ${{ steps.name.outputs.asset }}
+
+  test-binary:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: mcpcat-linux-amd64
+          - os: macos-latest
+            asset: mcpcat-darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
+        with:
+          name: ${{ matrix.asset }}
+
+      - name: Run integration tests against binary
+        run: |
+          chmod +x "${{ matrix.asset }}"
+          MCPCAT_BIN="$(pwd)/${{ matrix.asset }}" npm run test:integration
+
+  test-windows:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
+        with:
+          name: mcpcat-windows-amd64.exe
+
+      - name: Version check
+        run: .\mcpcat-windows-amd64.exe --version
+
+  test-installer:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: mcpcat-linux-amd64
+          - os: macos-latest
+            asset: mcpcat-darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
+        with:
+          name: ${{ matrix.asset }}
+          path: assets
+
+      - name: Build SHA256SUMS
+        run: cd assets && sha256sum * > SHA256SUMS
+
+      - name: Run installer test
+        run: sh test/integration/test-install.sh assets
+
+  test-installer-alpine:
+    needs: build
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
+        with:
+          name: mcpcat-linux-amd64-musl
+          path: assets
+
+      - name: Build SHA256SUMS
+        run: cd assets && sha256sum * > SHA256SUMS
+
+      - name: Install dependencies
+        run: apk add --no-cache python3
+
+      - name: Run installer test
+        run: sh test/integration/test-install.sh assets
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: shellcheck -s sh install.sh
+
+  attach:
+    needs: [build, test-binary, test-windows, test-installer, test-installer-alpine, shellcheck]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          for f in artifacts/mcpcat-*; do
+            [ -f "$f" ] && cp "$f" release/
+          done
+          cp install.sh release/
+          cd release && sha256sum mcpcat-* > SHA256SUMS
+
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ inputs.tag }}"
+          gh release upload "$TAG" release/* --clobber
+
+  mark-failed:
+    if: failure()
+    needs: [attach]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark release as prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ inputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --prerelease

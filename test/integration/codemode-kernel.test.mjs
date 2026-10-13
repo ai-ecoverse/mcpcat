@@ -11,7 +11,6 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const kernelBundle = join(root, 'dist/kernel/mcpcat.mjs');
 const wasmFile = join(root, 'dist/quickjs.wasm');
 const fixturesDir = join(root, 'test/integration/fixtures');
-const hostBin = join(root, 'dist/host/mcpcat.mjs');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
 const AGENT_DIR = '/etc/mcpcat-test';

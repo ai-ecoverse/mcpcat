@@ -2,10 +2,16 @@
 
 A curl for the Model Context Protocol. One command that talks to any MCP server from a shell, and turns any shell command into an MCP server.
 
+## Install
+
+```sh
+curl -fsSL https://github.com/ai-ecoverse/mcpcat/releases/latest/download/install.sh | sh
+```
+
+Or via npm:
+
 ```sh
 npm install -g @ai-ecoverse/mcpcat
-mcpcat --version
-mcpcat --help
 ```
 
 mcpcat runs natively on macOS, Linux and Windows (Node ≥ 24), and inside Sliccy Seven as a kernel program, with the same flags, the same output and the same config file in both places.

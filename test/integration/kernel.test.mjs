@@ -7,10 +7,10 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { attachKernel } from '@ai-ecoverse/slicc-kernel';
 import { createNodeKernel, nodeTransport } from '@ai-ecoverse/slicc-kernel/node';
+import { mcpcatArgs } from './helpers/bin.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const kernelBundle = join(root, 'dist/kernel/mcpcat.mjs');
-const hostBin = join(root, 'dist/host/mcpcat.mjs');
 const fixturesDir = join(root, 'test/integration/fixtures');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
@@ -179,7 +179,8 @@ describe('kernel: mcpcat', () => {
   });
 
   it('--version output matches host', async () => {
-    const hostOut = exec('node', [hostBin, '--version'], {
+    const { cmd, args } = mcpcatArgs(['--version']);
+    const hostOut = exec(cmd, args, {
       encoding: 'utf8',
       env: { ...process.env, NODE_NO_WARNINGS: '1' },
     }).trim();
@@ -193,7 +194,8 @@ describe('kernel: mcpcat', () => {
   });
 
   it('--help output matches host', async () => {
-    const hostOut = exec('node', [hostBin, '--help'], {
+    const { cmd: helpCmd, args: helpArgs } = mcpcatArgs(['--help']);
+    const hostOut = exec(helpCmd, helpArgs, {
       encoding: 'utf8',
       env: { ...process.env, NODE_NO_WARNINGS: '1' },
     }).trim();

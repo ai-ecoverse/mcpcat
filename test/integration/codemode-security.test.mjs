@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { mcpcatArgs } from './helpers/bin.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
-const hostBin = join(root, 'dist/host/mcpcat.mjs');
 const alphaServer = join(root, 'test/integration/fixtures/server-codemode-alpha.mjs');
 
 const tmpDir = join(tmpdir(), `mcpcat-sandbox-test-${Date.now()}`);
@@ -42,8 +42,9 @@ function runCode(script) {
     XDG_STATE_HOME: stateDir,
     HOME: tmpDir,
   };
+  const { cmd, args } = mcpcatArgs(['code', '--json', '-s', 'alpha', '-e', script]);
   try {
-    const result = execFileSync('node', [hostBin, 'code', '--json', '-s', 'alpha', '-e', script], {
+    const result = execFileSync(cmd, args, {
       encoding: 'utf8',
       timeout: 30_000,
       env,
