@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "myserver": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["server.js"],
+      "env": {
+        "API_KEY": "${input:apiKey}"
+      }
+    }
+  }
+}

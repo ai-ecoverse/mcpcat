@@ -3,8 +3,10 @@ import { connect } from '../client/connect.ts';
 import type { McpConnection } from '../client/connection.ts';
 import { InputRequiredError } from '../client/stateless-connection.ts';
 import { resolveTarget } from '../client/targets.ts';
-import { createConfigSource } from '../config/source.ts';
+import { MergedConfigSource } from '../config/index.ts';
+import type { McpServerConfig } from '../config/types.ts';
 import type { Platform } from '../platform/types.ts';
+import { runAdd, runEnable, runExposure, runImport, runList, runRm } from './config-verbs.ts';
 
 const VERBS = [
   'info',
@@ -35,6 +37,16 @@ const VERBS = [
   'help',
 ];
 
+const CONFIG_VERBS: Record<string, boolean> = {
+  add: true,
+  rm: true,
+  list: true,
+  enable: true,
+  disable: true,
+  exposure: true,
+  import: true,
+};
+
 const UNIMPLEMENTED_VERBS = new Set([
   'resources',
   'read',
@@ -43,13 +55,6 @@ const UNIMPLEMENTED_VERBS = new Set([
   'grep',
   'complete',
   'task',
-  'add',
-  'rm',
-  'list',
-  'enable',
-  'disable',
-  'exposure',
-  'import',
   'login',
   'logout',
   'serve',
@@ -73,12 +78,12 @@ Client verbs:
   describe <target> [tool]   Tool schema and help
 
 Configuration verbs:
-  add <name> <url>           Add a server to mcp.json (not implemented yet)
-  rm <name>                  Remove a server (not implemented yet)
-  list                       List configured servers (not implemented yet)
-  enable|disable <name>      Toggle a server (not implemented yet)
-  exposure <name> <mode>     Set exposure mode (not implemented yet)
-  import <file>              Import from other configs (not implemented yet)
+  add <name> <url>           Add a server to mcp.json
+  rm <name>                  Remove a server
+  list                       List configured servers
+  enable|disable <name>      Toggle a server
+  exposure <name> <mode>     Set exposure mode
+  import <file>              Import from other configs
   login <target>             OAuth sign-in (not implemented yet)
   logout <target>            Remove tokens (not implemented yet)
 
@@ -385,6 +390,64 @@ async function runVerb(
   }
 }
 
+async function probeServer(
+  _name: string,
+  config: McpServerConfig,
+  platform: Platform
+): Promise<string | undefined> {
+  try {
+    const opts: Record<string, unknown> = { version: 'probe' };
+    if ('url' in config && config.url) {
+      opts.url = config.url;
+      if ('headers' in config) opts.headers = config.headers;
+    } else if ('command' in config && config.command) {
+      opts.command = config.command;
+      if ('args' in config) opts.args = config.args;
+      if ('env' in config) opts.env = config.env;
+      if ('cwd' in config) opts.cwd = config.cwd;
+    } else {
+      return undefined;
+    }
+    const conn = await connect(platform, opts as Parameters<typeof connect>[1]);
+    try {
+      await conn.info();
+    } finally {
+      try {
+        await conn.close();
+      } catch {}
+    }
+    return undefined;
+  } catch (err) {
+    return (err as Error).message;
+  }
+}
+
+async function dispatchConfigVerb(
+  platform: Platform,
+  verb: string,
+  args: string[]
+): Promise<number> {
+  const rest = args.slice(1);
+  switch (verb) {
+    case 'add':
+      return runAdd(platform, rest, probeServer);
+    case 'rm':
+      return runRm(platform, rest);
+    case 'list':
+      return runList(platform, rest);
+    case 'enable':
+      return runEnable(platform, rest, true);
+    case 'disable':
+      return runEnable(platform, rest, false);
+    case 'exposure':
+      return runExposure(platform, rest);
+    case 'import':
+      return runImport(platform, rest);
+    default:
+      return 1;
+  }
+}
+
 export async function run(platform: Platform, version: string, args: string[]): Promise<number> {
   if (args.includes('--version') || args.includes('-V')) {
     await platform.write(1, `${version}\n`);
@@ -408,6 +471,10 @@ export async function run(platform: Platform, version: string, args: string[]): 
     return 2;
   }
 
+  if (parsed.verb in CONFIG_VERBS) {
+    return dispatchConfigVerb(platform, parsed.verb, args);
+  }
+
   if (UNIMPLEMENTED_VERBS.has(parsed.verb)) {
     await platform.write(2, `mcpcat: '${parsed.verb}' is not implemented yet\n`);
     return 1;
@@ -428,7 +495,7 @@ export async function run(platform: Platform, version: string, args: string[]): 
     return 2;
   }
 
-  const config = createConfigSource(platform);
+  const config = await MergedConfigSource.load(platform);
   let resolved;
   try {
     resolved = await resolveTarget(
