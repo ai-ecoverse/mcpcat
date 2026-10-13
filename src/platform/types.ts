@@ -33,7 +33,7 @@ export interface Listener {
 
 export interface FsApi {
   readFile(path: string): Promise<Uint8Array>;
-  writeFile(path: string, data: Uint8Array | string): Promise<void>;
+  writeFile(path: string, data: Uint8Array | string, options?: { mode?: number }): Promise<void>;
   mkdir(path: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
   stat(path: string): Promise<{ size: number; mtimeMs: number }>;

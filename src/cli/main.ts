@@ -1,5 +1,6 @@
 import type { Tool } from '@earendil-works/pi-mcp';
 import { coerceArgsBySchema, mergeArgs } from '../args/coerce.ts';
+import { AuthStepUpError, createMcpAuthProvider } from '../auth/auth-provider.ts';
 import { connect } from '../client/connect.ts';
 import type { McpConnection } from '../client/connection.ts';
 import {
@@ -12,7 +13,7 @@ import { runDescribeTs, runGrep } from '../codemode/describe.ts';
 import { runCode } from '../codemode/run.ts';
 import { expandPlaceholders } from '../config/expand.ts';
 import { MergedConfigSource } from '../config/index.ts';
-import type { McpServerConfig } from '../config/types.ts';
+import type { McpOAuthConfig, McpServerConfig } from '../config/types.ts';
 import { runAddCandidate, runDiscover, runFromDiscovery, runInbox } from '../discovery/verbs.ts';
 import type { Platform } from '../platform/types.ts';
 import {
@@ -22,6 +23,7 @@ import {
   renderToolsJson,
 } from '../render/result.ts';
 import { parseServeFlags, runServe } from '../serve/runtime.ts';
+import { createTokenSource, runLogin, runLogout } from './auth-verbs.ts';
 import {
   runAdd,
   runBridge,
@@ -84,16 +86,7 @@ const CONFIG_VERBS: Record<string, boolean> = {
   import: true,
 };
 
-const UNIMPLEMENTED_VERBS = new Set([
-  'resources',
-  'read',
-  'prompts',
-  'prompt',
-  'complete',
-  'task',
-  'login',
-  'logout',
-]);
+const UNIMPLEMENTED_VERBS = new Set(['resources', 'read', 'prompts', 'prompt', 'complete', 'task']);
 
 const CLIENT_VERBS = new Set(['info', 'tools', 'call', 'describe', 'serve']);
 
@@ -119,8 +112,8 @@ Configuration verbs:
   enable|disable <name>      Toggle a server
   exposure <name> <mode>     Set exposure mode
   import <file>              Import from other configs
-  login <target>             OAuth sign-in (not implemented yet)
-  logout <target>            Remove tokens (not implemented yet)
+  login <target>             OAuth sign-in
+  logout <target>            Remove stored tokens
 
 Server and code verbs:
   serve [--stdio|--http] …   Expose commands or proxy upstream as MCP server
@@ -826,7 +819,6 @@ async function dispatchMultiTarget(
   return 2;
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: top-level dispatch over many verb kinds
 export async function run(platform: Platform, version: string, args: string[]): Promise<number> {
   if (args.includes('--version') || args.includes('-V')) {
     await platform.write(1, `${version}\n`);
@@ -858,6 +850,16 @@ export async function run(platform: Platform, version: string, args: string[]): 
 
   const discResult = await dispatchDiscoveryVerb(platform, parsed, args);
   if (discResult !== undefined) return discResult;
+
+  if (parsed.verb === 'login') {
+    const source = createTokenSource(platform);
+    return runLogin(platform, args.slice(1), source);
+  }
+
+  if (parsed.verb === 'logout') {
+    const source = createTokenSource(platform);
+    return runLogout(platform, args.slice(1), source);
+  }
 
   if (UNIMPLEMENTED_VERBS.has(parsed.verb)) {
     await platform.write(2, `mcpcat: '${parsed.verb}' is not implemented yet\n`);
@@ -918,6 +920,20 @@ function classifyError(err: unknown): { code: number; kind: string; msg: string 
   if (err instanceof McpAuthError) {
     return { code: EXIT_AUTH, kind: 'auth', msg: err.message };
   }
+  if (err instanceof AuthStepUpError) {
+    const scopeHint = err.scope ? ` --scope ${err.scope}` : '';
+    return {
+      code: EXIT_AUTH,
+      kind: 'auth',
+      msg: `insufficient scope. Run: mcpcat login ${err.target ?? '<target>'}${scopeHint}`,
+    };
+  }
+  if (
+    (err as Error).name === 'McpOAuthAuthorizationRequiredError' ||
+    (err as Error).name === 'McpAuthRequiredError'
+  ) {
+    return { code: EXIT_AUTH, kind: 'auth', msg: (err as Error).message };
+  }
   if (err instanceof McpcatError) {
     return { code: err.exitCode, kind: 'error', msg: err.message };
   }
@@ -932,6 +948,22 @@ function classifyError(err: unknown): { code: number; kind: string; msg: string 
     return { code: EXIT_TIMEOUT, kind: 'timeout', msg };
   }
   return { code: EXIT_RPC_ERROR, kind: 'rpc_error', msg };
+}
+
+function resolveAuthProvider(
+  platform: Platform,
+  hasAuthHeader: boolean,
+  url: string | undefined,
+  target: string,
+  config: MergedConfigSource
+): ReturnType<typeof createMcpAuthProvider> | undefined {
+  if (hasAuthHeader || !url) return undefined;
+  const source = createTokenSource(platform);
+  const entry = config.entry(target);
+  const oauth =
+    entry && 'url' in entry.config ? (entry.config as { oauth?: McpOAuthConfig }).oauth : undefined;
+  const name = entry ? target : `url:${new URL(url).origin}${new URL(url).pathname}`;
+  return createMcpAuthProvider({ name, serverUrl: url, source, oauth, platform });
 }
 
 async function runClientVerb(
@@ -969,6 +1001,9 @@ async function runClientVerb(
     return EXIT_USAGE;
   }
 
+  const hasAuthHeader = 'Authorization' in expanded;
+  const authProvider = resolveAuthProvider(platform, hasAuthHeader, resolved.url, target, config);
+
   let conn: McpConnection;
   try {
     conn = await connect(platform, {
@@ -979,10 +1014,24 @@ async function runClientVerb(
       timeoutMs,
       signal: sigintController.signal,
       verbose,
+      authProvider,
     });
   } catch (err) {
-    if (err instanceof McpAuthError) {
-      await writeErr(platform, parsed.jsonOutput, 'auth', err.message);
+    if (err instanceof McpAuthError || err instanceof AuthStepUpError) {
+      const e = classifyError(err);
+      await writeErr(platform, parsed.jsonOutput, e.kind, e.msg);
+      return EXIT_AUTH;
+    }
+    if (
+      (err as Error).name === 'McpOAuthAuthorizationRequiredError' ||
+      (err as Error).name === 'McpAuthRequiredError'
+    ) {
+      await writeErr(
+        platform,
+        parsed.jsonOutput,
+        'auth',
+        `unauthorized. Run: mcpcat login ${target}`
+      );
       return EXIT_AUTH;
     }
     const msg = transportHint(err) ?? `connection failed: ${(err as Error).message}`;

@@ -83,3 +83,12 @@ export class Worker {
 }
 export const workerData = null;
 export const parentPort = null;
+export function createServer() {
+  throw new Error('not available in kernel');
+}
+export function createHash() {
+  throw new Error('not available in kernel');
+}
+export function randomBytes() {
+  throw new Error('not available in kernel');
+}

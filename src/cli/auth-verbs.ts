@@ -1,0 +1,183 @@
+import { SignInCancelledError, signIn } from '../auth/oauth.ts';
+import { PiFileTokenSource } from '../auth/pi-store.ts';
+import type { TokenSource } from '../auth/token-source.ts';
+import { isKernel } from '../auth/token-source.ts';
+import { MergedConfigSource } from '../config/index.ts';
+import type { McpOAuthConfig } from '../config/types.ts';
+import type { Platform } from '../platform/types.ts';
+
+export function createTokenSource(platform: Platform): TokenSource {
+  return new PiFileTokenSource(platform);
+}
+
+function resolveServerName(target: string): { name: string; isUrl: boolean } {
+  try {
+    const u = new URL(target.startsWith('http') ? target : `https://${target}`);
+    if (target.includes('.') || target.includes(':')) {
+      return { name: `url:${u.origin}${u.pathname}`, isUrl: true };
+    }
+  } catch {}
+  return { name: target, isUrl: false };
+}
+
+async function resolveLoginTarget(
+  platform: Platform,
+  target: string
+): Promise<{
+  name: string;
+  serverUrl: string;
+  oauth: McpOAuthConfig | undefined;
+}> {
+  const config = await MergedConfigSource.load(platform);
+  const entry = config.entry(target);
+  if (entry && 'url' in entry.config && entry.config.url) {
+    const httpConfig = entry.config as { url: string; oauth?: McpOAuthConfig };
+    return {
+      name: target,
+      serverUrl: httpConfig.url,
+      oauth: httpConfig.oauth,
+    };
+  }
+
+  const resolved = resolveServerName(target);
+  if (resolved.isUrl) {
+    const url = target.startsWith('http') ? target : `https://${target}`;
+    return { name: resolved.name, serverUrl: url, oauth: undefined };
+  }
+
+  throw new Error(`unknown target '${target}': not a URL and not found in mcp.json`);
+}
+
+export async function runLogin(
+  platform: Platform,
+  args: string[],
+  source: TokenSource
+): Promise<number> {
+  if (isKernel(platform)) {
+    await platform.write(
+      2,
+      "mcpcat: login is not available in seven. Use the agent's MCP sign-in in Settings, or run mcpcat login on the host.\n"
+    );
+    return 4;
+  }
+
+  const noBrowser = args.includes('--no-browser');
+  const positional = args.filter((a) => !a.startsWith('-'));
+
+  if (positional.length === 0) {
+    await platform.write(2, 'mcpcat: login requires a target\n');
+    return 2;
+  }
+
+  const target = positional[0];
+  let resolved;
+  try {
+    resolved = await resolveLoginTarget(platform, target);
+  } catch (err) {
+    await platform.write(2, `mcpcat: ${(err as Error).message}\n`);
+    return 2;
+  }
+
+  try {
+    await signIn({
+      name: resolved.name,
+      serverUrl: resolved.serverUrl,
+      source,
+      oauth: resolved.oauth,
+      platform,
+      prompt: {
+        showAuthorizationUrl(url: URL) {
+          if (!noBrowser && platform.openUrl) {
+            platform.openUrl(url.href).catch(() => {});
+          }
+          void platform.write(2, `Open this URL to sign in:\n${url.href}\n`);
+          if (noBrowser || !platform.openUrl) {
+            void platform.write(2, '\nPaste the redirect URL from your browser address bar:\n');
+          }
+        },
+        async promptForRedirectUrl(signal: AbortSignal): Promise<string | undefined> {
+          if (!noBrowser && platform.openUrl) {
+            return new Promise((_resolve, reject) => {
+              signal.addEventListener('abort', () => reject(new SignInCancelledError()));
+            });
+          }
+          const reader = platform.stdin.getReader();
+          const chunks: Uint8Array[] = [];
+          try {
+            while (true) {
+              const read = reader.read();
+              const result = await Promise.race([
+                read,
+                new Promise<never>((_, reject) => {
+                  signal.addEventListener('abort', () => reject(new SignInCancelledError()));
+                }),
+              ]);
+              if (result.done) break;
+              chunks.push(result.value);
+              const text = new TextDecoder().decode(concatUint8Arrays(chunks));
+              if (text.includes('\n')) return text.trim();
+            }
+          } finally {
+            reader.releaseLock();
+          }
+          return new TextDecoder().decode(concatUint8Arrays(chunks)).trim() || undefined;
+        },
+      },
+    });
+
+    await platform.write(1, `Signed in to ${target}\n`);
+    return 0;
+  } catch (err) {
+    if (err instanceof SignInCancelledError) {
+      await platform.write(2, 'mcpcat: sign-in cancelled\n');
+      return 1;
+    }
+    await platform.write(2, `mcpcat: login failed: ${(err as Error).message}\n`);
+    return 4;
+  }
+}
+
+export async function runLogout(
+  platform: Platform,
+  args: string[],
+  source: TokenSource
+): Promise<number> {
+  if (isKernel(platform)) {
+    await platform.write(2, 'mcpcat: logout is not available in seven.\n');
+    return 4;
+  }
+
+  const positional = args.filter((a) => !a.startsWith('-'));
+  if (positional.length === 0) {
+    await platform.write(2, 'mcpcat: logout requires a target\n');
+    return 2;
+  }
+
+  const target = positional[0];
+  let resolved;
+  try {
+    resolved = await resolveLoginTarget(platform, target);
+  } catch (err) {
+    await platform.write(2, `mcpcat: ${(err as Error).message}\n`);
+    return 2;
+  }
+
+  const removed = await source.remove(resolved.name, resolved.serverUrl);
+  if (removed) {
+    await platform.write(1, `Signed out of ${target}\n`);
+  } else {
+    await platform.write(1, `No credentials stored for ${target}\n`);
+  }
+  return 0;
+}
+
+function concatUint8Arrays(arrays: Uint8Array[]): Uint8Array {
+  const total = arrays.reduce((s, a) => s + a.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const a of arrays) {
+    result.set(a, offset);
+    offset += a.length;
+  }
+  return result;
+}

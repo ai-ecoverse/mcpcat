@@ -73,8 +73,12 @@ const hostFs: FsApi = {
   async readFile(path: string): Promise<Uint8Array> {
     return new Uint8Array(await readFile(path));
   },
-  async writeFile(path: string, data: Uint8Array | string): Promise<void> {
-    await writeFile(path, data);
+  async writeFile(
+    path: string,
+    data: Uint8Array | string,
+    options?: { mode?: number }
+  ): Promise<void> {
+    await writeFile(path, data, options?.mode !== undefined ? { mode: options.mode } : undefined);
   },
   async mkdir(path: string): Promise<void> {
     await mkdir(path, { recursive: true });
