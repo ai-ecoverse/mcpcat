@@ -1,4 +1,12 @@
-import type { FsApi, Platform, SpawnOptions, SpawnResult } from './types.ts';
+import type {
+  Connection,
+  FsApi,
+  Listener,
+  ListenOptions,
+  Platform,
+  SpawnOptions,
+  SpawnResult,
+} from './types.ts';
 
 interface KernelContext {
   argv: string[];
@@ -113,11 +121,49 @@ async function kernelSpawn(ctx: KernelContext, options: SpawnOptions): Promise<S
   };
 }
 
+async function kernelListen(ctx: KernelContext, options: ListenOptions): Promise<Listener> {
+  const raw = await ctx.net.listen({ port: options.port, host: options.host });
+  let closed = false;
+
+  async function accept(): Promise<Connection> {
+    const conn = await raw.accept();
+    return {
+      readable: conn.readable,
+      writable: conn.writable,
+      remoteAddress: conn.remote.host,
+      close() {
+        conn.close();
+      },
+    };
+  }
+
+  return {
+    get port() {
+      return raw.port;
+    },
+    accept,
+    close() {
+      closed = true;
+      raw.close();
+    },
+    async *[Symbol.asyncIterator](): AsyncIterableIterator<Connection> {
+      while (!closed) {
+        try {
+          yield await accept();
+        } catch {
+          break;
+        }
+      }
+    },
+  };
+}
+
 export function createKernelPlatform(ctx: KernelContext): Platform {
   const encoder = new TextEncoder();
   return {
     fetch: ctx.fetch,
     spawn: (options: SpawnOptions) => kernelSpawn(ctx, options),
+    listen: (options: ListenOptions) => kernelListen(ctx, options),
     fs: kernelFs(ctx),
     env: ctx.env,
     cwd: ctx.cwd,
@@ -130,6 +176,9 @@ export function createKernelPlatform(ctx: KernelContext): Platform {
     },
     exit(code: number): never {
       ctx.exit(code);
+    },
+    onSignal(signal: 'SIGINT' | 'SIGTERM', handler: () => void) {
+      ctx.signals.on(signal, handler);
     },
   };
 }

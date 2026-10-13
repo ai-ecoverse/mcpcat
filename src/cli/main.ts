@@ -6,6 +6,7 @@ import { resolveTarget } from '../client/targets.ts';
 import { MergedConfigSource } from '../config/index.ts';
 import type { McpServerConfig } from '../config/types.ts';
 import type { Platform } from '../platform/types.ts';
+import { parseServeFlags, runServe } from '../serve/runtime.ts';
 import { runAdd, runEnable, runExposure, runImport, runList, runRm } from './config-verbs.ts';
 
 const VERBS = [
@@ -57,13 +58,12 @@ const UNIMPLEMENTED_VERBS = new Set([
   'task',
   'login',
   'logout',
-  'serve',
   'code',
   'discover',
   'inbox',
 ]);
 
-const CLIENT_VERBS = new Set(['info', 'tools', 'call', 'describe']);
+const CLIENT_VERBS = new Set(['info', 'tools', 'call', 'describe', 'serve']);
 
 function helpText(version: string): string {
   return `mcpcat ${version} – a curl for the Model Context Protocol
@@ -88,7 +88,7 @@ Configuration verbs:
   logout <target>            Remove tokens (not implemented yet)
 
 Server and code verbs:
-  serve [--stdio|--http] …   Expose commands as MCP server (not implemented yet)
+  serve [--stdio|--http] …   Expose commands as MCP server
   code [-e src|file.js]      Run a codemode script (not implemented yet)
   discover <url>             Find MCP servers (not implemented yet)
   inbox                      Discovery inbox (not implemented yet)
@@ -478,6 +478,16 @@ export async function run(platform: Platform, version: string, args: string[]): 
   if (UNIMPLEMENTED_VERBS.has(parsed.verb)) {
     await platform.write(2, `mcpcat: '${parsed.verb}' is not implemented yet\n`);
     return 1;
+  }
+
+  if (parsed.verb === 'serve') {
+    const serveArgs = args.slice(args.indexOf('serve') + 1);
+    const serveOptions = parseServeFlags(serveArgs);
+    if (serveOptions.commands.length === 0 && serveOptions.toolTemplates.length === 0) {
+      await platform.write(2, 'mcpcat serve: no commands or --tool templates given\n');
+      return 2;
+    }
+    return runServe(platform, serveOptions, version);
   }
 
   if (!CLIENT_VERBS.has(parsed.verb)) {
