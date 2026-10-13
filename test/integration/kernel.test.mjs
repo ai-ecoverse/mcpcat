@@ -75,7 +75,7 @@ describe('kernel: mcpcat', () => {
       stderr: 'pipe',
     });
     assert.equal(status, 2);
-    assert.ok(stderr.includes("unknown command 'bogus'"));
+    assert.ok(stderr.includes('unknown target'));
   });
 
   it('--version output matches host', async () => {

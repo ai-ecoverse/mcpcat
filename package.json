@@ -60,10 +60,11 @@
     "@ai-ecoverse/slicc-kernel": "1.71.1",
     "@ai-ecoverse/slicc-shared-web": "1.13.1",
     "@biomejs/biome": "2.5.15",
+    "@earendil-works/pi-mcp": "1.2.0",
+    "@types/node": "26.6.5",
     "esbuild": "0.28.2",
     "monocart-coverage-reports": "2.13.1",
     "semantic-release": "25.0.9",
-    "typescript": "7.0.2",
-    "@types/node": "26.6.5"
+    "typescript": "7.0.2"
   }
 }

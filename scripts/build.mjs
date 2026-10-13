@@ -16,6 +16,10 @@ const define = {
   MCPCAT_VERSION: JSON.stringify(pkg.version),
 };
 
+const hostBanner = `#!/usr/bin/env node
+import { createRequire as __mcpcat_createRequire } from 'node:module';
+const require = __mcpcat_createRequire(import.meta.url);`;
+
 await esbuild.build({
   entryPoints: [join(root, 'src/host.ts')],
   outfile: join(dist, 'host/mcpcat.mjs'),
@@ -23,7 +27,7 @@ await esbuild.build({
   format: 'esm',
   platform: 'node',
   target: ['node24'],
-  banner: { js: '#!/usr/bin/env node' },
+  banner: { js: hostBanner },
   define,
   logLevel: 'info',
 });
@@ -48,6 +52,12 @@ await esbuild.build({
     'node:tty': join(root, 'src/stubs/node-stub.ts'),
     'node:path': join(root, 'src/stubs/node-stub.ts'),
     'node:url': join(root, 'src/stubs/node-stub.ts'),
+    'node:net': join(root, 'src/stubs/node-stub.ts'),
+    'node:os': join(root, 'src/stubs/node-stub.ts'),
+    'node:events': join(root, 'src/stubs/node-stub.ts'),
+    'node:util': join(root, 'src/stubs/node-stub.ts'),
+    'node:process': join(root, 'src/stubs/node-stub.ts'),
+    'cross-spawn': join(root, 'src/stubs/node-stub.ts'),
   },
 });
 
