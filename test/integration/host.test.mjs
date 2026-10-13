@@ -4,14 +4,15 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { mcpcatArgs } from './helpers/bin.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
-const hostBin = join(root, 'dist/host/mcpcat.mjs');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
 function runHost(args) {
+  const { cmd, args: cmdArgs } = mcpcatArgs(args);
   try {
-    const result = execFileSync('node', [hostBin, ...args], {
+    const result = execFileSync(cmd, cmdArgs, {
       encoding: 'utf8',
       timeout: 10_000,
       env: { ...process.env, NODE_NO_WARNINGS: '1' },

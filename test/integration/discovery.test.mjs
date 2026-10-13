@@ -7,9 +7,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { mcpcatArgs } from './helpers/bin.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
-const hostBin = join(root, 'dist/host/mcpcat.mjs');
 const fixturesDir = join(root, 'test/integration/fixtures');
 
 function createTmpDir() {
@@ -19,8 +19,9 @@ function createTmpDir() {
 }
 
 function runMcpcat(args, options = {}) {
+  const { cmd, args: cmdArgs } = mcpcatArgs(args);
   try {
-    const result = execFileSync('node', [hostBin, ...args], {
+    const result = execFileSync(cmd, cmdArgs, {
       encoding: 'utf8',
       timeout: 10_000,
       env: {
@@ -57,9 +58,10 @@ function runMcpcatAsync(args, options = {}) {
       XDG_STATE_HOME: options.stateHome,
       PI_CODING_AGENT_DIR: options.piDir,
     };
+    const { cmd: asyncCmd, args: asyncArgs } = mcpcatArgs(args);
     execFile(
-      'node',
-      [hostBin, ...args],
+      asyncCmd,
+      asyncArgs,
       {
         encoding: 'utf8',
         timeout: 10_000,

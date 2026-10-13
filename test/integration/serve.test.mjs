@@ -5,16 +5,17 @@ import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { mcpcatArgs } from './helpers/bin.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
-const hostBin = join(root, 'dist/host/mcpcat.mjs');
 const fixturesDir = join(root, 'test/integration/fixtures');
 const fixtureCli = join(fixturesDir, 'serve-cli.mjs');
 const slowCli = join(fixturesDir, 'serve-slow-cli.mjs');
 
 function runHost(args, opts = {}) {
+  const { cmd, args: cmdArgs } = mcpcatArgs(args);
   try {
-    const result = execFileSync('node', [hostBin, ...args], {
+    const result = execFileSync(cmd, cmdArgs, {
       encoding: 'utf8',
       timeout: 15_000,
       env: { ...process.env, NODE_NO_WARNINGS: '1', ...opts.env },
@@ -31,14 +32,11 @@ function runHost(args, opts = {}) {
 }
 
 async function startServeHttp(extraArgs = [], extraEnv = {}) {
-  const child = spawn(
-    'node',
-    [hostBin, 'serve', '--http', '0', `node=${fixtureCli}`, ...extraArgs],
-    {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, NODE_NO_WARNINGS: '1', ...extraEnv },
-    }
-  );
+  const { cmd, args } = mcpcatArgs(['serve', '--http', '0', `node=${fixtureCli}`, ...extraArgs]);
+  const child = spawn(cmd, args, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, NODE_NO_WARNINGS: '1', ...extraEnv },
+  });
 
   const port = await new Promise((resolve, reject) => {
     let data = '';
@@ -57,7 +55,8 @@ async function startServeHttp(extraArgs = [], extraEnv = {}) {
 }
 
 async function startServeStdio(extraArgs = []) {
-  const child = spawn('node', [hostBin, 'serve', '--stdio', `node=${fixtureCli}`, ...extraArgs], {
+  const { cmd, args } = mcpcatArgs(['serve', '--stdio', `node=${fixtureCli}`, ...extraArgs]);
+  const child = spawn(cmd, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, NODE_NO_WARNINGS: '1' },
   });
@@ -448,7 +447,14 @@ describe('serve: --tool templates', () => {
 
 describe('serve: --json prints listening URL', () => {
   it('outputs JSON with url on stdout', async () => {
-    const child = spawn('node', [hostBin, 'serve', '--http', '0', '--json', `node=${fixtureCli}`], {
+    const { cmd: jsonCmd, args: jsonArgs } = mcpcatArgs([
+      'serve',
+      '--http',
+      '0',
+      '--json',
+      `node=${fixtureCli}`,
+    ]);
+    const child = spawn(jsonCmd, jsonArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, NODE_NO_WARNINGS: '1' },
     });
@@ -512,7 +518,13 @@ describe('serve: secrets never passed to children', () => {
 
 describe('serve: SIGTERM kills in-flight children (no orphans)', { timeout: 30_000 }, () => {
   it('kills a running command and its grandchild on SIGTERM', async () => {
-    const child = spawn('node', [hostBin, 'serve', '--http', '0', `slow=${slowCli}`], {
+    const { cmd: slowCmd, args: slowArgs } = mcpcatArgs([
+      'serve',
+      '--http',
+      '0',
+      `slow=${slowCli}`,
+    ]);
+    const child = spawn(slowCmd, slowArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, NODE_NO_WARNINGS: '1' },
     });

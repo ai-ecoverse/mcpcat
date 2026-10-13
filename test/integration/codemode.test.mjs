@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { mcpcatArgs } from './helpers/bin.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
-const hostBin = join(root, 'dist/host/mcpcat.mjs');
 const alphaServer = join(root, 'test/integration/fixtures/server-codemode-alpha.mjs');
 const betaServer = join(root, 'test/integration/fixtures/server-codemode-beta.mjs');
 
@@ -40,8 +40,9 @@ function run(args, options = {}) {
     XDG_STATE_HOME: stateDir,
     HOME: tmpDir,
   };
+  const { cmd, args: cmdArgs } = mcpcatArgs(args);
   try {
-    const result = execFileSync('node', [hostBin, ...args], {
+    const result = execFileSync(cmd, cmdArgs, {
       encoding: 'utf8',
       timeout: 30_000,
       env,

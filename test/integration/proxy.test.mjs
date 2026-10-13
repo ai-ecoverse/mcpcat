@@ -4,14 +4,15 @@ import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { mcpcatArgs } from './helpers/bin.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
-const hostBin = join(root, 'dist/host/mcpcat.mjs');
 const fixturesDir = join(root, 'test/integration/fixtures');
 
 function runHost(args, opts = {}) {
+  const { cmd, args: cmdArgs } = mcpcatArgs(args);
   try {
-    const result = execFileSync('node', [hostBin, ...args], {
+    const result = execFileSync(cmd, cmdArgs, {
       encoding: 'utf8',
       timeout: 15_000,
       env: { ...process.env, NODE_NO_WARNINGS: '1', ...opts.env },
@@ -54,14 +55,19 @@ async function startFixtureServer(script, extraArgs = []) {
 }
 
 async function startProxy(target, extraArgs = [], extraEnv = {}) {
-  const child = spawn(
-    'node',
-    [hostBin, 'serve', '--proxy', target, '--http', '0', '--json', ...extraArgs],
-    {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, NODE_NO_WARNINGS: '1', ...extraEnv },
-    }
-  );
+  const { cmd, args } = mcpcatArgs([
+    'serve',
+    '--proxy',
+    target,
+    '--http',
+    '0',
+    '--json',
+    ...extraArgs,
+  ]);
+  const child = spawn(cmd, args, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, NODE_NO_WARNINGS: '1', ...extraEnv },
+  });
 
   const port = await new Promise((resolve, reject) => {
     let stdoutData = '';
