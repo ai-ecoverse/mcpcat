@@ -336,3 +336,72 @@ describe('B5: prompt with flag args (M10)', () => {
     assert.ok(stderr.includes('--topic'));
   });
 });
+
+describe('B5: 2026-07-28 over stdio', () => {
+  const script = join(fixturesDir, 'server-stdio-2026.mjs');
+
+  it('info shows 2026-07-28 protocol', () => {
+    const { stdout, status } = runHost(['info', `stdio:node ${script}`]);
+    assert.equal(status, 0);
+    assert.ok(stdout.includes('2026-07-28'));
+    assert.ok(stdout.includes('test-stdio-2026'));
+  });
+
+  it('call tool over stdio 2026', () => {
+    const { stdout, status } = runHost([
+      'call',
+      `stdio:node ${script}`,
+      'echo',
+      '--message',
+      'stdio-2026-test',
+    ]);
+    assert.equal(status, 0);
+    assert.equal(stdout.trim(), 'stdio-2026-test');
+  });
+
+  it('tools lists tools over stdio 2026', () => {
+    const { stdout, status } = runHost(['tools', `stdio:node ${script}`]);
+    assert.equal(status, 0);
+    assert.ok(stdout.includes('echo'));
+  });
+});
+
+describe('B5: legacy stdio still works', () => {
+  const script = join(fixturesDir, 'server-stdio-legacy.mjs');
+
+  it('info shows legacy protocol', () => {
+    const { stdout, status } = runHost(['info', `stdio:node ${script}`]);
+    assert.equal(status, 0);
+    assert.ok(stdout.includes('2025-11-25'));
+  });
+
+  it('call tool over legacy stdio', () => {
+    const { stdout, status } = runHost([
+      'call',
+      `stdio:node ${script}`,
+      'echo',
+      '-d',
+      '{"message":"legacy"}',
+    ]);
+    assert.equal(status, 0);
+    assert.equal(stdout.trim(), 'legacy');
+  });
+});
+
+describe('B5: THIRD_PARTY_NOTICES', () => {
+  it('dist/THIRD_PARTY_NOTICES exists and has content', () => {
+    const noticesPath = join(root, 'dist/THIRD_PARTY_NOTICES');
+    const content = readFileSync(noticesPath, 'utf8');
+    assert.ok(content.includes('@ai-ecoverse/mcpcat'));
+    assert.ok(content.includes('MIT') || content.includes('ISC'));
+    assert.ok(content.includes('quickjs-wasi'));
+    assert.ok(content.includes('@earendil-works/pi-mcp'));
+  });
+
+  it('THIRD_PARTY_NOTICES is deterministic', () => {
+    const noticesPath = join(root, 'dist/THIRD_PARTY_NOTICES');
+    const a = readFileSync(noticesPath, 'utf8');
+    const b = readFileSync(noticesPath, 'utf8');
+    assert.equal(a, b);
+  });
+});

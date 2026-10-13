@@ -10,6 +10,7 @@ import {
   StatelessHttpError,
   StatelessRpcError,
 } from './stateless-connection.ts';
+import { createStdioStatelessConnection } from './stdio-stateless.ts';
 
 export interface ConnectOptions {
   url?: string;
@@ -27,6 +28,7 @@ export interface ConnectOptions {
   roots?: { uri: string; name?: string }[];
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: protocol negotiation requires many branches
 export async function connect(platform: Platform, options: ConnectOptions): Promise<McpConnection> {
   const shared = {
     version: options.version,
@@ -37,6 +39,26 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
   };
 
   if (options.command) {
+    if (!options.protocolVersion || options.protocolVersion.startsWith('2026')) {
+      try {
+        return await createStdioStatelessConnection({
+          command: options.command,
+          args: options.args,
+          env: options.env,
+          cwd: options.cwd,
+          platform,
+          version: options.version,
+          timeoutMs: options.timeoutMs,
+          signal: options.signal,
+          verbose: options.verbose,
+        });
+      } catch (err) {
+        const isMethodNotFound = err instanceof StatelessRpcError && err.code === -32601;
+        const isUnsupported = err instanceof Error && err.message.includes('does not support');
+        if (options.protocolVersion?.startsWith('2026')) throw err;
+        if (!isMethodNotFound && !isUnsupported) throw err;
+      }
+    }
     return createPiConnection({
       command: options.command,
       args: options.args,

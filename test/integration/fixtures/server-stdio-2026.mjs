@@ -48,6 +48,14 @@ rl.on('line', (line) => {
 
   let response;
   switch (method) {
+    case 'server/discover':
+      response = jsonRpc(id, {
+        supportedVersions: ['2026-07-28'],
+        serverInfo: SERVER_INFO,
+        capabilities: { tools: { listChanged: false } },
+        instructions: 'A stdio test server.',
+      });
+      break;
     case 'initialize':
       response = jsonRpc(id, {
         protocolVersion: '2026-07-28',
