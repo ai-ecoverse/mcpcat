@@ -204,7 +204,7 @@ function buildConnectionMethods(
     async close(): Promise<void> {
       rpc.close();
       try {
-        proc.kill('SIGTERM');
+        await proc.kill('SIGTERM');
       } catch {}
     },
   };
@@ -232,15 +232,24 @@ export async function createStdioStatelessConnection(
     verbose: options.verbose,
   });
 
-  const discoverRaw = await rpc.request('server/discover', {
-    protocolVersion: PROTOCOL_VERSION,
-  });
+  let discoverRaw;
+  try {
+    discoverRaw = await rpc.request('server/discover', {
+      protocolVersion: PROTOCOL_VERSION,
+    });
+  } catch (err) {
+    rpc.close();
+    try {
+      await proc.kill('SIGTERM');
+    } catch {}
+    throw err;
+  }
   const discoverResult = discoverRaw as Record<string, unknown>;
   const supported = ((discoverResult?.supportedVersions as string[] | undefined) ?? []).filter(
     (v): v is string => typeof v === 'string'
   );
   if (!supported.includes(PROTOCOL_VERSION)) {
-    proc.kill('SIGTERM');
+    await proc.kill('SIGTERM');
     throw new Error(
       `Server does not support ${PROTOCOL_VERSION} (advertised: ${supported.join(', ') || 'none'})`
     );

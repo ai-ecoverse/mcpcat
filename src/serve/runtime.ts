@@ -281,7 +281,8 @@ async function runCommand(
   stdin: string | undefined,
   timeoutMs: number,
   maxOutput: number,
-  cwd: string
+  cwd: string,
+  signal?: AbortSignal
 ): Promise<ToolRunResult> {
   let proc: SpawnResult;
   try {
@@ -326,25 +327,45 @@ async function runCommand(
     setTimeout(() => resolve('timeout'), timeoutMs)
   );
 
+  const abortPromise = signal
+    ? new Promise<'timeout'>((resolve) => {
+        if (signal.aborted) {
+          resolve('timeout');
+          return;
+        }
+        signal.addEventListener('abort', () => resolve('timeout'), { once: true });
+      })
+    : null;
+
   const work = Promise.all([
     readStream(proc.stdout, stdoutChunks),
     readStream(proc.stderr, stderrChunks),
     proc.wait(),
   ]);
 
-  const result = await Promise.race([work, timer]);
+  const racers: Promise<[void, void, { status: number; signal?: string }] | 'timeout'>[] = [
+    work,
+    timer,
+  ];
+  if (abortPromise !== null) racers.push(abortPromise);
+  const result = await Promise.race(racers);
 
   if (result === 'timeout') {
-    proc.kill('SIGTERM');
-    await new Promise<void>((resolve) => setTimeout(resolve, 5000));
-    try {
-      proc.kill('SIGKILL');
-    } catch {}
+    await proc.kill('SIGTERM');
+    if (!signal?.aborted) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5000));
+      try {
+        await proc.kill('SIGKILL');
+      } catch {}
+    }
     inflightProcs.delete(proc);
     return { stdout: '', stderr: 'timed out', exitCode: 124 };
   }
 
   inflightProcs.delete(proc);
+  try {
+    await proc.kill('SIGTERM');
+  } catch {}
   const [, , exitResult] = result;
   const dec = new TextDecoder();
   return {
@@ -368,16 +389,8 @@ function concat(chunks: Uint8Array[]): Uint8Array {
 async function killInflight(): Promise<void> {
   for (const proc of inflightProcs) {
     try {
-      proc.kill('SIGTERM');
+      await proc.kill('SIGTERM');
     } catch {}
-  }
-  if (inflightProcs.size > 0) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 5000));
-    for (const proc of inflightProcs) {
-      try {
-        proc.kill('SIGKILL');
-      } catch {}
-    }
   }
   inflightProcs.clear();
 }
@@ -386,7 +399,8 @@ async function runHelpForCli(
   platform: Platform,
   filePath: string,
   childEnv: Record<string, string>,
-  cwd: string
+  cwd: string,
+  signal?: AbortSignal
 ): Promise<string> {
   const dashed = await runCommand(
     platform,
@@ -396,9 +410,11 @@ async function runHelpForCli(
     undefined,
     10_000,
     MAX_OUTPUT_DEFAULT,
-    cwd
+    cwd,
+    signal
   );
   if (dashed.exitCode === 0 && dashed.stdout.trim()) return dashed.stdout;
+  if (signal?.aborted) return '';
   const plain = await runCommand(
     platform,
     filePath,
@@ -407,7 +423,8 @@ async function runHelpForCli(
     undefined,
     10_000,
     MAX_OUTPUT_DEFAULT,
-    cwd
+    cwd,
+    signal
   );
   if (plain.exitCode === 0 && plain.stdout.trim()) return plain.stdout;
   return dashed.stdout.trim() ? dashed.stdout : '';
@@ -453,7 +470,8 @@ async function discoverCli(
   filePath: string,
   explicitName: string | undefined,
   childEnv: Record<string, string>,
-  cwd: string
+  cwd: string,
+  signal?: AbortSignal
 ): Promise<PublishedCli> {
   const mcp = await runCommand(
     platform,
@@ -463,10 +481,14 @@ async function discoverCli(
     undefined,
     10_000,
     MAX_OUTPUT_DEFAULT,
-    cwd
+    cwd,
+    signal
   );
   const override = mcp.exitCode === 0 ? parseMcpOverride(mcp.stdout) : null;
-  const helpText = override ? '' : await runHelpForCli(platform, filePath, childEnv, cwd);
+  const helpText =
+    override || signal?.aborted
+      ? ''
+      : await runHelpForCli(platform, filePath, childEnv, cwd, signal);
 
   if (!override && !helpText.trim()) {
     throw new Error(`${filePath} did not print help or --mcp descriptor`);
@@ -618,6 +640,36 @@ function createToolExecutor(
   return { invoke, rpcTools };
 }
 
+async function discoverWithSignal(
+  platform: Platform,
+  commands: { path: string; name?: string }[],
+  childEnv: Record<string, string>,
+  cwd: string
+): Promise<{ clis: PublishedCli[] } | { exitCode: number }> {
+  const clis: PublishedCli[] = [];
+  let earlyShutdown = false;
+  const earlyAbort = new AbortController();
+  const onShutdown = () => {
+    earlyShutdown = true;
+    earlyAbort.abort();
+    void killInflight();
+  };
+  platform.onSignal?.('SIGTERM', onShutdown);
+  platform.onSignal?.('SIGINT', onShutdown);
+  for (const cmd of commands) {
+    try {
+      const cli = await discoverCli(platform, cmd.path, cmd.name, childEnv, cwd, earlyAbort.signal);
+      clis.push(cli);
+    } catch (err) {
+      if (earlyShutdown) return { exitCode: 143 };
+      await platform.write(2, `mcpcat serve: ${(err as Error).message}\n`);
+      return { exitCode: 2 };
+    }
+  }
+  if (earlyShutdown) return { exitCode: 143 };
+  return { clis };
+}
+
 export async function runServe(
   platform: Platform,
   options: ServeOptions,
@@ -669,17 +721,10 @@ export async function runServe(
 
   const serveCwd = options.cwd ?? platform.cwd;
   const childEnv = buildChildEnv(platform, options.envAllow);
-  const clis: PublishedCli[] = [];
 
-  for (const cmd of options.commands) {
-    try {
-      const cli = await discoverCli(platform, cmd.path, cmd.name, childEnv, serveCwd);
-      clis.push(cli);
-    } catch (err) {
-      await platform.write(2, `mcpcat serve: ${(err as Error).message}\n`);
-      return 2;
-    }
-  }
+  const discovery = await discoverWithSignal(platform, options.commands, childEnv, serveCwd);
+  if ('exitCode' in discovery) return discovery.exitCode;
+  const { clis } = discovery;
 
   const allTools: ServeTool[] = clis.flatMap((cli) => buildTools(cli.name, cli.commands));
 

@@ -135,15 +135,15 @@ export class PlatformStdioTransport {
 
     const exited = await Promise.race([done, delay(grace)]);
     if (!exited) {
-      proc.kill('SIGTERM');
+      await proc.kill('SIGTERM');
       const exitedAfterTerm = await Promise.race([done, delay(closeTimeoutMs)]);
       if (!exitedAfterTerm) {
-        proc.kill('SIGKILL');
+        await proc.kill('SIGKILL');
         await done;
       }
     }
 
-    proc.kill('SIGTERM');
+    await proc.kill('SIGTERM');
 
     this.emitClose();
   }
@@ -212,6 +212,9 @@ export class PlatformStdioTransport {
     if (!proc) return;
     try {
       await proc.wait();
+    } catch {}
+    try {
+      await proc.kill('SIGTERM');
     } catch {}
     if (!this.closed) {
       this.emitClose();
