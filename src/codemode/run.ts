@@ -315,9 +315,10 @@ async function createSandbox(
   }
 
   const { CodemodeSandbox, loadQuickJSWasm } = await import('@earendil-works/pi-codemode');
-  const seaDir = (globalThis as Record<string, unknown>).__mcpcat_sea_asset_dir as
-    | string
+  const getSeaDir = (globalThis as Record<string, unknown>).__mcpcat_get_sea_asset_dir as
+    | (() => string | undefined)
     | undefined;
+  const seaDir = getSeaDir?.();
   const wasmPath = seaDir ? `${seaDir}/quickjs.wasm` : await resolveWasmPath(platform);
   const workerUrl = seaDir
     ? new URL(`file://${seaDir}/codemode-worker.mjs`)

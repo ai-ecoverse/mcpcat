@@ -1,8 +1,12 @@
 name: Binaries
 
 on:
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag:
@@ -31,7 +35,7 @@ jobs:
 
       - name: Build SEA blob
         env:
-          MCPCAT_SEA_VERSION: ${{ github.event.release.tag_name || inputs.tag }}
+          MCPCAT_SEA_VERSION: ${{ inputs.tag }}
         run: |
           VERSION="${MCPCAT_SEA_VERSION#v}"
           MCPCAT_SEA_VERSION="$VERSION" node scripts/build-sea.mjs
@@ -80,12 +84,12 @@ jobs:
             node_arch: x64
             node_platform: darwin
           - os: windows-latest
-            target_os: win
+            target_os: windows
             target_arch: amd64
             node_arch: x64
             node_platform: win
           - os: windows-latest
-            target_os: win
+            target_os: windows
             target_arch: arm64
             node_arch: arm64
             node_platform: win
@@ -103,42 +107,59 @@ jobs:
         shell: bash
         run: |
           SUFFIX=""
-          if [ "${{ matrix.target_os }}" = "win" ]; then SUFFIX=".exe"; fi
+          if [ "${{ matrix.target_os }}" = "windows" ]; then SUFFIX=".exe"; fi
           MUSL=""
           if [ "${{ matrix.musl }}" = "true" ]; then MUSL="-musl"; fi
           echo "asset=mcpcat-${{ matrix.target_os }}-${{ matrix.target_arch }}${MUSL}${SUFFIX}" >> "$GITHUB_OUTPUT"
 
-      - name: Download Node binary
+      - name: Download and verify Node binary
         shell: bash
         run: |
-          MUSL_SUFFIX=""
-          if [ "${{ matrix.musl }}" = "true" ]; then
-            MUSL_SUFFIX="-musl"
-          fi
+          verify_checksum() {
+            local file="$1" sums="$2" archive="$3"
+            expected=$(grep "  ${archive}$" "$sums" | cut -d' ' -f1)
+            if [ -z "$expected" ]; then
+              echo "No checksum found for $archive" >&2; exit 1
+            fi
+            actual=$(sha256sum "$file" | cut -d' ' -f1)
+            if [ "$actual" != "$expected" ]; then
+              echo "Checksum mismatch for $archive" >&2
+              echo "  expected: $expected" >&2
+              echo "  actual:   $actual" >&2
+              exit 1
+            fi
+            echo "Verified $archive"
+          }
 
-          if [ "${{ matrix.target_os }}" = "win" ]; then
-            NODE_URL="https://nodejs.org/dist/v${{ env.NODE_FULL }}/node-v${{ env.NODE_FULL }}-win-${{ matrix.node_arch }}.zip"
-            curl -fsSL "$NODE_URL" -o node.zip
-            unzip -q node.zip
-            cp "node-v${{ env.NODE_FULL }}-win-${{ matrix.node_arch }}/node.exe" "${{ steps.name.outputs.asset }}"
-          elif [ -n "$MUSL_SUFFIX" ]; then
-            NODE_URL="https://unofficial-builds.nodejs.org/download/release/v${{ env.NODE_FULL }}/node-v${{ env.NODE_FULL }}-linux-${{ matrix.node_arch }}-musl.tar.xz"
-            curl -fsSL "$NODE_URL" -o node.tar.xz
-            tar xf node.tar.xz
-            cp "node-v${{ env.NODE_FULL }}-linux-${{ matrix.node_arch }}-musl/bin/node" "${{ steps.name.outputs.asset }}"
+          V="${{ env.NODE_FULL }}"
+          MUSL=""
+          if [ "${{ matrix.musl }}" = "true" ]; then MUSL="-musl"; fi
+
+          if [ "${{ matrix.target_os }}" = "windows" ]; then
+            ARCHIVE="node-v${V}-win-${{ matrix.node_arch }}.zip"
+            SUMS_URL="https://nodejs.org/dist/v${V}/SHASUMS256.txt"
+            curl -fsSL "$SUMS_URL" -o SHASUMS256.txt
+            curl -fsSL "https://nodejs.org/dist/v${V}/${ARCHIVE}" -o "$ARCHIVE"
+            verify_checksum "$ARCHIVE" SHASUMS256.txt "$ARCHIVE"
+            unzip -q "$ARCHIVE"
+            cp "node-v${V}-win-${{ matrix.node_arch }}/node.exe" "${{ steps.name.outputs.asset }}"
+          elif [ -n "$MUSL" ]; then
+            ARCHIVE="node-v${V}-linux-${{ matrix.node_arch }}-musl.tar.xz"
+            SUMS_URL="https://unofficial-builds.nodejs.org/download/release/v${V}/SHASUMS256.txt"
+            curl -fsSL "$SUMS_URL" -o SHASUMS256.txt
+            curl -fsSL "https://unofficial-builds.nodejs.org/download/release/v${V}/${ARCHIVE}" -o "$ARCHIVE"
+            verify_checksum "$ARCHIVE" SHASUMS256.txt "$ARCHIVE"
+            tar xf "$ARCHIVE"
+            cp "node-v${V}-linux-${{ matrix.node_arch }}-musl/bin/node" "${{ steps.name.outputs.asset }}"
           else
-            if [ "${{ matrix.target_os }}" = "darwin" ]; then
-              NODE_URL="https://nodejs.org/dist/v${{ env.NODE_FULL }}/node-v${{ env.NODE_FULL }}-darwin-${{ matrix.node_arch }}.tar.xz"
-            else
-              NODE_URL="https://nodejs.org/dist/v${{ env.NODE_FULL }}/node-v${{ env.NODE_FULL }}-linux-${{ matrix.node_arch }}.tar.xz"
-            fi
-            curl -fsSL "$NODE_URL" -o node.tar.xz
-            tar xf node.tar.xz
-            if [ "${{ matrix.target_os }}" = "darwin" ]; then
-              cp "node-v${{ env.NODE_FULL }}-darwin-${{ matrix.node_arch }}/bin/node" "${{ steps.name.outputs.asset }}"
-            else
-              cp "node-v${{ env.NODE_FULL }}-linux-${{ matrix.node_arch }}/bin/node" "${{ steps.name.outputs.asset }}"
-            fi
+            PLAT="${{ matrix.target_os }}"
+            ARCHIVE="node-v${V}-${PLAT}-${{ matrix.node_arch }}.tar.xz"
+            SUMS_URL="https://nodejs.org/dist/v${V}/SHASUMS256.txt"
+            curl -fsSL "$SUMS_URL" -o SHASUMS256.txt
+            curl -fsSL "https://nodejs.org/dist/v${V}/${ARCHIVE}" -o "$ARCHIVE"
+            verify_checksum "$ARCHIVE" SHASUMS256.txt "$ARCHIVE"
+            tar xf "$ARCHIVE"
+            cp "node-v${V}-${PLAT}-${{ matrix.node_arch }}/bin/node" "${{ steps.name.outputs.asset }}"
           fi
 
       - name: Inject SEA blob
@@ -197,10 +218,10 @@ jobs:
     steps:
       - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
         with:
-          name: mcpcat-win-amd64.exe
+          name: mcpcat-windows-amd64.exe
 
       - name: Version check
-        run: .\mcpcat-win-amd64.exe --version
+        run: .\mcpcat-windows-amd64.exe --version
 
   test-installer:
     needs: build
@@ -278,11 +299,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          TAG="${{ inputs.tag }}"
           gh release upload "$TAG" release/* --clobber
 
   mark-failed:
-    if: failure() && github.event_name == 'release'
+    if: failure()
     needs: [attach]
     runs-on: ubuntu-latest
     steps:
@@ -290,6 +311,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release edit "${{ github.event.release.tag_name }}" \
+          gh release edit "${{ inputs.tag }}" \
             --repo "${{ github.repository }}" \
             --prerelease
