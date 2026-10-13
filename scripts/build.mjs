@@ -81,6 +81,8 @@ await esbuild.build({
     'node:process': join(root, 'src/stubs/node-stub.ts'),
     'node:worker_threads': join(root, 'src/stubs/node-stub.ts'),
     'node:module': join(root, 'src/stubs/node-stub.ts'),
+    'node:http': join(root, 'src/stubs/node-stub.ts'),
+    'node:crypto': join(root, 'src/stubs/node-stub.ts'),
     'cross-spawn': join(root, 'src/stubs/node-stub.ts'),
   },
 });
