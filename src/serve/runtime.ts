@@ -1,3 +1,4 @@
+import { containsPlaceholders, expandPlaceholdersStrict } from '../config/expand.ts';
 import type { Platform, SpawnResult } from '../platform/types.ts';
 import {
   argvForCommand,
@@ -19,6 +20,7 @@ import { handleJsonRpc, type RpcTool, type ToolRunResult } from './jsonrpc.ts';
 import { checkHost, checkOrigin } from './origin.ts';
 
 const CALL_TIMEOUT_MS = 120_000;
+const MAX_OUTPUT_DEFAULT = 1_048_576;
 const ALLOWED_ENV_KEYS = new Set(['PATH', 'HOME', 'LANG']);
 
 export interface ServeOptions {
@@ -32,6 +34,9 @@ export interface ServeOptions {
   envAllow: string[];
   callTimeout: number;
   concurrency: number;
+  maxOutput: number;
+  cwd?: string;
+  json: boolean;
 }
 
 function parseHttpFlag(args: string[], i: number): { host: string; port: number; next: number } {
@@ -52,57 +57,97 @@ function parseCommandTarget(arg: string): { path: string; name?: string } {
   return { path: arg };
 }
 
+function parseSingleFlag(
+  args: string[],
+  i: number,
+  opts: {
+    transport: 'stdio' | 'http';
+    host: string;
+    port: number;
+    bearer?: string;
+    allowOrigins: string[];
+    envAllow: string[];
+    toolTemplates: string[];
+    callTimeout: number;
+    concurrency: number;
+    maxOutput: number;
+    cwd?: string;
+    json: boolean;
+    commands: { path: string; name?: string }[];
+  }
+): number {
+  const arg = args[i];
+  if (arg === '--stdio') {
+    opts.transport = 'stdio';
+  } else if (arg === '--http') {
+    opts.transport = 'http';
+    const parsed = parseHttpFlag(args, i);
+    opts.host = parsed.host;
+    opts.port = parsed.port;
+    return parsed.next;
+  } else if (arg === '--bearer' && args[i + 1]) {
+    opts.bearer = args[++i];
+  } else if (arg === '--allow-origin' && args[i + 1]) {
+    opts.allowOrigins.push(args[++i]);
+  } else if (arg === '--env' && args[i + 1]) {
+    opts.envAllow.push(args[++i]);
+  } else if (arg === '--tool' && args[i + 1]) {
+    opts.toolTemplates.push(args[++i]);
+  } else if (arg === '--call-timeout' && args[i + 1]) {
+    opts.callTimeout = Number(args[++i]) * 1000;
+  } else if (arg === '--concurrency' && args[i + 1]) {
+    opts.concurrency = Number(args[++i]);
+  } else if (arg === '--max-output' && args[i + 1]) {
+    opts.maxOutput = Number(args[++i]);
+  } else if (arg === '--cwd' && args[i + 1]) {
+    opts.cwd = args[++i];
+  } else if (arg === '--json') {
+    opts.json = true;
+  } else if (!arg.startsWith('-')) {
+    opts.commands.push(parseCommandTarget(arg));
+  }
+  return i;
+}
+
 export function parseServeFlags(args: string[]): ServeOptions {
-  let transport: 'stdio' | 'http' = 'stdio';
-  let host = '127.0.0.1';
-  let port = 0;
-  let bearer: string | undefined;
-  const allowOrigins: string[] = [];
-  const envAllow: string[] = [];
-  const toolTemplates: string[] = [];
-  let callTimeout = CALL_TIMEOUT_MS;
-  let concurrency = 1;
-  const commands: { path: string; name?: string }[] = [];
+  const opts = {
+    transport: 'stdio' as 'stdio' | 'http',
+    host: '127.0.0.1',
+    port: 0,
+    bearer: undefined as string | undefined,
+    allowOrigins: [] as string[],
+    envAllow: [] as string[],
+    toolTemplates: [] as string[],
+    callTimeout: CALL_TIMEOUT_MS,
+    concurrency: 1,
+    maxOutput: MAX_OUTPUT_DEFAULT,
+    cwd: undefined as string | undefined,
+    json: false,
+    commands: [] as { path: string; name?: string }[],
+  };
 
   for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === '--stdio') {
-      transport = 'stdio';
-    } else if (arg === '--http') {
-      transport = 'http';
-      const parsed = parseHttpFlag(args, i);
-      host = parsed.host;
-      port = parsed.port;
-      i = parsed.next;
-    } else if (arg === '--bearer' && args[i + 1]) {
-      bearer = args[++i];
-    } else if (arg === '--allow-origin' && args[i + 1]) {
-      allowOrigins.push(args[++i]);
-    } else if (arg === '--env' && args[i + 1]) {
-      envAllow.push(args[++i]);
-    } else if (arg === '--tool' && args[i + 1]) {
-      toolTemplates.push(args[++i]);
-    } else if (arg === '--call-timeout' && args[i + 1]) {
-      callTimeout = Number(args[++i]) * 1000;
-    } else if (arg === '--concurrency' && args[i + 1]) {
-      concurrency = Number(args[++i]);
-    } else if (!arg.startsWith('-')) {
-      commands.push(parseCommandTarget(arg));
-    }
+    i = parseSingleFlag(args, i, opts);
   }
 
-  return {
-    transport,
-    host,
-    port,
-    commands,
-    toolTemplates,
-    bearer,
-    allowOrigins,
-    envAllow,
-    callTimeout,
-    concurrency,
-  };
+  return opts;
+}
+
+function expandBearerToken(
+  template: string,
+  env: Record<string, string | undefined>
+): string | undefined {
+  if (!containsPlaceholders(template)) return undefined;
+  return expandPlaceholdersStrict(template, env);
+}
+
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return mismatch === 0;
 }
 
 function buildChildEnv(platform: Platform, envAllow: string[]): Record<string, string> {
@@ -121,24 +166,37 @@ function buildChildEnv(platform: Platform, envAllow: string[]): Record<string, s
   return env;
 }
 
+function capOutput(value: string, limit: number): string {
+  if (value.length <= limit) return value;
+  const half = Math.floor(limit / 2);
+  const cut = value.length - limit;
+  return `${value.slice(0, half)}\n… ${cut} characters cut …\n${value.slice(value.length - half)}`;
+}
+
+const inflightProcs = new Set<SpawnResult>();
+
 async function runCommand(
   platform: Platform,
   cmdPath: string,
   argv: string[],
   childEnv: Record<string, string>,
   stdin: string | undefined,
-  timeoutMs: number
+  timeoutMs: number,
+  maxOutput: number,
+  cwd: string
 ): Promise<ToolRunResult> {
   let proc: SpawnResult;
   try {
     proc = await platform.spawn({
       argv: [cmdPath, ...argv],
       env: childEnv,
-      cwd: platform.cwd,
+      cwd,
     });
   } catch (err) {
     return { stdout: '', stderr: `spawn failed: ${(err as Error).message}`, exitCode: 127 };
   }
+
+  inflightProcs.add(proc);
 
   if (stdin !== undefined) {
     const writer = proc.stdin.getWriter();
@@ -184,14 +242,16 @@ async function runCommand(
     try {
       proc.kill('SIGKILL');
     } catch {}
+    inflightProcs.delete(proc);
     return { stdout: '', stderr: 'timed out', exitCode: 124 };
   }
 
+  inflightProcs.delete(proc);
   const [, , exitResult] = result;
   const dec = new TextDecoder();
   return {
-    stdout: dec.decode(concat(stdoutChunks)),
-    stderr: dec.decode(concat(stderrChunks)),
+    stdout: capOutput(dec.decode(concat(stdoutChunks)), maxOutput),
+    stderr: capOutput(dec.decode(concat(stderrChunks)), maxOutput),
     exitCode: exitResult.status,
   };
 }
@@ -207,14 +267,50 @@ function concat(chunks: Uint8Array[]): Uint8Array {
   return out;
 }
 
+async function killInflight(): Promise<void> {
+  for (const proc of inflightProcs) {
+    try {
+      proc.kill('SIGTERM');
+    } catch {}
+  }
+  if (inflightProcs.size > 0) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 5000));
+    for (const proc of inflightProcs) {
+      try {
+        proc.kill('SIGKILL');
+      } catch {}
+    }
+  }
+  inflightProcs.clear();
+}
+
 async function runHelpForCli(
   platform: Platform,
   filePath: string,
-  childEnv: Record<string, string>
+  childEnv: Record<string, string>,
+  cwd: string
 ): Promise<string> {
-  const dashed = await runCommand(platform, filePath, ['--help'], childEnv, undefined, 10_000);
+  const dashed = await runCommand(
+    platform,
+    filePath,
+    ['--help'],
+    childEnv,
+    undefined,
+    10_000,
+    MAX_OUTPUT_DEFAULT,
+    cwd
+  );
   if (dashed.exitCode === 0 && dashed.stdout.trim()) return dashed.stdout;
-  const plain = await runCommand(platform, filePath, ['help'], childEnv, undefined, 10_000);
+  const plain = await runCommand(
+    platform,
+    filePath,
+    ['help'],
+    childEnv,
+    undefined,
+    10_000,
+    MAX_OUTPUT_DEFAULT,
+    cwd
+  );
   if (plain.exitCode === 0 && plain.stdout.trim()) return plain.stdout;
   return dashed.stdout.trim() ? dashed.stdout : '';
 }
@@ -223,7 +319,8 @@ async function expandGroupCommands(
   platform: Platform,
   filePath: string,
   commands: CliCommand[],
-  childEnv: Record<string, string>
+  childEnv: Record<string, string>,
+  cwd: string
 ): Promise<CliCommand[]> {
   const topNames = new Set(commands.map((c) => c.path[0] ?? ''));
   let current = commands;
@@ -236,7 +333,9 @@ async function expandGroupCommands(
       [group, '--help'],
       childEnv,
       undefined,
-      10_000
+      10_000,
+      MAX_OUTPUT_DEFAULT,
+      cwd
     );
     if (nested.exitCode !== 0 || !nested.stdout.trim()) continue;
     const replaced = nestGroup(current, group, parseHelp(nested.stdout), topNames);
@@ -255,11 +354,21 @@ async function discoverCli(
   platform: Platform,
   filePath: string,
   explicitName: string | undefined,
-  childEnv: Record<string, string>
+  childEnv: Record<string, string>,
+  cwd: string
 ): Promise<PublishedCli> {
-  const mcp = await runCommand(platform, filePath, ['--mcp'], childEnv, undefined, 10_000);
+  const mcp = await runCommand(
+    platform,
+    filePath,
+    ['--mcp'],
+    childEnv,
+    undefined,
+    10_000,
+    MAX_OUTPUT_DEFAULT,
+    cwd
+  );
   const override = mcp.exitCode === 0 ? parseMcpOverride(mcp.stdout) : null;
-  const helpText = override ? '' : await runHelpForCli(platform, filePath, childEnv);
+  const helpText = override ? '' : await runHelpForCli(platform, filePath, childEnv, cwd);
 
   if (!override && !helpText.trim()) {
     throw new Error(`${filePath} did not print help or --mcp descriptor`);
@@ -270,10 +379,145 @@ async function discoverCli(
 
   if (!override) {
     commands = attachGlobalFlags(commands, parsed.globalFlags);
-    commands = await expandGroupCommands(platform, filePath, commands, childEnv);
+    commands = await expandGroupCommands(platform, filePath, commands, childEnv, cwd);
   }
 
   return { name: cliPrefix(helpText, filePath, explicitName), path: filePath, commands };
+}
+
+interface ToolExecutor {
+  invoke: (name: string, args: unknown) => Promise<ToolRunResult>;
+  rpcTools: RpcTool[];
+}
+
+function createToolExecutor(
+  platform: Platform,
+  clis: PublishedCli[],
+  allTools: ServeTool[],
+  childEnv: Record<string, string>,
+  options: ServeOptions,
+  serveCwd: string
+): ToolExecutor {
+  const rpcTools: RpcTool[] = allTools.map((t) => ({
+    name: t.name,
+    description: t.description,
+    inputSchema: t.inputSchema,
+  }));
+
+  const queues = new Map<string, Promise<unknown>>();
+
+  function enqueue<T>(key: string, job: () => Promise<T>): Promise<T> {
+    const previous = queues.get(key) ?? Promise.resolve();
+    const run = previous.then(job, job);
+    queues.set(
+      key,
+      run.then(
+        () => undefined,
+        () => undefined
+      )
+    );
+    return run;
+  }
+
+  function invokeTemplateTool(tool: ServeTool, args: unknown): Promise<ToolRunResult> {
+    const templateArgs: Record<string, string> = {};
+    if (args && typeof args === 'object') {
+      for (const [k, v] of Object.entries(args as Record<string, unknown>)) {
+        templateArgs[k] = String(v);
+      }
+    }
+    const argv = templateToArgv(tool.description, templateArgs);
+    return enqueue('__template__', () =>
+      runCommand(
+        platform,
+        argv[0],
+        argv.slice(1),
+        childEnv,
+        undefined,
+        options.callTimeout,
+        options.maxOutput,
+        serveCwd
+      )
+    );
+  }
+
+  async function executeTool(
+    tool: ServeTool,
+    cli: PublishedCli,
+    args: unknown
+  ): Promise<ToolRunResult> {
+    if (tool.kind === 'help') {
+      const result = await runCommand(
+        platform,
+        cli.path,
+        ['--help'],
+        childEnv,
+        undefined,
+        options.callTimeout,
+        options.maxOutput,
+        serveCwd
+      );
+      if (result.exitCode === 0) return result;
+      return runCommand(
+        platform,
+        cli.path,
+        ['help'],
+        childEnv,
+        undefined,
+        options.callTimeout,
+        options.maxOutput,
+        serveCwd
+      );
+    }
+
+    if (tool.kind === 'invoke') {
+      const parsed = readToolArguments(args ?? {});
+      if (parsed.error) return { stdout: '', stderr: parsed.error, exitCode: 2 };
+      if (!parsed.argv) return { stdout: '', stderr: 'argv is required', exitCode: 2 };
+      return runCommand(
+        platform,
+        cli.path,
+        parsed.argv,
+        childEnv,
+        parsed.stdin,
+        options.callTimeout,
+        options.maxOutput,
+        serveCwd
+      );
+    }
+
+    const parsed = readToolArguments(args ?? {});
+    const command = cli.commands.find((c) => c.path.join('_') === tool.commandPath.join('_'));
+    if (!command) return { stdout: '', stderr: `unknown command ${tool.name}`, exitCode: 2 };
+    const planned = argvForCommand(command, parsed);
+    if ('error' in planned) return { stdout: '', stderr: planned.error, exitCode: 2 };
+    return runCommand(
+      platform,
+      cli.path,
+      planned.argv,
+      childEnv,
+      planned.stdin,
+      options.callTimeout,
+      options.maxOutput,
+      serveCwd
+    );
+  }
+
+  async function invoke(name: string, args: unknown): Promise<ToolRunResult> {
+    const tool = allTools.find((t) => t.name === name);
+    if (!tool) return { stdout: '', stderr: `unknown tool ${name}`, exitCode: 1 };
+
+    if (tool.cli === '' && tool.commandPath.length === 0) {
+      return invokeTemplateTool(tool, args);
+    }
+
+    const cli = clis.find((c) => c.name === tool.cli);
+    if (!cli) return { stdout: '', stderr: `unknown cli ${tool.cli}`, exitCode: 1 };
+
+    return enqueue(cli.name, () => executeTool(tool, cli, args));
+  }
+
+  return { invoke, rpcTools };
 }
 
 export async function runServe(
@@ -281,12 +525,27 @@ export async function runServe(
   options: ServeOptions,
   version: string
 ): Promise<number> {
+  let resolvedBearer: string | undefined;
+  if (options.bearer) {
+    const expanded = expandBearerToken(options.bearer, platform.env);
+    if (!expanded) {
+      await platform.write(
+        2,
+        'mcpcat serve: --bearer requires a ${NAME} variable reference, not a literal token. ' +
+          "Use --bearer '${MY_TOKEN}' and set MY_TOKEN in the environment.\n"
+      );
+      return 2;
+    }
+    resolvedBearer = expanded;
+  }
+
+  const serveCwd = options.cwd ?? platform.cwd;
   const childEnv = buildChildEnv(platform, options.envAllow);
   const clis: PublishedCli[] = [];
 
   for (const cmd of options.commands) {
     try {
-      const cli = await discoverCli(platform, cmd.path, cmd.name, childEnv);
+      const cli = await discoverCli(platform, cmd.path, cmd.name, childEnv, serveCwd);
       clis.push(cli);
     } catch (err) {
       await platform.write(2, `mcpcat serve: ${(err as Error).message}\n`);
@@ -305,108 +564,23 @@ export async function runServe(
     allTools.push(tool);
   }
 
-  const rpcTools: RpcTool[] = allTools.map((t) => ({
-    name: t.name,
-    description: t.description,
-    inputSchema: t.inputSchema,
-  }));
+  const executor = createToolExecutor(platform, clis, allTools, childEnv, options, serveCwd);
 
   const serverName = 'mcpcat-serve';
 
-  const queues = new Map<string, Promise<unknown>>();
-
-  function enqueue<T>(key: string, job: () => Promise<T>): Promise<T> {
-    const previous = queues.get(key) ?? Promise.resolve();
-    const run = previous.then(job, job);
-    queues.set(
-      key,
-      run.then(
-        () => undefined,
-        () => undefined
-      )
-    );
-    return run;
-  }
-
-  async function invokeTool(name: string, args: unknown): Promise<ToolRunResult> {
-    const tool = allTools.find((t) => t.name === name);
-    if (!tool) return { stdout: '', stderr: `unknown tool ${name}`, exitCode: 1 };
-
-    if (tool.cli === '' && tool.commandPath.length === 0) {
-      return invokeTemplateTool(tool, args);
-    }
-
-    const cli = clis.find((c) => c.name === tool.cli);
-    if (!cli) return { stdout: '', stderr: `unknown cli ${tool.cli}`, exitCode: 1 };
-
-    return enqueue(cli.name, () => executeTool(tool, cli, args));
-  }
-
-  function invokeTemplateTool(tool: ServeTool, args: unknown): Promise<ToolRunResult> {
-    const templateArgs: Record<string, string> = {};
-    if (args && typeof args === 'object') {
-      for (const [k, v] of Object.entries(args as Record<string, unknown>)) {
-        templateArgs[k] = String(v);
-      }
-    }
-    const argv = templateToArgv(tool.description, templateArgs);
-    return enqueue('__template__', () =>
-      runCommand(platform, argv[0], argv.slice(1), childEnv, undefined, options.callTimeout)
-    );
-  }
-
-  async function executeTool(
-    tool: ServeTool,
-    cli: PublishedCli,
-    args: unknown
-  ): Promise<ToolRunResult> {
-    if (tool.kind === 'help') {
-      const result = await runCommand(
-        platform,
-        cli.path,
-        ['--help'],
-        childEnv,
-        undefined,
-        options.callTimeout
-      );
-      if (result.exitCode === 0) return result;
-      return runCommand(platform, cli.path, ['help'], childEnv, undefined, options.callTimeout);
-    }
-
-    if (tool.kind === 'invoke') {
-      const parsed = readToolArguments(args ?? {});
-      if (parsed.error) return { stdout: '', stderr: parsed.error, exitCode: 2 };
-      if (!parsed.argv) return { stdout: '', stderr: 'argv is required', exitCode: 2 };
-      return runCommand(
-        platform,
-        cli.path,
-        parsed.argv,
-        childEnv,
-        parsed.stdin,
-        options.callTimeout
-      );
-    }
-
-    const parsed = readToolArguments(args ?? {});
-    const command = cli.commands.find((c) => c.path.join('_') === tool.commandPath.join('_'));
-    if (!command) return { stdout: '', stderr: `unknown command ${tool.name}`, exitCode: 2 };
-    const planned = argvForCommand(command, parsed);
-    if ('error' in planned) return { stdout: '', stderr: planned.error, exitCode: 2 };
-    return runCommand(
-      platform,
-      cli.path,
-      planned.argv,
-      childEnv,
-      planned.stdin,
-      options.callTimeout
-    );
-  }
-
   if (options.transport === 'stdio') {
-    return runStdioServer(platform, rpcTools, invokeTool, serverName, version);
+    return runStdioServer(platform, executor.rpcTools, executor.invoke, serverName, version);
   }
 
-  return runHttpServer(platform, options, rpcTools, invokeTool, serverName, version);
+  return runHttpServer(
+    platform,
+    options,
+    executor.rpcTools,
+    executor.invoke,
+    serverName,
+    version,
+    resolvedBearer
+  );
 }
 
 async function runStdioServer(
@@ -453,7 +627,8 @@ async function runHttpServer(
   tools: RpcTool[],
   call: (name: string, args: unknown) => Promise<ToolRunResult>,
   serverName: string,
-  version: string
+  version: string,
+  resolvedBearer: string | undefined
 ): Promise<number> {
   if (!platform.listen) {
     await platform.write(2, 'mcpcat serve: HTTP transport requires platform.listen\n');
@@ -462,7 +637,7 @@ async function runHttpServer(
 
   const boundLoopback =
     options.host === '127.0.0.1' || options.host === 'localhost' || options.host === '::1';
-  if (!boundLoopback && !options.bearer) {
+  if (!boundLoopback && !resolvedBearer) {
     await platform.write(2, 'mcpcat serve: --bearer is required when binding off loopback\n');
     return 2;
   }
@@ -471,7 +646,11 @@ async function runHttpServer(
   const listener = await platform.listen({ host: options.host, port: options.port });
   const actualPort = listener.port;
 
-  await platform.write(2, `mcpcat serve: listening on http://${options.host}:${actualPort}/mcp\n`);
+  const listenUrl = `http://${options.host}:${actualPort}/mcp`;
+  if (options.json) {
+    await platform.write(1, `${JSON.stringify({ url: listenUrl })}\n`);
+  }
+  await platform.write(2, `mcpcat serve: listening on ${listenUrl}\n`);
 
   let shutdownRequested = false;
 
@@ -479,23 +658,24 @@ async function runHttpServer(
     if (shutdownRequested) return;
     shutdownRequested = true;
     listener.close();
+    void killInflight();
   };
 
-  if (typeof process !== 'undefined') {
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
+  if (platform.onSignal) {
+    platform.onSignal('SIGINT', shutdown);
+    platform.onSignal('SIGTERM', shutdown);
   }
 
   const handler = (request: HttpRequest): Promise<HttpResponse> =>
     handleMcpRequest(
       request,
-      options,
       tools,
       call,
       serverName,
       version,
       allowedOrigins,
-      boundLoopback
+      boundLoopback,
+      resolvedBearer
     );
 
   try {
@@ -523,17 +703,18 @@ async function runHttpServer(
 
 async function handleMcpRequest(
   request: HttpRequest,
-  options: ServeOptions,
   tools: RpcTool[],
   call: (name: string, args: unknown) => Promise<ToolRunResult>,
   serverName: string,
   version: string,
   allowedOrigins: Set<string>,
-  boundLoopback: boolean
+  boundLoopback: boolean,
+  resolvedBearer: string | undefined
 ): Promise<HttpResponse> {
-  if (options.bearer) {
+  if (resolvedBearer) {
     const authHeader = request.headers.authorization;
-    if (!authHeader || authHeader !== `Bearer ${options.bearer}`) {
+    const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    if (!provided || !constantTimeEqual(provided, resolvedBearer)) {
       return {
         status: 401,
         reason: 'Unauthorized',

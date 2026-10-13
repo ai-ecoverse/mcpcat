@@ -177,5 +177,8 @@ export function createKernelPlatform(ctx: KernelContext): Platform {
     exit(code: number): never {
       ctx.exit(code);
     },
+    onSignal(signal: 'SIGINT' | 'SIGTERM', handler: () => void) {
+      ctx.signals.on(signal, handler);
+    },
   };
 }

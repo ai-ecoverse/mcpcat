@@ -6,8 +6,8 @@ import { resolveTarget } from '../client/targets.ts';
 import { MergedConfigSource } from '../config/index.ts';
 import type { McpServerConfig } from '../config/types.ts';
 import type { Platform } from '../platform/types.ts';
-import { runAdd, runEnable, runExposure, runImport, runList, runRm } from './config-verbs.ts';
 import { parseServeFlags, runServe } from '../serve/runtime.ts';
+import { runAdd, runEnable, runExposure, runImport, runList, runRm } from './config-verbs.ts';
 
 const VERBS = [
   'info',
@@ -88,7 +88,7 @@ Configuration verbs:
   logout <target>            Remove tokens (not implemented yet)
 
 Server and code verbs:
-  serve [--stdio|--http] …   Expose commands as MCP server (not implemented yet)
+  serve [--stdio|--http] …   Expose commands as MCP server
   code [-e src|file.js]      Run a codemode script (not implemented yet)
   discover <url>             Find MCP servers (not implemented yet)
   inbox                      Discovery inbox (not implemented yet)

@@ -18,7 +18,7 @@ export interface RpcOutcome {
   body: string;
 }
 
-const PROTOCOL_VERSIONS = ['2026-07-28', '2025-06-18'] as const;
+const PROTOCOL_VERSIONS = ['2026-07-28', '2025-11-25', '2025-06-18'] as const;
 const OUTPUT_CAP = 1_048_576;
 const JSON_CT = 'application/json; charset=utf-8';
 

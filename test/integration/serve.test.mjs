@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -9,6 +10,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const hostBin = join(root, 'dist/host/mcpcat.mjs');
 const fixturesDir = join(root, 'test/integration/fixtures');
 const fixtureCli = join(fixturesDir, 'serve-cli.mjs');
+const slowCli = join(fixturesDir, 'serve-slow-cli.mjs');
 
 function runHost(args, opts = {}) {
   try {
@@ -28,13 +30,13 @@ function runHost(args, opts = {}) {
   }
 }
 
-async function startServeHttp(extraArgs = []) {
+async function startServeHttp(extraArgs = [], extraEnv = {}) {
   const child = spawn(
     'node',
     [hostBin, 'serve', '--http', '0', `node=${fixtureCli}`, ...extraArgs],
     {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, NODE_NO_WARNINGS: '1' },
+      env: { ...process.env, NODE_NO_WARNINGS: '1', ...extraEnv },
     }
   );
 
@@ -82,6 +84,15 @@ function sendJsonRpc(child, method, params, id = 1) {
     child.stdout.on('data', onData);
     child.stdin.write(`${msg}\n`);
   });
+}
+
+function pidExists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 describe('serve: HTTP transport', () => {
@@ -161,10 +172,7 @@ describe('serve: HTTP transport', () => {
   it('non-loopback Origin is rejected', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        origin: 'https://evil.example.com',
-      },
+      headers: { 'content-type': 'application/json', origin: 'https://evil.example.com' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} }),
     });
     assert.equal(res.status, 403);
@@ -173,10 +181,7 @@ describe('serve: HTTP transport', () => {
   it('loopback Origin is accepted', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        origin: 'http://localhost:3000',
-      },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:3000' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} }),
     });
     assert.equal(res.status, 200);
@@ -209,13 +214,49 @@ describe('serve: HTTP transport', () => {
   it('Connection: close works', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        connection: 'close',
-      },
+      headers: { 'content-type': 'application/json', connection: 'close' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} }),
     });
     assert.equal(res.status, 200);
+  });
+});
+
+describe('serve: protocol versions', () => {
+  let server;
+
+  before(async () => {
+    server = await startServeHttp();
+  });
+
+  after(() => {
+    server?.child.kill('SIGTERM');
+  });
+
+  it('server/discover advertises 2025-11-25', async () => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: {} }),
+    });
+    const json = await res.json();
+    assert.ok(json.result.supportedVersions.includes('2025-11-25'));
+    assert.ok(json.result.supportedVersions.includes('2026-07-28'));
+    assert.ok(json.result.supportedVersions.includes('2025-06-18'));
+  });
+
+  it('initialize with 2025-11-25 is answered with that version', async () => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: '2025-11-25' },
+      }),
+    });
+    const json = await res.json();
+    assert.equal(json.result.protocolVersion, '2025-11-25');
   });
 });
 
@@ -230,10 +271,11 @@ describe('serve: stdio transport', () => {
     child?.kill('SIGTERM');
   });
 
-  it('server/discover returns supported versions', async () => {
+  it('server/discover returns supported versions including 2025-11-25', async () => {
     const resp = await sendJsonRpc(child, 'server/discover', {});
     assert.ok(resp.result);
     assert.ok(resp.result.supportedVersions.includes('2026-07-28'));
+    assert.ok(resp.result.supportedVersions.includes('2025-11-25'));
     assert.ok(resp.result.supportedVersions.includes('2025-06-18'));
   });
 
@@ -275,13 +317,7 @@ describe('serve: slicc-agent loopback wire shape', () => {
   });
 
   it('matches slicc-agent loopback request pattern', async () => {
-    const body = JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'tools/list',
-      params: {},
-    });
-
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
       headers: {
@@ -292,10 +328,8 @@ describe('serve: slicc-agent loopback wire shape', () => {
       },
       body,
     });
-
     assert.equal(res.status, 200);
     const json = await res.json();
-    assert.ok(json.result);
     assert.ok(json.result.tools.length > 0);
   });
 
@@ -304,12 +338,8 @@ describe('serve: slicc-agent loopback wire shape', () => {
       jsonrpc: '2.0',
       id: 1,
       method: 'tools/call',
-      params: {
-        name: 'node_echo',
-        arguments: { text: 'kernel' },
-      },
+      params: { name: 'node_echo', arguments: { text: 'kernel' } },
     });
-
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
       headers: {
@@ -319,19 +349,18 @@ describe('serve: slicc-agent loopback wire shape', () => {
       },
       body,
     });
-
     assert.equal(res.status, 200);
     const json = await res.json();
     assert.ok(json.result.content[0].text.includes('kernel'));
   });
 });
 
-describe('serve: --bearer authentication', () => {
+describe('serve: --bearer ${NAME} authentication', () => {
+  const MARKER = 'test-bearer-secret-value-42';
   let server;
-  const TOKEN = 'test-token-12345';
 
   before(async () => {
-    server = await startServeHttp(['--bearer', TOKEN]);
+    server = await startServeHttp(['--bearer', '${SERVE_TOKEN}'], { SERVE_TOKEN: MARKER });
   });
 
   after(() => {
@@ -350,10 +379,7 @@ describe('serve: --bearer authentication', () => {
   it('rejects wrong bearer token', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: 'Bearer wrong-token',
-      },
+      headers: { 'content-type': 'application/json', authorization: 'Bearer wrong-token' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} }),
     });
     assert.equal(res.status, 401);
@@ -362,13 +388,41 @@ describe('serve: --bearer authentication', () => {
   it('accepts correct bearer token', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${TOKEN}`,
-      },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${MARKER}` },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} }),
     });
     assert.equal(res.status, 200);
+  });
+
+  it('serve process cmdline does not contain the marker value', () => {
+    const pid = server.child.pid;
+    const cmdlinePath = `/proc/${pid}/cmdline`;
+    if (existsSync(cmdlinePath)) {
+      const cmdline = readFileSync(cmdlinePath, 'utf8');
+      assert.ok(!cmdline.includes(MARKER), 'marker found in /proc cmdline');
+    } else {
+      const ps = execFileSync('ps', ['-p', String(pid), '-o', 'args='], {
+        encoding: 'utf8',
+        timeout: 5000,
+      }).trim();
+      assert.ok(!ps.includes(MARKER), `marker found in ps output: ${ps}`);
+    }
+  });
+});
+
+describe('serve: --bearer rejects literal tokens', () => {
+  it('exits 2 when bearer is a literal value', () => {
+    const { stderr, status } = runHost([
+      'serve',
+      '--http',
+      '0',
+      '--bearer',
+      'literal-secret',
+      fixtureCli,
+    ]);
+    assert.equal(status, 2);
+    assert.ok(stderr.includes('${NAME}'));
+    assert.ok(stderr.includes('variable reference'));
   });
 });
 
@@ -392,6 +446,32 @@ describe('serve: --tool templates', () => {
   });
 });
 
+describe('serve: --json prints listening URL', () => {
+  it('outputs JSON with url on stdout', async () => {
+    const child = spawn('node', [hostBin, 'serve', '--http', '0', '--json', `node=${fixtureCli}`], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, NODE_NO_WARNINGS: '1' },
+    });
+
+    const jsonLine = await new Promise((resolve, reject) => {
+      let data = '';
+      child.stdout.on('data', (chunk) => {
+        data += chunk.toString();
+        const nlIdx = data.indexOf('\n');
+        if (nlIdx >= 0) resolve(data.slice(0, nlIdx));
+      });
+      child.on('error', reject);
+      setTimeout(() => reject(new Error('timeout waiting for JSON output')), 10_000);
+    });
+
+    child.kill('SIGTERM');
+    const parsed = JSON.parse(jsonLine);
+    assert.ok(parsed.url);
+    assert.ok(parsed.url.startsWith('http://'));
+    assert.ok(parsed.url.endsWith('/mcp'));
+  });
+});
+
 describe('serve: no args returns error', () => {
   it('exits 2 when no commands given', () => {
     const { stderr, status } = runHost(['serve']);
@@ -401,10 +481,11 @@ describe('serve: no args returns error', () => {
 });
 
 describe('serve: secrets never passed to children', () => {
+  const MARKER = 'secret-token-for-test';
   let server;
 
   before(async () => {
-    server = await startServeHttp(['--bearer', 'secret-token']);
+    server = await startServeHttp(['--bearer', '${SERVE_SECRET}'], { SERVE_SECRET: MARKER });
   });
 
   after(() => {
@@ -416,26 +497,81 @@ describe('serve: secrets never passed to children', () => {
       jsonrpc: '2.0',
       id: 1,
       method: 'tools/call',
-      params: {
-        name: 'node_invoke',
-        arguments: { argv: ['echo', 'test'] },
-      },
+      params: { name: 'node_invoke', arguments: { argv: ['echo', 'test'] } },
     });
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: 'Bearer secret-token',
-      },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${MARKER}` },
       body,
     });
     assert.equal(res.status, 200);
     const json = await res.json();
-    assert.ok(!JSON.stringify(json).includes('secret-token'));
+    assert.ok(!JSON.stringify(json).includes(MARKER));
   });
 });
 
-describe('serve: SIGINT/SIGTERM clean shutdown', () => {
+describe('serve: SIGTERM kills in-flight children (no orphans)', { timeout: 30_000 }, () => {
+  it('kills a running command and its grandchild on SIGTERM', async () => {
+    const child = spawn('node', [hostBin, 'serve', '--http', '0', `slow=${slowCli}`], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, NODE_NO_WARNINGS: '1' },
+    });
+
+    const port = await new Promise((resolve, reject) => {
+      let data = '';
+      child.stderr.on('data', (chunk) => {
+        data += chunk.toString();
+        const match = data.match(/listening on http:\/\/[^:]+:(\d+)\/mcp/);
+        if (match) resolve(Number(match[1]));
+      });
+      child.on('error', reject);
+    });
+
+    const callPromise = fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', connection: 'close' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'slow_slow', arguments: {} },
+      }),
+    }).catch(() => {});
+
+    let grandchildPid;
+    await new Promise((resolve) => {
+      let buf = '';
+      const onData = (chunk) => {
+        buf += chunk.toString();
+        const match = buf.match(/grandchild:(\d+)/);
+        if (match) {
+          grandchildPid = Number(match[1]);
+          child.stderr.removeListener('data', onData);
+          resolve();
+        }
+      };
+      child.stderr.on('data', onData);
+      setTimeout(resolve, 5000);
+    });
+
+    child.kill('SIGTERM');
+
+    const exitCode = await new Promise((resolve) => {
+      child.on('exit', (code) => resolve(code));
+    });
+
+    await callPromise;
+    assert.ok(exitCode === 0 || exitCode === null, `serve exited with ${exitCode}`);
+
+    await sleep(1000);
+
+    if (grandchildPid) {
+      assert.ok(!pidExists(grandchildPid), `grandchild ${grandchildPid} is still alive`);
+    }
+  });
+});
+
+describe('serve: SIGINT/SIGTERM clean shutdown (idle)', () => {
   it('shuts down cleanly on SIGTERM', async () => {
     const server = await startServeHttp();
     server.child.kill('SIGTERM');
