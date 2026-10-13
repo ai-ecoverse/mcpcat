@@ -355,6 +355,119 @@ describe('auth: loopback callback (no paste)', () => {
   });
 });
 
+describe('auth: automatic refresh after token expiry', () => {
+  let as;
+  let mcp;
+  let tempDir;
+
+  before(async () => {
+    as = await startServer('oauth-as.mjs');
+    mcp = await startServer('server-oauth-protected.mjs', [as.issuer]);
+    tempDir = join(tmpdir(), `mcpcat-e2e-refresh-${Date.now()}`);
+    mkdirSync(join(tempDir, 'agent'), { recursive: true });
+    writeMcpJson(join(tempDir, 'agent'), 'refresh-srv', `http://127.0.0.1:${mcp.port}/mcp`);
+    await clearAsLog(as.port);
+
+    const env = {
+      PI_CODING_AGENT_DIR: join(tempDir, 'agent'),
+      HOME: tempDir,
+    };
+    const loginProc = spawn('node', [hostBin, 'login', 'refresh-srv', '--no-browser'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, NODE_NO_WARNINGS: '1', ...env },
+    });
+
+    let stderrData = '';
+    loginProc.stderr.on('data', (chunk) => {
+      stderrData += chunk.toString();
+    });
+
+    const authorizeUrl = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error(`No authorize URL: ${stderrData}`)),
+        10_000
+      );
+      const check = () => {
+        const match = stderrData.match(/(http:\/\/127\.0\.0\.1:\d+\/authorize\S+)/);
+        if (match) {
+          clearTimeout(timeout);
+          resolve(match[1]);
+        } else {
+          setTimeout(check, 100);
+        }
+      };
+      check();
+    });
+
+    const authRes = await fetch(authorizeUrl, { redirect: 'manual' });
+    const redirectUrl = authRes.headers.get('location');
+    loginProc.stdin.write(redirectUrl + '\n');
+    loginProc.stdin.end();
+    await new Promise((resolve) => loginProc.on('exit', resolve));
+
+    const log = await asLog(as.port);
+    const tokenEntry = log.find(
+      (e) => e.type === 'token_issued' && e.grant === 'authorization_code'
+    );
+    assert.ok(tokenEntry, 'initial token should be issued');
+    await registerToken(mcp.port, tokenEntry.accessToken);
+
+    const callResult = runHost(['call', 'refresh-srv', 'echo', '-d', '{"text":"before"}'], { env });
+    assert.equal(callResult.status, 0, `initial call should succeed: ${callResult.stderr}`);
+  });
+
+  after(() => {
+    as?.child.kill('SIGTERM');
+    mcp?.child.kill('SIGTERM');
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('refreshes automatically after token expiry and leaves new token in store at 0600', async () => {
+    const env = {
+      PI_CODING_AGENT_DIR: join(tempDir, 'agent'),
+      HOME: tempDir,
+    };
+
+    await expireAllOnMcp(mcp.port);
+    await expireOnAs(as.port);
+    await clearAsLog(as.port);
+
+    const authPath = join(tempDir, 'agent', 'mcp-auth.json');
+    const storeBefore = JSON.parse(readFileSync(authPath, 'utf8'));
+    const keysBefore = Object.keys(storeBefore);
+    assert.ok(keysBefore.length > 0, 'should have a stored token');
+    const oldToken = Object.values(storeBefore)[0].tokens?.access_token;
+
+    const callResult = runHost(['call', 'refresh-srv', 'echo', '-d', '{"text":"refreshed"}'], {
+      env,
+    });
+
+    const log = await asLog(as.port);
+    const refreshEntry = log.find((e) => e.type === 'token_issued' && e.grant === 'refresh_token');
+    assert.ok(refreshEntry, 'refresh should have been issued');
+
+    await registerToken(mcp.port, refreshEntry.accessToken);
+
+    const callResult2 = runHost(['call', 'refresh-srv', 'echo', '-d', '{"text":"after-refresh"}'], {
+      env,
+    });
+    assert.equal(callResult2.status, 0, `call after refresh should succeed: ${callResult2.stderr}`);
+    assert.ok(callResult2.stdout.includes('after-refresh'));
+
+    const storeAfter = JSON.parse(readFileSync(authPath, 'utf8'));
+    const newToken = Object.values(storeAfter)[0].tokens?.access_token;
+    assert.notEqual(newToken, oldToken, 'token should have changed');
+    assert.ok(newToken, 'new token should be present');
+
+    const s = statSync(authPath);
+    assert.equal(
+      s.mode & 0o777,
+      0o600,
+      `file should be 0600 after refresh, got ${(s.mode & 0o777).toString(8)}`
+    );
+  });
+});
+
 describe('auth: 401 without stored tokens exits 4', () => {
   let mcp;
   let tempDir;
@@ -454,6 +567,10 @@ describe('auth: step-up insufficient_scope exits 4', () => {
     };
     const result = runHost(['call', 'stepup-srv', 'echo', '-d', '{"text":"hi"}'], { env });
     assert.equal(result.status, 4, `expected exit 4, got ${result.status}: ${result.stderr}`);
+    assert.ok(
+      result.stderr.includes('--scope') && result.stderr.includes('admin'),
+      `should mention --scope admin: ${result.stderr}`
+    );
   });
 });
 
