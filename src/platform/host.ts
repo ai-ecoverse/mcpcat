@@ -1,6 +1,17 @@
 import { spawn as cpSpawn } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
+import {
+  access,
+  chmod,
+  mkdir,
+  open,
+  readFile,
+  rename,
+  rmdir,
+  stat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { Readable, Writable } from 'node:stream';
 import * as tty from 'node:tty';
@@ -121,6 +132,13 @@ const hostFs: FsApi = {
   },
   async unlink(path: string): Promise<void> {
     await unlink(path);
+  },
+  async createExclusive(path: string): Promise<void> {
+    const fh = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
+    await fh.close();
+  },
+  async chmod(path: string, mode: number): Promise<void> {
+    await chmod(path, mode);
   },
 };
 

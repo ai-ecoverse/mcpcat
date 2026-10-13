@@ -41,6 +41,8 @@ export interface FsApi {
   mkdirExclusive(path: string): Promise<void>;
   rmdir(path: string): Promise<void>;
   unlink?(path: string): Promise<void>;
+  createExclusive?(path: string): Promise<void>;
+  chmod?(path: string, mode: number): Promise<void>;
 }
 
 export interface Platform {
