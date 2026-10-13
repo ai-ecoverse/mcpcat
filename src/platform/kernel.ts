@@ -82,6 +82,16 @@ function kernelFs(ctx: KernelContext): FsApi {
     rename: (from: string, to: string) => ctx.fs.rename(from, to),
     stat: (path: string) => ctx.fs.stat(path),
     exists: (path: string) => ctx.fs.exists(path),
+    async mkdirExclusive(path: string): Promise<void> {
+      const exists = await ctx.fs.exists(path);
+      if (exists) {
+        const err = new Error(`EEXIST: directory already exists, mkdir '${path}'`);
+        (err as NodeJS.ErrnoException).code = 'EEXIST';
+        throw err;
+      }
+      await ctx.fs.mkdir(path);
+    },
+    rmdir: (path: string) => ctx.fs.rm(path),
   };
 }
 

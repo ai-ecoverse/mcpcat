@@ -1,6 +1,6 @@
 import { spawn as cpSpawn } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rename, rmdir, stat, writeFile } from 'node:fs/promises';
 import { Readable, Writable } from 'node:stream';
 import * as tty from 'node:tty';
 import type { FsApi, Platform, SpawnOptions, SpawnResult } from './types.ts';
@@ -71,6 +71,12 @@ const hostFs: FsApi = {
     } catch {
       return false;
     }
+  },
+  async mkdirExclusive(path: string): Promise<void> {
+    await mkdir(path, { recursive: false });
+  },
+  async rmdir(path: string): Promise<void> {
+    await rmdir(path);
   },
 };
 

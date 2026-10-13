@@ -1,0 +1,4 @@
+[mcp_servers.github]
+command = "npx"
+args = ["-y", "mcp-github"]
+url = "https://github.com/mcp"

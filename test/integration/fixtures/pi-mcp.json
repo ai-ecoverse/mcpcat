@@ -1,0 +1,34 @@
+{
+  "mcpServers": {
+    "docs": {
+      "url": "https://example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${DOCS_TOKEN}"
+      },
+      "description": "Product docs",
+      "exposure": "direct",
+      "timeout": 60
+    },
+    "fs": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    },
+    "time": {
+      "command": "uvx",
+      "args": ["mcp-server-time"],
+      "enabled": false
+    },
+    "sentry": {
+      "url": "https://mcp.sentry.dev/mcp",
+      "oauth": {
+        "clientId": "my-client",
+        "scope": "read write"
+      }
+    }
+  },
+  "autoEnableCodemode": true,
+  "customKey": "pi wrote this",
+  "nested": {
+    "deep": [1, 2, 3]
+  }
+}

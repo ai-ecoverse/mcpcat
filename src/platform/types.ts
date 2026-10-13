@@ -38,6 +38,8 @@ export interface FsApi {
   rename(from: string, to: string): Promise<void>;
   stat(path: string): Promise<{ size: number; mtimeMs: number }>;
   exists(path: string): Promise<boolean>;
+  mkdirExclusive(path: string): Promise<void>;
+  rmdir(path: string): Promise<void>;
 }
 
 export interface Platform {
