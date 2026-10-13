@@ -8,35 +8,40 @@ ASSET_DIR="${1:?usage: test-install.sh <asset-dir>}"
 ASSET_DIR="$(cd "$ASSET_DIR" && pwd)"
 
 INSTALL_DIR="$(mktemp -d)"
-trap 'rm -rf "$INSTALL_DIR"' EXIT
-
-serve_assets() {
-  python3 -m http.server 0 --directory "$ASSET_DIR" 2>/dev/null &
-  _pid=$!
-  sleep 1
-  _port=$(lsof -iTCP -sTCP:LISTEN -nP -a -p "$_pid" 2>/dev/null | grep -o ':\([0-9]*\) ' | head -1 | tr -d ': ')
-  if [ -z "$_port" ]; then
-    _port=$(ss -tlnp 2>/dev/null | grep "pid=$_pid" | grep -o ':\([0-9]*\) ' | head -1 | tr -d ': ')
-  fi
-  printf '%s %s' "$_pid" "$_port"
-}
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
   exit 1
 }
 
-read -r SERVER_PID SERVER_PORT <<EOF
-$(serve_assets)
-EOF
+SERVER_PID=""
+cleanup() {
+  if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null || true; fi
+  rm -rf "$INSTALL_DIR"
+}
+trap cleanup EXIT
+
+PORT_FILE="$(mktemp)"
+python3 -c "
+import http.server, socketserver, sys, os, threading
+os.chdir('$ASSET_DIR')
+h = http.server.SimpleHTTPRequestHandler
+s = socketserver.TCPServer(('127.0.0.1', 0), h)
+with open('$PORT_FILE', 'w') as f:
+    f.write(str(s.server_address[1]))
+s.serve_forever()
+" 2>/dev/null &
+SERVER_PID=$!
+
+sleep 1
+SERVER_PORT=$(cat "$PORT_FILE")
+rm -f "$PORT_FILE"
 
 if [ -z "$SERVER_PORT" ]; then
   fail "could not start asset server"
 fi
-trap 'kill "$SERVER_PID" 2>/dev/null; rm -rf "$INSTALL_DIR"' EXIT
 
 BASE="http://127.0.0.1:${SERVER_PORT}"
-
 printf 'Asset server on %s\n' "$BASE"
 
 printf 'Test 1: install with custom dir\n'
