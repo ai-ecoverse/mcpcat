@@ -9,9 +9,17 @@ export interface ServerInfo {
   instructions?: string;
 }
 
+export interface CallToolOptions {
+  onProgress?: (progress: number, total?: number, message?: string) => void;
+}
+
 export interface McpConnection {
   info(): Promise<ServerInfo>;
   listTools(): Promise<Tool[]>;
-  callTool(name: string, args?: Record<string, unknown>): Promise<CallToolResult>;
+  callTool(
+    name: string,
+    args?: Record<string, unknown>,
+    options?: CallToolOptions
+  ): Promise<CallToolResult>;
   close(): Promise<void>;
 }
