@@ -1,0 +1,3 @@
+{
+  "extends": ["github>ai-ecoverse/slicc-shared-web"]
+}
