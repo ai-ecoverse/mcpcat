@@ -31,6 +31,7 @@ const TOOLS = [
 
 let sessionCounter = 0;
 const sessions = new Set();
+const deletedSessions = [];
 
 function jsonRpc(id, result) {
   return JSON.stringify({ jsonrpc: '2.0', id, result });
@@ -107,9 +108,18 @@ function handleRequest(body, sessionId) {
 const useSse = process.argv.includes('--sse');
 
 const server = createServer((req, res) => {
+  if (req.method === 'GET' && req.url === '/_test/deletes') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(deletedSessions));
+    return;
+  }
+
   if (req.method === 'DELETE') {
     const sid = req.headers['mcp-session-id'];
-    if (sid) sessions.delete(sid);
+    if (sid) {
+      sessions.delete(sid);
+      deletedSessions.push(sid);
+    }
     res.writeHead(200);
     res.end();
     return;

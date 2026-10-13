@@ -1,6 +1,7 @@
 import type { CallToolResult, Tool } from '@earendil-works/pi-mcp';
 import { connect } from '../client/connect.ts';
 import type { McpConnection } from '../client/connection.ts';
+import { InputRequiredError } from '../client/stateless-connection.ts';
 import { resolveTarget } from '../client/targets.ts';
 import { createConfigSource } from '../config/source.ts';
 import type { Platform } from '../platform/types.ts';
@@ -446,6 +447,7 @@ export async function run(platform: Platform, version: string, args: string[]): 
       ...resolved,
       headers: { ...resolved.headers, ...parsed.headers },
       protocolVersion: parsed.protocolVersion,
+      version,
     });
   } catch (err) {
     await platform.write(2, `mcpcat: connection failed: ${(err as Error).message}\n`);
@@ -455,6 +457,10 @@ export async function run(platform: Platform, version: string, args: string[]): 
   try {
     return await runVerb(platform, parsed, conn);
   } catch (err) {
+    if (err instanceof InputRequiredError) {
+      await platform.write(2, `${err.requestJson}\n`);
+      return 6;
+    }
     await platform.write(2, `mcpcat: ${(err as Error).message}\n`);
     return 5;
   } finally {

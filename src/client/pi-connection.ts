@@ -15,12 +15,13 @@ export interface PiConnectionOptions {
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
+  version?: string;
 }
 
 export async function createPiConnection(options: PiConnectionOptions): Promise<McpConnection> {
   const clientOptions: McpClientOptions = {
     name: 'mcpcat',
-    version: '0.0.0',
+    version: options.version ?? '0.0.0',
   };
 
   const client = new McpClient(clientOptions);

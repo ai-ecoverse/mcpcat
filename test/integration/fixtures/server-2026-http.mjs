@@ -33,6 +33,11 @@ const TOOLS = [
     description: 'Always returns an error',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'needs-input',
+    description: 'Returns input_required resultType',
+    inputSchema: { type: 'object', properties: {} },
+  },
 ];
 
 function jsonRpc(id, result) {
@@ -89,6 +94,15 @@ function handleRequest(body) {
           isError: true,
         });
       }
+      if (toolName === 'needs-input') {
+        return jsonRpc(id, {
+          resultType: 'input_required',
+          content: [{ type: 'text', text: 'Please provide additional input' }],
+          inputRequest: {
+            schema: { type: 'object', properties: { answer: { type: 'string' } } },
+          },
+        });
+      }
       return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
     }
 
@@ -101,6 +115,12 @@ const server = createServer((req, res) => {
   if (req.method !== 'POST') {
     res.writeHead(405, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Method not allowed' }));
+    return;
+  }
+
+  if (!req.headers['mcp-method']) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Missing required Mcp-Method header' }));
     return;
   }
 

@@ -15,6 +15,7 @@ export interface ConnectOptions {
   env?: Record<string, string>;
   cwd?: string;
   protocolVersion?: string;
+  version?: string;
 }
 
 export async function connect(platform: Platform, options: ConnectOptions): Promise<McpConnection> {
@@ -24,6 +25,7 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
       args: options.args,
       env: options.env,
       cwd: options.cwd,
+      version: options.version,
     });
   }
 
@@ -35,6 +37,7 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
     return createPiConnection({
       url: options.url,
       headers: options.headers,
+      version: options.version,
     });
   }
 
@@ -43,6 +46,7 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
       url: options.url,
       headers: options.headers,
       fetchImpl: platform.fetch,
+      clientInfo: { name: 'mcpcat', version: options.version ?? '0.0.0' },
     });
   } catch (err) {
     const isMethodNotFound =
@@ -57,6 +61,7 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
       return createPiConnection({
         url: options.url,
         headers: options.headers,
+        version: options.version,
       });
     }
 

@@ -11,12 +11,6 @@ interface JsonRpcResponse {
   method?: string;
 }
 
-interface SseFrame {
-  id?: number | string | null;
-  result?: unknown;
-  error?: { code: number; message: string; data?: unknown };
-}
-
 export class StatelessRpcError extends Error {
   readonly code: number;
   readonly data?: unknown;
@@ -37,7 +31,16 @@ export class StatelessHttpError extends Error {
   }
 }
 
-function selectSseFrame(body: Uint8Array, targetId: number): SseFrame {
+export class InputRequiredError extends Error {
+  readonly requestJson: string;
+  constructor(requestJson: string) {
+    super('Server requires input (resultType: input_required)');
+    this.name = 'InputRequiredError';
+    this.requestJson = requestJson;
+  }
+}
+
+function selectSseFrame(body: Uint8Array, targetId: number): JsonRpcResponse {
   const text = new TextDecoder().decode(body);
   const blocks = text.replace(/\r\n/g, '\n').split(/\n\n/);
   for (const block of blocks) {
@@ -55,11 +58,10 @@ function selectSseFrame(body: Uint8Array, targetId: number): SseFrame {
   throw new Error(`SSE stream ended without response for id ${targetId}`);
 }
 
-function _headerGet(headers: Record<string, string>, name: string): string | undefined {
-  const lower = name.toLowerCase();
-  for (const [k, v] of Object.entries(headers)) {
-    if (k.toLowerCase() === lower) return v;
-  }
+function mcpNameForMethod(method: string, params: Record<string, unknown>): string | undefined {
+  if (method === 'tools/call') return params.name as string | undefined;
+  if (method === 'prompts/get') return params.name as string | undefined;
+  if (method === 'resources/read') return params.uri as string | undefined;
   return undefined;
 }
 
@@ -85,13 +87,19 @@ export async function createStatelessConnection(
   let nextId = 1;
   let negotiatedVersion: string | undefined;
 
-  async function request(method: string, params: unknown): Promise<unknown> {
+  async function request(method: string, params: Record<string, unknown>): Promise<unknown> {
     const id = nextId++;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
+      'Mcp-Method': method,
       ...extraHeaders,
     };
+
+    const mcpName = mcpNameForMethod(method, params);
+    if (mcpName) {
+      headers['Mcp-Name'] = mcpName;
+    }
 
     if (negotiatedVersion) {
       headers['Mcp-Protocol-Version'] = negotiatedVersion;
@@ -106,7 +114,7 @@ export async function createStatelessConnection(
       jsonrpc: '2.0',
       id,
       method,
-      params: { ...(params as Record<string, unknown>), _meta: meta },
+      params: { ...params, _meta: meta },
     });
 
     const controller = new AbortController();
@@ -147,7 +155,7 @@ export async function createStatelessConnection(
     let frame: JsonRpcResponse;
     if (ct.toLowerCase().includes('text/event-stream')) {
       const bytes = new Uint8Array(await res.arrayBuffer());
-      frame = selectSseFrame(bytes, id) as JsonRpcResponse;
+      frame = selectSseFrame(bytes, id);
     } else {
       frame = (await res.json()) as JsonRpcResponse;
     }
@@ -196,8 +204,17 @@ export async function createStatelessConnection(
     },
 
     async callTool(name: string, args?: Record<string, unknown>): Promise<CallToolResult> {
-      const result = await request('tools/call', { name, arguments: args ?? {} });
-      return result as CallToolResult;
+      const result = (await request('tools/call', {
+        name,
+        arguments: args ?? {},
+      })) as CallToolResult & { resultType?: string };
+      const resultType = result.resultType ?? 'complete';
+      if (resultType === 'input_required') {
+        throw new InputRequiredError(
+          JSON.stringify({ name, arguments: args ?? {}, result }, null, 2)
+        );
+      }
+      return result;
     },
 
     async close(): Promise<void> {},

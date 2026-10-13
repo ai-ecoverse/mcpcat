@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -326,3 +327,73 @@ describe('client: error handling', () => {
     assert.ok(stderr.includes('requires a tool name'));
   });
 });
+
+describe('client: input_required (resultType)', () => {
+  let server;
+
+  before(async () => {
+    server = await startFixtureServer('server-2026-http.mjs');
+  });
+
+  after(() => {
+    server?.child.kill('SIGTERM');
+  });
+
+  it('exits 6 when tool returns input_required', () => {
+    const url = `http://127.0.0.1:${server.port}`;
+    const { stderr, status } = runHost(['call', url, 'needs-input', '-d', '{}']);
+    assert.equal(status, 6);
+    const parsed = JSON.parse(stderr.trim());
+    assert.equal(parsed.name, 'needs-input');
+  });
+});
+
+describe('client: lifecycle (D4)', () => {
+  it('stateful HTTP session is DELETEd on close', async () => {
+    const server = await startFixtureServer('server-legacy-http.mjs');
+    try {
+      const url = `http://127.0.0.1:${server.port}`;
+      runHost(['info', url]);
+      await sleep(200);
+      const res = await fetch(`http://127.0.0.1:${server.port}/_test/deletes`);
+      const deletes = await res.json();
+      assert.ok(deletes.length > 0, `expected at least one DELETE, got ${JSON.stringify(deletes)}`);
+      assert.ok(deletes[0].startsWith('session-'), `expected session id, got ${deletes[0]}`);
+    } finally {
+      server.child.kill('SIGTERM');
+    }
+  });
+
+  it('stdio server process group is gone after command', async () => {
+    const pidFile = join(tmpdir(), `mcpcat-gc-test-${process.pid}-${Date.now()}.pid`);
+    const script = join(fixturesDir, 'server-stdio-grandchild.mjs');
+    try {
+      const { status } = runHost([
+        'call',
+        `stdio:node ${script} ${pidFile}`,
+        'echo',
+        '-d',
+        '{"message":"gc test"}',
+      ]);
+      assert.equal(status, 0);
+      assert.ok(existsSync(pidFile), 'pid file should have been written');
+      const pids = readFileSync(pidFile, 'utf8').trim().split('\n').map(Number);
+      const serverPid = pids[0];
+      const grandchildPid = pids[1];
+      await sleep(500);
+      assert.ok(!isAlive(serverPid), `server pid ${serverPid} should be dead`);
+      assert.ok(!isAlive(grandchildPid), `grandchild pid ${grandchildPid} should be dead`);
+    } finally {
+      rmSync(pidFile, { force: true });
+    }
+  });
+});
+
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
