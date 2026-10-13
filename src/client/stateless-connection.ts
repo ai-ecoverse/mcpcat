@@ -1,5 +1,6 @@
 import type { CallToolResult, Tool } from '@earendil-works/pi-mcp';
-import type { McpConnection, ServerInfo } from './connection.ts';
+import type { VerboseLogger } from '../cli/verbose.ts';
+import type { CallToolOptions, McpConnection, ServerInfo } from './connection.ts';
 
 export const STATELESS_PROTOCOL_VERSION = '2026-07-28';
 
@@ -40,6 +41,24 @@ export class InputRequiredError extends Error {
   }
 }
 
+export class McpTimeoutError extends Error {
+  constructor(method: string, ms: number) {
+    super(`timeout after ${ms}ms waiting for ${method}`);
+    this.name = 'McpTimeoutError';
+  }
+}
+
+export class McpAuthError extends Error {
+  readonly status: number;
+  readonly target: string;
+  constructor(status: number, target: string) {
+    super(`HTTP ${status}: authentication required. Run: mcpcat login ${target}`);
+    this.name = 'McpAuthError';
+    this.status = status;
+    this.target = target;
+  }
+}
+
 function selectSseFrame(body: Uint8Array, targetId: number): JsonRpcResponse {
   const text = new TextDecoder().decode(body);
   const blocks = text.replace(/\r\n/g, '\n').split(/\n\n/);
@@ -71,6 +90,8 @@ export interface StatelessConnectionOptions {
   fetchImpl: typeof globalThis.fetch;
   timeoutMs?: number;
   clientInfo?: { name: string; version: string };
+  signal?: AbortSignal;
+  verbose?: VerboseLogger;
 }
 
 export async function createStatelessConnection(
@@ -82,34 +103,77 @@ export async function createStatelessConnection(
     fetchImpl,
     timeoutMs = 60_000,
     clientInfo = { name: 'mcpcat', version: '0.0.0' },
+    signal: externalSignal,
+    verbose,
   } = options;
 
   let nextId = 1;
   let negotiatedVersion: string | undefined;
 
-  async function request(method: string, params: Record<string, unknown>): Promise<unknown> {
-    const id = nextId++;
-    const headers: Record<string, string> = {
+  function buildHeaders(method: string, params: Record<string, unknown>): Record<string, string> {
+    const h: Record<string, string> = {
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
       'Mcp-Method': method,
       ...extraHeaders,
     };
+    const n = mcpNameForMethod(method, params);
+    if (n) h['Mcp-Name'] = n;
+    if (negotiatedVersion) h['Mcp-Protocol-Version'] = negotiatedVersion;
+    return h;
+  }
 
-    const mcpName = mcpNameForMethod(method, params);
-    if (mcpName) {
-      headers['Mcp-Name'] = mcpName;
+  function makeAbort(): {
+    controller: AbortController;
+    timer: ReturnType<typeof setTimeout>;
+  } {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        clearTimeout(timer);
+        controller.abort();
+      } else {
+        externalSignal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer);
+            controller.abort();
+          },
+          { once: true }
+        );
+      }
     }
+    return { controller, timer };
+  }
 
-    if (negotiatedVersion) {
-      headers['Mcp-Protocol-Version'] = negotiatedVersion;
+  function logHeaders(dir: '>' | '<', entries: Iterable<[string, string]>): void {
+    if (!verbose?.enabled) return;
+    for (const [k, v] of entries) {
+      if (dir === '>') verbose.headerOut(k, v);
+      else verbose.headerIn(k, v);
     }
+  }
 
+  async function handleErrorStatus(res: Response, method: string): Promise<never> {
+    if (res.status === 401 || res.status === 403) throw new McpAuthError(res.status, url);
+    const text = await res.text();
+    let rpc: { code: number; message: string; data?: unknown } | undefined;
+    try {
+      const p = JSON.parse(text) as JsonRpcResponse;
+      if (p.error && typeof p.error.code === 'number') rpc = p.error;
+    } catch {}
+    if (rpc) throw new StatelessRpcError(rpc.code, rpc.message, rpc.data);
+    throw new StatelessHttpError(res.status, res.statusText, method, text.slice(0, 512));
+  }
+
+  async function request(method: string, params: Record<string, unknown>): Promise<unknown> {
+    const id = nextId++;
+    const headers = buildHeaders(method, params);
     const meta: Record<string, unknown> = {
       protocolVersion: negotiatedVersion ?? STATELESS_PROTOCOL_VERSION,
       clientInfo,
     };
-
     const body = JSON.stringify({
       jsonrpc: '2.0',
       id,
@@ -117,9 +181,12 @@ export async function createStatelessConnection(
       params: { ...params, _meta: meta },
     });
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    if (verbose?.enabled) {
+      verbose.request(method, body);
+      logHeaders('>', Object.entries(headers));
+    }
 
+    const { controller, timer } = makeAbort();
     let res: Response;
     try {
       res = await fetchImpl(url, {
@@ -128,38 +195,31 @@ export async function createStatelessConnection(
         body,
         signal: controller.signal,
       });
+    } catch (err) {
+      clearTimeout(timer);
+      if (controller.signal.aborted && !externalSignal?.aborted) {
+        throw new McpTimeoutError(method, timeoutMs);
+      }
+      throw err;
     } finally {
       clearTimeout(timer);
     }
 
-    if (res.status === 401) {
-      throw new StatelessHttpError(401, 'Unauthorized', method, '');
+    if (verbose?.enabled) {
+      verbose.http('<', `HTTP/1.1 ${res.status} ${res.statusText}`);
+      logHeaders('<', res.headers.entries());
     }
-
-    if (res.status >= 400) {
-      const text = await res.text();
-      let rpcError: { code: number; message: string; data?: unknown } | undefined;
-      try {
-        const parsed = JSON.parse(text) as JsonRpcResponse;
-        if (parsed.error && typeof parsed.error.code === 'number') {
-          rpcError = parsed.error;
-        }
-      } catch {}
-      if (rpcError) {
-        throw new StatelessRpcError(rpcError.code, rpcError.message, rpcError.data);
-      }
-      throw new StatelessHttpError(res.status, res.statusText, method, text.slice(0, 512));
-    }
+    if (res.status >= 400) await handleErrorStatus(res, method);
 
     const ct = res.headers.get('content-type') ?? '';
     let frame: JsonRpcResponse;
     if (ct.toLowerCase().includes('text/event-stream')) {
-      const bytes = new Uint8Array(await res.arrayBuffer());
-      frame = selectSseFrame(bytes, id);
+      frame = selectSseFrame(new Uint8Array(await res.arrayBuffer()), id);
     } else {
       frame = (await res.json()) as JsonRpcResponse;
     }
 
+    if (verbose?.enabled) verbose.response(JSON.stringify(frame));
     if (frame.error) {
       throw new StatelessRpcError(frame.error.code, frame.error.message, frame.error.data);
     }
@@ -169,11 +229,9 @@ export async function createStatelessConnection(
   const discoverResult = (await request('server/discover', {
     protocolVersion: STATELESS_PROTOCOL_VERSION,
   })) as { supportedVersions?: string[] } | null;
-
   const supported = Array.isArray(discoverResult?.supportedVersions)
     ? discoverResult.supportedVersions.filter((v): v is string => typeof v === 'string')
     : [];
-
   if (!supported.includes(STATELESS_PROTOCOL_VERSION)) {
     throw new Error(
       `Server does not support ${STATELESS_PROTOCOL_VERSION} (advertised: ${supported.join(', ') || 'none'})`
@@ -186,37 +244,36 @@ export async function createStatelessConnection(
   return {
     async info(): Promise<ServerInfo> {
       if (serverInfoCache) return serverInfoCache;
-      const result = discoverResult as Record<string, unknown> | null;
+      const r = discoverResult as Record<string, unknown> | null;
       serverInfoCache = {
-        name: (result?.serverInfo as Record<string, unknown>)?.name as string | undefined,
-        version: (result?.serverInfo as Record<string, unknown>)?.version as string | undefined,
-        title: (result?.serverInfo as Record<string, unknown>)?.title as string | undefined,
+        name: (r?.serverInfo as Record<string, unknown>)?.name as string | undefined,
+        version: (r?.serverInfo as Record<string, unknown>)?.version as string | undefined,
+        title: (r?.serverInfo as Record<string, unknown>)?.title as string | undefined,
         protocolVersion: STATELESS_PROTOCOL_VERSION,
-        capabilities: (result?.capabilities as Record<string, unknown>) ?? {},
-        instructions: result?.instructions as string | undefined,
+        capabilities: (r?.capabilities as Record<string, unknown>) ?? {},
+        instructions: r?.instructions as string | undefined,
       };
       return serverInfoCache;
     },
-
     async listTools(): Promise<Tool[]> {
-      const result = (await request('tools/list', {})) as { tools?: Tool[] } | null;
-      return result?.tools ?? [];
+      return ((await request('tools/list', {})) as { tools?: Tool[] } | null)?.tools ?? [];
     },
-
-    async callTool(name: string, args?: Record<string, unknown>): Promise<CallToolResult> {
+    async callTool(
+      name: string,
+      args?: Record<string, unknown>,
+      _callOptions?: CallToolOptions
+    ): Promise<CallToolResult> {
       const result = (await request('tools/call', {
         name,
         arguments: args ?? {},
       })) as CallToolResult & { resultType?: string };
-      const resultType = result.resultType ?? 'complete';
-      if (resultType === 'input_required') {
+      if ((result.resultType ?? 'complete') === 'input_required') {
         throw new InputRequiredError(
           JSON.stringify({ name, arguments: args ?? {}, result }, null, 2)
         );
       }
       return result;
     },
-
     async close(): Promise<void> {},
   };
 }

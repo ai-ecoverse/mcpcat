@@ -38,6 +38,44 @@ const TOOLS = [
     description: 'Returns input_required resultType',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'weather',
+    description: 'Get weather forecast',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        city: { type: 'string', description: 'City name' },
+        days: { type: 'integer', description: 'Number of days' },
+        verbose: { type: 'boolean', description: 'Verbose output' },
+      },
+      required: ['city'],
+    },
+  },
+  {
+    name: 'image-tool',
+    description: 'Returns an image',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'resource-link-tool',
+    description: 'Returns a resource link',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'structured-tool',
+    description: 'Returns structured content',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'multi-content',
+    description: 'Returns multiple content blocks',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'slow',
+    description: 'Sleeps for a while',
+    inputSchema: { type: 'object', properties: { ms: { type: 'integer' } } },
+  },
 ];
 
 function jsonRpc(id, result) {
@@ -103,6 +141,46 @@ function handleRequest(body) {
           },
         });
       }
+      if (toolName === 'weather') {
+        const city = args.city ?? 'unknown';
+        const days = args.days ?? 1;
+        const v = args.verbose ?? false;
+        const text = v
+          ? `Weather for ${city}: ${days} day(s), verbose mode`
+          : `Weather for ${city}: ${days} day(s)`;
+        return jsonRpc(id, { content: [{ type: 'text', text }] });
+      }
+      if (toolName === 'image-tool') {
+        return jsonRpc(id, {
+          content: [{ type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' }],
+        });
+      }
+      if (toolName === 'resource-link-tool') {
+        return jsonRpc(id, {
+          content: [{ type: 'resource_link', uri: 'file:///example.txt', name: 'example' }],
+        });
+      }
+      if (toolName === 'structured-tool') {
+        return jsonRpc(id, {
+          content: [],
+          structuredContent: { result: 'structured', count: 42 },
+        });
+      }
+      if (toolName === 'multi-content') {
+        return jsonRpc(id, {
+          content: [
+            { type: 'text', text: 'First block' },
+            { type: 'image', mimeType: 'image/jpeg', data: '/9j/' },
+            { type: 'text', text: 'Last block' },
+          ],
+        });
+      }
+      if (toolName === 'slow') {
+        const ms = args.ms ?? 5000;
+        return new Promise((resolve) =>
+          setTimeout(() => resolve(jsonRpc(id, { content: [{ type: 'text', text: 'done' }] })), ms)
+        );
+      }
       return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
     }
 
@@ -126,9 +204,9 @@ const server = createServer((req, res) => {
 
   const chunks = [];
   req.on('data', (chunk) => chunks.push(chunk));
-  req.on('end', () => {
+  req.on('end', async () => {
     const body = Buffer.concat(chunks).toString();
-    const response = handleRequest(body);
+    const response = await handleRequest(body);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(response);
   });
