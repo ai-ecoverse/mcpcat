@@ -40,6 +40,7 @@ export interface FsApi {
   exists(path: string): Promise<boolean>;
   mkdirExclusive(path: string): Promise<void>;
   rmdir(path: string): Promise<void>;
+  unlink?(path: string): Promise<void>;
 }
 
 export interface Platform {

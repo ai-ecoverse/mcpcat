@@ -1,6 +1,6 @@
 import { spawn as cpSpawn } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, mkdir, readFile, rename, rmdir, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { Readable, Writable } from 'node:stream';
 import * as tty from 'node:tty';
@@ -17,44 +17,56 @@ import type {
 const USE_PROCESS_GROUPS = process.platform !== 'win32';
 
 function nodeSpawn(options: SpawnOptions): Promise<SpawnResult> {
-  const child = cpSpawn(options.argv[0], options.argv.slice(1), {
-    env: options.env ?? (process.env as Record<string, string>),
-    cwd: options.cwd,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    detached: USE_PROCESS_GROUPS,
-  });
+  return new Promise((resolve, reject) => {
+    let rejected = false;
+    const child = cpSpawn(options.argv[0], options.argv.slice(1), {
+      env: options.env ?? (process.env as Record<string, string>),
+      cwd: options.cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      detached: USE_PROCESS_GROUPS,
+    });
 
-  const stdout = Readable.toWeb(child.stdout!) as ReadableStream<Uint8Array>;
-  const stderr = Readable.toWeb(child.stderr!) as ReadableStream<Uint8Array>;
-  const stdin = Writable.toWeb(child.stdin!) as WritableStream<Uint8Array>;
+    child.on('error', (err: Error) => {
+      if (!rejected) {
+        rejected = true;
+        reject(err);
+      }
+    });
 
-  return Promise.resolve({
-    stdin,
-    stdout,
-    stderr,
-    wait(): Promise<{ status: number; signal?: string }> {
-      return new Promise((resolve) => {
-        child.on('close', (code, signal) => {
-          resolve({
-            status: signal ? 128 + (signalNumber(signal) ?? 0) : (code ?? 1),
-            signal: signal ?? undefined,
-          });
+    const stdout = Readable.toWeb(child.stdout!) as ReadableStream<Uint8Array>;
+    const stderr = Readable.toWeb(child.stderr!) as ReadableStream<Uint8Array>;
+    const stdin = Writable.toWeb(child.stdin!) as WritableStream<Uint8Array>;
+
+    const closePromise = new Promise<{ status: number; signal?: string }>((res) => {
+      child.on('close', (code, signal) => {
+        res({
+          status: signal ? 128 + (signalNumber(signal) ?? 0) : (code ?? 1),
+          signal: signal ?? undefined,
         });
       });
-    },
-    kill(signal?: string) {
-      const sig = (signal as NodeJS.Signals) ?? 'SIGTERM';
-      const pid = child.pid;
-      if (USE_PROCESS_GROUPS && pid !== undefined) {
-        try {
-          process.kill(-pid, sig);
-          return;
-        } catch {}
-      }
-      try {
-        child.kill(sig);
-      } catch {}
-    },
+    });
+
+    if (child.pid !== undefined) {
+      resolve({
+        stdin,
+        stdout,
+        stderr,
+        wait: () => closePromise,
+        kill(signal?: string) {
+          const sig = (signal as NodeJS.Signals) ?? 'SIGTERM';
+          const pid = child.pid;
+          if (USE_PROCESS_GROUPS && pid !== undefined) {
+            try {
+              process.kill(-pid, sig);
+              return;
+            } catch {}
+          }
+          try {
+            child.kill(sig);
+          } catch {}
+        },
+      });
+    }
   });
 }
 
@@ -103,6 +115,9 @@ const hostFs: FsApi = {
   },
   async rmdir(path: string): Promise<void> {
     await rmdir(path);
+  },
+  async unlink(path: string): Promise<void> {
+    await unlink(path);
   },
 };
 

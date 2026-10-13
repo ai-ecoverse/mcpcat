@@ -47,7 +47,14 @@ async function editMcpServers(
     }
     const tmpPath = `${path}.tmp.${Date.now()}`;
     await fs.writeFile(tmpPath, output);
-    await fs.rename(tmpPath, path);
+    try {
+      await fs.rename(tmpPath, path);
+    } catch (renameErr) {
+      try {
+        if (fs.unlink) await fs.unlink(tmpPath);
+      } catch {}
+      throw renameErr;
+    }
     return { changed: true };
   } finally {
     await release();

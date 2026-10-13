@@ -28,6 +28,13 @@ export async function acquireLock(fs: FsApi, configPath: string): Promise<() => 
   const lockPath = `${configPath}.lock`;
   const start = Date.now();
 
+  const parentDir = lockPath.slice(0, lockPath.lastIndexOf('/'));
+  if (parentDir) {
+    try {
+      await fs.mkdir(parentDir);
+    } catch {}
+  }
+
   while (true) {
     try {
       await fs.mkdirExclusive(lockPath);
