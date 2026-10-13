@@ -1040,6 +1040,7 @@ async function runProxyHttp(
   if (platform.onSignal) {
     platform.onSignal('SIGINT', shutdown);
     platform.onSignal('SIGTERM', shutdown);
+    platform.onSignal('SIGHUP', shutdown);
   }
 
   const handler = (request: HttpRequest): Promise<HttpResponse> =>
@@ -1261,6 +1262,7 @@ async function runHttpServer(
   if (platform.onSignal) {
     platform.onSignal('SIGINT', shutdown);
     platform.onSignal('SIGTERM', shutdown);
+    platform.onSignal('SIGHUP', shutdown);
   }
 
   const handler = (request: HttpRequest): Promise<HttpResponse> =>

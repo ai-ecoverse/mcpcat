@@ -15,6 +15,7 @@ import type {
   ServerInfo,
 } from './connection.ts';
 import { InputRequiredError, McpTimeoutError, StatelessRpcError } from './stateless-connection.ts';
+import { trackStdio } from './stdio-registry.ts';
 
 const PROTOCOL_VERSION = '2026-07-28';
 
@@ -41,6 +42,7 @@ interface StdioStatelessOptions {
 interface StdioJsonRpc {
   request(method: string, params: Record<string, unknown>): Promise<unknown>;
   close(): void;
+  pendingBuffer(): string;
 }
 
 function createStdioJsonRpc(
@@ -129,6 +131,9 @@ function createStdioJsonRpc(
         reader.releaseLock();
       } catch {}
     },
+    pendingBuffer() {
+      return readBuffer;
+    },
   };
 }
 
@@ -210,9 +215,22 @@ function buildConnectionMethods(
   };
 }
 
+export interface StdioFallbackProcess {
+  proc: SpawnResult;
+  pendingStdout: string;
+}
+
 export async function createStdioStatelessConnection(
   options: StdioStatelessOptions
 ): Promise<McpConnection> {
+  const result = await probeStdioStateless(options);
+  if ('proc' in result) throw result.error;
+  return result;
+}
+
+export async function probeStdioStateless(
+  options: StdioStatelessOptions
+): Promise<McpConnection | { proc: SpawnResult; pendingStdout: string; error: Error }> {
   const inheritedEnv = {
     ...(options.platform.env as Record<string, string>),
     ...options.env,
@@ -222,8 +240,7 @@ export async function createStdioStatelessConnection(
     env: inheritedEnv,
     cwd: options.cwd,
   });
-
-  void readStderr(proc, options.verbose);
+  trackStdio(proc);
 
   const rpc = createStdioJsonRpc(proc, options.platform, {
     version: options.version,
@@ -238,12 +255,12 @@ export async function createStdioStatelessConnection(
       protocolVersion: PROTOCOL_VERSION,
     });
   } catch (err) {
+    const pending = rpc.pendingBuffer();
     rpc.close();
-    try {
-      await proc.kill('SIGTERM');
-    } catch {}
-    throw err;
+    return { proc, pendingStdout: pending, error: err as Error };
   }
+
+  void readStderr(proc, options.verbose);
   const discoverResult = discoverRaw as Record<string, unknown>;
   const supported = ((discoverResult?.supportedVersions as string[] | undefined) ?? []).filter(
     (v): v is string => typeof v === 'string'

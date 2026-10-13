@@ -10,7 +10,7 @@ import {
   StatelessHttpError,
   StatelessRpcError,
 } from './stateless-connection.ts';
-import { createStdioStatelessConnection } from './stdio-stateless.ts';
+import { probeStdioStateless } from './stdio-stateless.ts';
 
 export interface ConnectOptions {
   url?: string;
@@ -39,25 +39,38 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
   };
 
   if (options.command) {
+    let fallbackProcess:
+      | { proc: import('../platform/types.ts').SpawnResult; pendingStdout: string }
+      | undefined;
     if (!options.protocolVersion || options.protocolVersion.startsWith('2026')) {
-      try {
-        return await createStdioStatelessConnection({
-          command: options.command,
-          args: options.args,
-          env: options.env,
-          cwd: options.cwd,
-          platform,
-          version: options.version,
-          timeoutMs: options.timeoutMs,
-          signal: options.signal,
-          verbose: options.verbose,
-        });
-      } catch (err) {
-        const isMethodNotFound = err instanceof StatelessRpcError && err.code === -32601;
-        const isUnsupported = err instanceof Error && err.message.includes('does not support');
-        if (options.protocolVersion?.startsWith('2026')) throw err;
-        if (!isMethodNotFound && !isUnsupported) throw err;
+      const result = await probeStdioStateless({
+        command: options.command,
+        args: options.args,
+        env: options.env,
+        cwd: options.cwd,
+        platform,
+        version: options.version,
+        timeoutMs: options.timeoutMs,
+        signal: options.signal,
+        verbose: options.verbose,
+      });
+      if (!('proc' in result)) return result;
+      const isMethodNotFound =
+        result.error instanceof StatelessRpcError && result.error.code === -32601;
+      const isUnsupported = result.error.message.includes('does not support');
+      if (options.protocolVersion?.startsWith('2026')) {
+        try {
+          await result.proc.kill('SIGTERM');
+        } catch {}
+        throw result.error;
       }
+      if (!isMethodNotFound && !isUnsupported) {
+        try {
+          await result.proc.kill('SIGTERM');
+        } catch {}
+        throw result.error;
+      }
+      fallbackProcess = { proc: result.proc, pendingStdout: result.pendingStdout };
     }
     return createPiConnection({
       command: options.command,
@@ -65,6 +78,7 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
       env: options.env,
       cwd: options.cwd,
       roots: options.roots,
+      existingProcess: fallbackProcess,
       ...shared,
     });
   }

@@ -1,5 +1,6 @@
 import { type JsonRpcMessage, parseJsonRpcMessage } from '@earendil-works/pi-mcp';
 import type { Platform, SpawnResult } from '../platform/types.ts';
+import { trackStdio } from './stdio-registry.ts';
 
 type MessageListener = (message: JsonRpcMessage) => void;
 type ErrorListener = (error: Error) => void;
@@ -21,6 +22,8 @@ export interface PlatformStdioTransportOptions {
   maxMessageBytes?: number;
   maxStderrBytes?: number;
   closeTimeoutMs?: number;
+  existingProcess?: SpawnResult;
+  pendingStdout?: string;
 }
 
 export class PlatformStdioTransport {
@@ -84,21 +87,26 @@ export class PlatformStdioTransport {
     if (this.closed) throw new Error('MCP connection closed');
     this.started = true;
 
-    const env =
-      this.options.inheritEnv === false
-        ? { ...(this.options.env ?? {}) }
-        : {
-            ...(this.options.platform.env as Record<string, string>),
-            ...this.options.env,
-          };
+    if (this.options.existingProcess) {
+      this.process = this.options.existingProcess;
+    } else {
+      const env =
+        this.options.inheritEnv === false
+          ? { ...(this.options.env ?? {}) }
+          : {
+              ...(this.options.platform.env as Record<string, string>),
+              ...this.options.env,
+            };
 
-    this.process = await this.options.platform.spawn({
-      argv: [this.options.command, ...(this.options.args ?? [])],
-      env,
-      cwd: this.options.cwd,
-    });
+      this.process = await this.options.platform.spawn({
+        argv: [this.options.command, ...(this.options.args ?? [])],
+        env,
+        cwd: this.options.cwd,
+      });
+      trackStdio(this.process);
+    }
 
-    void this.readStdout();
+    void this.readStdout(this.options.pendingStdout);
     void this.readStderr();
     void this.waitForExit();
   }
@@ -148,12 +156,12 @@ export class PlatformStdioTransport {
     this.emitClose();
   }
 
-  private async readStdout(): Promise<void> {
+  private async readStdout(pending?: string): Promise<void> {
     const proc = this.process;
     if (!proc) return;
     const reader = proc.stdout.getReader();
     const maxBytes = this.options.maxMessageBytes ?? DEFAULT_MAX_MESSAGE_BYTES;
-    let buffer = '';
+    let buffer = pending ?? '';
     try {
       for (;;) {
         const { done, value } = await reader.read();

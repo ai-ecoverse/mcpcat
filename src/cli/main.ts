@@ -11,6 +11,7 @@ import {
   McpAuthError,
   McpTimeoutError,
 } from '../client/stateless-connection.ts';
+import { killAllStdio } from '../client/stdio-registry.ts';
 import { resolveTarget } from '../client/targets.ts';
 import { runDescribeTs, runGrep } from '../codemode/describe.ts';
 import { runCode } from '../codemode/run.ts';
@@ -1021,6 +1022,9 @@ async function dispatchMultiTarget(
         await Promise.race([activeCleanup(), new Promise((r) => setTimeout(r, 3000))]);
       } catch {}
     }
+    try {
+      await Promise.race([killAllStdio(), new Promise((r) => setTimeout(r, 3000))]);
+    } catch {}
     platform.exit(exitCode);
   }
 
@@ -1450,6 +1454,9 @@ async function runClientVerb(
         await Promise.race([activeConn.close(), new Promise((r) => setTimeout(r, 3000))]);
       } catch {}
     }
+    try {
+      await Promise.race([killAllStdio(), new Promise((r) => setTimeout(r, 3000))]);
+    } catch {}
     platform.exit(exitCode);
   }
 

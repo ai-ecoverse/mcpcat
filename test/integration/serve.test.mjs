@@ -16,7 +16,16 @@ const slowCli = join(fixturesDir, 'serve-slow-cli.mjs');
 const testHome = join(tmpdir(), `mcpcat-serve-test-${Date.now()}`);
 mkdirSync(join(testHome, '.pi', 'agent'), { recursive: true });
 const testEnv = { HOME: testHome, PI_CODING_AGENT_DIR: join(testHome, '.pi', 'agent') };
-after(() => rmSync(testHome, { recursive: true, force: true }));
+const spawnedChildren = [];
+after(() => {
+  for (const c of spawnedChildren) {
+    try {
+      c.kill('SIGKILL');
+    } catch {}
+  }
+  spawnedChildren.length = 0;
+  rmSync(testHome, { recursive: true, force: true });
+});
 
 function runHost(args, opts = {}) {
   const { cmd, args: cmdArgs } = mcpcatArgs(args);
@@ -50,6 +59,7 @@ async function startServeHttp(extraArgs = [], extraEnv = {}) {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv, ...extraEnv },
   });
+  spawnedChildren.push(child);
 
   const port = await new Promise((resolve, reject) => {
     let data = '';
@@ -73,6 +83,7 @@ async function startServeStdio(extraArgs = []) {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv },
   });
+  spawnedChildren.push(child);
   await sleep(500);
   return child;
 }
@@ -543,6 +554,7 @@ describe('serve: --json prints listening URL', () => {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv },
     });
+    spawnedChildren.push(child);
 
     const jsonLine = await new Promise((resolve, reject) => {
       let data = '';
@@ -618,6 +630,7 @@ describe('serve: SIGTERM kills in-flight children (no orphans)', { timeout: 30_0
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv },
     });
+    spawnedChildren.push(child);
 
     const port = await new Promise((resolve, reject) => {
       let data = '';
@@ -686,7 +699,7 @@ describe('serve: SIGTERM-trapping command is killed on shutdown', { timeout: 15_
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv },
     });
-
+    spawnedChildren.push(child);
     const port = await new Promise((resolve, reject) => {
       let data = '';
       child.stderr.on('data', (chunk) => {
