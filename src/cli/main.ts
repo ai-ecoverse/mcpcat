@@ -1035,12 +1035,21 @@ async function runClientVerb(
       return EXIT_AUTH;
     }
     const msg = transportHint(err) ?? `connection failed: ${(err as Error).message}`;
+    if (interrupted) {
+      await platform.write(2, 'mcpcat: interrupted\n');
+      return EXIT_INTERRUPTED;
+    }
     await writeErr(platform, parsed.jsonOutput, 'connection', msg);
     return EXIT_CONNECTION;
   }
 
   try {
-    return await runVerb(platform, parsed, conn, onProgress);
+    const code = await runVerb(platform, parsed, conn, onProgress);
+    if (interrupted) {
+      await platform.write(2, 'mcpcat: interrupted\n');
+      return EXIT_INTERRUPTED;
+    }
+    return code;
   } catch (err) {
     if (interrupted) {
       await platform.write(2, 'mcpcat: interrupted\n');
