@@ -4,6 +4,11 @@ import { createKernelPlatform } from './platform/kernel.ts';
 declare const MCPCAT_VERSION: string;
 
 export default async function main(ctx: Parameters<typeof createKernelPlatform>[0]) {
+  if (ctx.signals?.ignore) {
+    try {
+      ctx.signals.ignore('SIGPIPE');
+    } catch {}
+  }
   const platform = createKernelPlatform(ctx, {
     packageDir: '/node_modules/@ai-ecoverse/mcpcat',
   });

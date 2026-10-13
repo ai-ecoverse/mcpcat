@@ -16,7 +16,12 @@ async function readFile(fs: FsApi, path: string): Promise<string | undefined> {
   try {
     const data = await fs.readFile(path);
     return new TextDecoder().decode(data);
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EACCES') {
+      const e = new Error(`permission denied: ${path}`);
+      (e as NodeJS.ErrnoException).code = 'EACCES';
+      throw e;
+    }
     return undefined;
   }
 }

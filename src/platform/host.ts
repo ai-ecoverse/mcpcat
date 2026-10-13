@@ -218,7 +218,7 @@ export function createHostPlatform(): Platform {
     exit(code: number): never {
       process.exit(code);
     },
-    onSignal(signal: 'SIGINT' | 'SIGTERM', handler: () => void) {
+    onSignal(signal: 'SIGINT' | 'SIGTERM' | 'SIGHUP', handler: () => void) {
       process.on(signal, handler);
     },
   };

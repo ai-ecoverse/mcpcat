@@ -5,6 +5,41 @@ interface ProbeResult {
   events: DiscoveryEvent[];
 }
 
+const LOOPBACK_RE = /^(127\.\d+\.\d+\.\d+|\[?::1\]?|localhost)$/i;
+const LINK_LOCAL_RE = /^(169\.254\.|fe80:)/i;
+const PRIVATE_RE = /^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|fc|fd)/i;
+const LOCALHOST_SUFFIX_RE = /\.localhost$/i;
+const SLICC_INTERNAL_RE = /^host\.slicc\.internal$/i;
+
+function isPrivateOrLoopback(hostname: string): boolean {
+  const bare = hostname.replace(/^\[|\]$/g, '');
+  return (
+    LOOPBACK_RE.test(bare) ||
+    LINK_LOCAL_RE.test(bare) ||
+    PRIVATE_RE.test(bare) ||
+    LOCALHOST_SUFFIX_RE.test(bare) ||
+    SLICC_INTERNAL_RE.test(bare)
+  );
+}
+
+function isSameOrigin(base: string, candidate: string): boolean {
+  try {
+    const a = new URL(base);
+    const b = new URL(candidate);
+    return a.origin === b.origin;
+  } catch {
+    return false;
+  }
+}
+
+function isUserUrlPrivate(userUrl: string): boolean {
+  try {
+    return isPrivateOrLoopback(new URL(userUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function isJsonContentType(ct: string | null): boolean {
   if (!ct) return false;
   const lower = ct.toLowerCase();
@@ -189,7 +224,8 @@ async function probeLinkHeaders(
   fetcher: typeof globalThis.fetch,
   targetUrl: string,
   origin: string,
-  page: string
+  page: string,
+  userUrlIsPrivate: boolean
 ): Promise<DiscoveryEvent[]> {
   const events: DiscoveryEvent[] = [];
   const targetResult = await probeUrl(fetcher, targetUrl);
@@ -198,6 +234,37 @@ async function probeLinkHeaders(
   const links = parseLinkHeaders(targetResult.headers);
   for (const link of links) {
     const resolved = new URL(link.url, targetUrl).href;
+    if (!isSameOrigin(targetUrl, resolved)) {
+      events.push(
+        makeEvent(
+          link.rel,
+          origin,
+          resolved,
+          'link-header',
+          page,
+          'invalid',
+          null,
+          `skipped: cross-origin Link target (${new URL(resolved).origin})`
+        )
+      );
+      continue;
+    }
+    const resolvedHost = new URL(resolved).hostname;
+    if (!userUrlIsPrivate && isPrivateOrLoopback(resolvedHost)) {
+      events.push(
+        makeEvent(
+          link.rel,
+          origin,
+          resolved,
+          'link-header',
+          page,
+          'invalid',
+          null,
+          `skipped: private/loopback target (${resolvedHost})`
+        )
+      );
+      continue;
+    }
     const classifier =
       link.rel === 'ard' ? classifyArd : link.rel === 'ai-catalog' ? classifyAiCatalog : null;
     if (!classifier) continue;
@@ -325,9 +392,10 @@ export async function probeDiscover(platform: Platform, targetUrl: string): Prom
 
   const page = targetUrl;
   const fetcher = platform.fetch;
+  const userPrivate = isUserUrlPrivate(targetUrl);
   const events = [
     ...(await probeWellKnown(fetcher, origin, page)),
-    ...(await probeLinkHeaders(fetcher, targetUrl, origin, page)),
+    ...(await probeLinkHeaders(fetcher, targetUrl, origin, page, userPrivate)),
     ...(await probeMcp(fetcher, origin, page, targetUrl)),
   ];
   return { events };

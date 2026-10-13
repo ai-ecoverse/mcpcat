@@ -21,6 +21,7 @@ interface CodeTarget {
 interface CodeOptions {
   json?: boolean;
   timeoutMs?: number;
+  memoryLimitMiB?: number;
   allowShell?: boolean;
   stateDir?: string;
   platform: Platform;
@@ -218,6 +219,9 @@ function buildShellGlobal(platform: Platform) {
   };
 }
 
+const DEFAULT_MEMORY_LIMIT_MIB = 256;
+const MAX_MEMORY_LIMIT_MIB = 1024;
+
 export async function runCode(
   targets: CodeTarget[],
   source: string,
@@ -225,7 +229,15 @@ export async function runCode(
 ): Promise<number> {
   const { platform, json } = options;
   const { code, options: sourceOptions } = parseCodemodeSource(source);
-  const timeoutMs = sourceOptions.timeoutMs ?? options.timeoutMs ?? 300_000;
+  const callerTimeoutMs = options.timeoutMs ?? 300_000;
+  const scriptTimeoutMs = sourceOptions.timeoutMs;
+  const timeoutMs =
+    scriptTimeoutMs !== undefined ? Math.min(callerTimeoutMs, scriptTimeoutMs) : callerTimeoutMs;
+  const memoryLimitMiB = Math.min(
+    options.memoryLimitMiB ?? DEFAULT_MEMORY_LIMIT_MIB,
+    MAX_MEMORY_LIMIT_MIB
+  );
+  const memoryLimitBytes = memoryLimitMiB * 1024 * 1024;
 
   const { connections, allDeclaredTools, namespaces } = await collectTools(targets);
   const searchDocs = buildSearchDocs(allDeclaredTools, namespaces);
@@ -239,7 +251,7 @@ export async function runCode(
     ...(options.allowShell ? [buildShellGlobal(platform)] : []),
   ];
 
-  const sandbox = await createSandbox(platform, toolImpls, globals, timeoutMs);
+  const sandbox = await createSandbox(platform, toolImpls, globals, timeoutMs, memoryLimitBytes);
 
   try {
     const result = await sandbox.execute(code, { store });
@@ -304,14 +316,15 @@ async function createSandbox(
     signature?: string;
     execute: (args: unknown) => Promise<unknown>;
   }[],
-  timeoutMs: number
+  timeoutMs: number,
+  memoryLimitBytes: number
 ) {
   const isKernel = platform.packageDir !== undefined;
 
   if (isKernel) {
     const { InlineCodemodeSandbox } = await import('@earendil-works/pi-codemode/portable');
     const wasm = await loadWasmKernel(platform);
-    return new InlineCodemodeSandbox({ tools, globals, timeoutMs, wasm });
+    return new InlineCodemodeSandbox({ tools, globals, timeoutMs, wasm, memoryLimitBytes });
   }
 
   const { CodemodeSandbox, loadQuickJSWasm } = await import('@earendil-works/pi-codemode');
@@ -327,6 +340,7 @@ async function createSandbox(
     tools,
     globals,
     timeoutMs,
+    memoryLimitBytes,
     wasm: loadQuickJSWasm(wasmPath),
     workerUrl,
   });

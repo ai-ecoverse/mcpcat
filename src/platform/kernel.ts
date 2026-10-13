@@ -189,7 +189,7 @@ export function createKernelPlatform(
     exit(code: number): never {
       ctx.exit(code);
     },
-    onSignal(signal: 'SIGINT' | 'SIGTERM', handler: () => void) {
+    onSignal(signal: 'SIGINT' | 'SIGTERM' | 'SIGHUP', handler: () => void) {
       ctx.signals.on(signal, handler);
     },
     packageDir: options?.packageDir,
