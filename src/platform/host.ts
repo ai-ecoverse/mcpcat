@@ -1,9 +1,18 @@
 import { spawn as cpSpawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, mkdir, readFile, rename, rmdir, stat, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { Readable, Writable } from 'node:stream';
 import * as tty from 'node:tty';
-import type { FsApi, Platform, SpawnOptions, SpawnResult } from './types.ts';
+import type {
+  Connection,
+  FsApi,
+  Listener,
+  ListenOptions,
+  Platform,
+  SpawnOptions,
+  SpawnResult,
+} from './types.ts';
 
 function nodeSpawn(options: SpawnOptions): Promise<SpawnResult> {
   const child = cpSpawn(options.argv[0], options.argv.slice(1), {
@@ -92,11 +101,86 @@ function createStderrStream(): WritableStream<Uint8Array> {
   return Writable.toWeb(process.stderr) as WritableStream<Uint8Array>;
 }
 
+function nodeListen(options: ListenOptions): Promise<Listener> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    const pending: Array<{
+      resolve: (conn: Connection) => void;
+      reject: (err: Error) => void;
+    }> = [];
+    const ready: Connection[] = [];
+    let closed = false;
+
+    server.on('connection', (socket) => {
+      const conn: Connection = {
+        readable: Readable.toWeb(socket) as ReadableStream<Uint8Array>,
+        writable: Writable.toWeb(socket) as WritableStream<Uint8Array>,
+        remoteAddress: socket.remoteAddress ?? '',
+        close() {
+          socket.destroy();
+        },
+      };
+      const waiter = pending.shift();
+      if (waiter) {
+        waiter.resolve(conn);
+      } else {
+        ready.push(conn);
+      }
+    });
+
+    server.on('error', (err) => {
+      if (!closed) reject(err);
+      for (const waiter of pending) waiter.reject(err);
+      pending.length = 0;
+    });
+
+    server.listen(options.port, options.host ?? '127.0.0.1', () => {
+      const addr = server.address();
+      const actualPort = typeof addr === 'object' && addr ? addr.port : options.port;
+
+      const listener: Listener = {
+        get port() {
+          return actualPort;
+        },
+        accept(): Promise<Connection> {
+          const queued = ready.shift();
+          if (queued) return Promise.resolve(queued);
+          return new Promise<Connection>((res, rej) => {
+            if (closed) {
+              rej(new Error('listener closed'));
+              return;
+            }
+            pending.push({ resolve: res, reject: rej });
+          });
+        },
+        close() {
+          closed = true;
+          server.close();
+          for (const waiter of pending) waiter.reject(new Error('listener closed'));
+          pending.length = 0;
+        },
+        async *[Symbol.asyncIterator](): AsyncIterableIterator<Connection> {
+          while (!closed) {
+            try {
+              yield await this.accept();
+            } catch {
+              break;
+            }
+          }
+        },
+      };
+
+      resolve(listener);
+    });
+  });
+}
+
 export function createHostPlatform(): Platform {
   const encoder = new TextEncoder();
   return {
     fetch: globalThis.fetch,
     spawn: nodeSpawn,
+    listen: nodeListen,
     fs: hostFs,
     env: process.env as Record<string, string | undefined>,
     cwd: process.cwd(),
