@@ -5,6 +5,7 @@ import { InputRequiredError } from '../client/stateless-connection.ts';
 import { resolveTarget } from '../client/targets.ts';
 import { MergedConfigSource } from '../config/index.ts';
 import type { McpServerConfig } from '../config/types.ts';
+import { runAddCandidate, runDiscover, runFromDiscovery, runInbox } from '../discovery/verbs.ts';
 import type { Platform } from '../platform/types.ts';
 import { parseServeFlags, runServe } from '../serve/runtime.ts';
 import { runAdd, runEnable, runExposure, runImport, runList, runRm } from './config-verbs.ts';
@@ -59,8 +60,6 @@ const UNIMPLEMENTED_VERBS = new Set([
   'login',
   'logout',
   'code',
-  'discover',
-  'inbox',
 ]);
 
 const CLIENT_VERBS = new Set(['info', 'tools', 'call', 'describe', 'serve']);
@@ -90,8 +89,8 @@ Configuration verbs:
 Server and code verbs:
   serve [--stdio|--http] …   Expose commands as MCP server
   code [-e src|file.js]      Run a codemode script (not implemented yet)
-  discover <url>             Find MCP servers (not implemented yet)
-  inbox                      Discovery inbox (not implemented yet)
+  discover <url>             Find MCP servers at a URL
+  inbox [--json]             List discovery candidates
   help [verb]                Show help
 
 Options:
@@ -466,6 +465,48 @@ async function dispatchConfigVerb(
   }
 }
 
+async function dispatchDiscoveryVerb(
+  platform: Platform,
+  parsed: ParsedArgs,
+  args: string[]
+): Promise<number | undefined> {
+  if (parsed.verb === 'add' && args.includes('--from-discovery')) {
+    return runFromDiscovery(platform, args.slice(1));
+  }
+  if (parsed.verb === 'add' && args.includes('--candidate')) {
+    const rest = args.slice(1);
+    const nameIdx = rest.findIndex((a) => !a.startsWith('-') && a !== '--candidate');
+    const candidateIdx = rest.indexOf('--candidate');
+    if (nameIdx < 0 || candidateIdx < 0 || candidateIdx + 1 >= rest.length) {
+      await platform.write(2, 'mcpcat add --candidate: requires <name> --candidate <id>\n');
+      return 2;
+    }
+    const name = rest[nameIdx];
+    const candidateId = rest[candidateIdx + 1];
+    const configIdx = rest.indexOf('--config');
+    const configFile =
+      configIdx >= 0 && configIdx + 1 < rest.length ? rest[configIdx + 1] : undefined;
+    return runAddCandidate(platform, name, candidateId, configFile);
+  }
+  if (parsed.verb === 'discover') return runDiscover(platform, args.slice(1));
+  if (parsed.verb === 'inbox') return runInbox(platform, args.slice(1));
+  return undefined;
+}
+
+async function dispatchServeVerb(
+  platform: Platform,
+  args: string[],
+  version: string
+): Promise<number> {
+  const serveArgs = args.slice(args.indexOf('serve') + 1);
+  const serveOptions = parseServeFlags(serveArgs);
+  if (serveOptions.commands.length === 0 && serveOptions.toolTemplates.length === 0) {
+    await platform.write(2, 'mcpcat serve: no commands or --tool templates given\n');
+    return 2;
+  }
+  return runServe(platform, serveOptions, version);
+}
+
 export async function run(platform: Platform, version: string, args: string[]): Promise<number> {
   if (args.includes('--version') || args.includes('-V')) {
     await platform.write(1, `${version}\n`);
@@ -490,8 +531,13 @@ export async function run(platform: Platform, version: string, args: string[]): 
   }
 
   if (parsed.verb in CONFIG_VERBS) {
+    const disc = await dispatchDiscoveryVerb(platform, parsed, args);
+    if (disc !== undefined) return disc;
     return dispatchConfigVerb(platform, parsed.verb, args);
   }
+
+  const discResult = await dispatchDiscoveryVerb(platform, parsed, args);
+  if (discResult !== undefined) return discResult;
 
   if (UNIMPLEMENTED_VERBS.has(parsed.verb)) {
     await platform.write(2, `mcpcat: '${parsed.verb}' is not implemented yet\n`);
@@ -499,13 +545,7 @@ export async function run(platform: Platform, version: string, args: string[]): 
   }
 
   if (parsed.verb === 'serve') {
-    const serveArgs = args.slice(args.indexOf('serve') + 1);
-    const serveOptions = parseServeFlags(serveArgs);
-    if (serveOptions.commands.length === 0 && serveOptions.toolTemplates.length === 0) {
-      await platform.write(2, 'mcpcat serve: no commands or --tool templates given\n');
-      return 2;
-    }
-    return runServe(platform, serveOptions, version);
+    return dispatchServeVerb(platform, args, version);
   }
 
   if (!CLIENT_VERBS.has(parsed.verb)) {

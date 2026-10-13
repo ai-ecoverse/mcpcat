@@ -21,3 +21,11 @@ export function cacheDir(platform: Platform): string {
   if (platform.env.LOCALAPPDATA) return `${platform.env.LOCALAPPDATA}\\mcpcat\\cache`;
   return `${home}/Library/Caches/mcpcat`;
 }
+
+export function stateDir(platform: Platform): string {
+  if (platform.env.XDG_STATE_HOME) return `${platform.env.XDG_STATE_HOME}/mcpcat`;
+  const home = platform.env.HOME ?? platform.env.USERPROFILE ?? '/';
+  if (platform.env.LOCALAPPDATA) return `${platform.env.LOCALAPPDATA}\\mcpcat\\state`;
+  if (platform.env.SLICC_KERNEL) return `${home}/.local/state/mcpcat`;
+  return `${home}/Library/Application Support/mcpcat`;
+}
