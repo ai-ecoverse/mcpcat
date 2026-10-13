@@ -454,7 +454,7 @@ Port-less loopback redirects (RFC 8252 §7.3). <code>--no-browser</code> uses th
 
 <pre><code>mcpcat serve ./jira.jsh                               # stdio (default when stdout is not a TTY)
 mcpcat serve --http 8808 gh=./gh.jsh jira=./jira.jsh  # Streamable HTTP on 127.0.0.1:8808/mcp
-mcpcat serve --http 0.0.0.0:8808 --bearer "$TOKEN" ./ops.sh
+mcpcat serve --http 0.0.0.0:8808 --bearer '${SERVE_TOKEN}' ./ops.sh   # expanded by mcpcat, never a literal in argv
 mcpcat serve --tool 'disk_usage: du -sh {path}' --tool 'uptime: uptime' --http 8809</code></pre>
 
 <h3>12.1 Catalog (six-compatible)</h3>
