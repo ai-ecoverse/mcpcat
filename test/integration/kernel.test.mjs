@@ -5,9 +5,8 @@ import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { attachKernel } from '@ai-ecoverse/slicc-kernel';
-import { createNodeKernel, nodeTransport } from '@ai-ecoverse/slicc-kernel/node';
 import { mcpcatArgs } from './helpers/bin.mjs';
+import { attachKernel, createNodeKernel, nodeTransport } from './helpers/kernel.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const kernelBundle = join(root, 'dist/kernel/mcpcat.mjs');
