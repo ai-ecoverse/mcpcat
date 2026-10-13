@@ -1,7 +1,20 @@
-import type { AuthProvider, CallToolResult, Tool } from '@earendil-works/pi-mcp';
+import type {
+  AuthProvider,
+  CallToolResult,
+  ReadResourceResult,
+  Resource,
+  ResourceTemplate,
+  Tool,
+} from '@earendil-works/pi-mcp';
 import { AuthStepUpError } from '../auth/auth-provider.ts';
 import type { VerboseLogger } from '../cli/verbose.ts';
-import type { CallToolOptions, McpConnection, ServerInfo } from './connection.ts';
+import type {
+  CallToolOptions,
+  GetPromptResult,
+  McpConnection,
+  PromptInfo,
+  ServerInfo,
+} from './connection.ts';
 
 export const STATELESS_PROTOCOL_VERSION = '2026-07-28';
 
@@ -154,6 +167,86 @@ export interface StatelessConnectionOptions {
   authProvider?: AuthProvider;
 }
 
+type RequestFn = (method: string, params: Record<string, unknown>) => Promise<unknown>;
+
+function buildStatelessMethods(
+  requestFn: RequestFn,
+  discoverResult: Record<string, unknown> | null
+): Pick<
+  McpConnection,
+  | 'info'
+  | 'listTools'
+  | 'callTool'
+  | 'listResources'
+  | 'listResourceTemplates'
+  | 'readResource'
+  | 'listPrompts'
+  | 'getPrompt'
+> {
+  let serverInfoCache: ServerInfo | undefined;
+  return {
+    async info(): Promise<ServerInfo> {
+      if (serverInfoCache) return serverInfoCache;
+      serverInfoCache = buildServerInfo(discoverResult);
+      return serverInfoCache;
+    },
+    async listTools(): Promise<Tool[]> {
+      return ((await requestFn('tools/list', {})) as { tools?: Tool[] } | null)?.tools ?? [];
+    },
+    async callTool(
+      name: string,
+      args?: Record<string, unknown>,
+      _callOptions?: CallToolOptions
+    ): Promise<CallToolResult> {
+      const params: Record<string, unknown> = {
+        name,
+        arguments: args ?? {},
+      };
+      if (_callOptions?.inputResponses) {
+        params._inputResponses = _callOptions.inputResponses;
+      }
+      const result = (await requestFn('tools/call', params)) as CallToolResult & {
+        resultType?: string;
+      };
+      if ((result.resultType ?? 'complete') === 'input_required') {
+        throw new InputRequiredError(
+          JSON.stringify({ name, arguments: args ?? {}, result }, null, 2)
+        );
+      }
+      return result;
+    },
+    async listResources(): Promise<Resource[]> {
+      return (
+        ((await requestFn('resources/list', {})) as { resources?: Resource[] } | null)?.resources ??
+        []
+      );
+    },
+    async listResourceTemplates(): Promise<ResourceTemplate[]> {
+      return (
+        (
+          (await requestFn('resources/templates/list', {})) as {
+            resourceTemplates?: ResourceTemplate[];
+          } | null
+        )?.resourceTemplates ?? []
+      );
+    },
+    async readResource(uri: string): Promise<ReadResourceResult> {
+      return (await requestFn('resources/read', { uri })) as ReadResourceResult;
+    },
+    async listPrompts(): Promise<PromptInfo[]> {
+      return (
+        ((await requestFn('prompts/list', {})) as { prompts?: PromptInfo[] } | null)?.prompts ?? []
+      );
+    },
+    async getPrompt(name: string, args?: Record<string, unknown>): Promise<GetPromptResult> {
+      return (await requestFn('prompts/get', {
+        name,
+        arguments: args ?? {},
+      })) as GetPromptResult;
+    },
+  };
+}
+
 export async function createStatelessConnection(
   options: StatelessConnectionOptions
 ): Promise<McpConnection> {
@@ -276,11 +369,16 @@ export async function createStatelessConnection(
       protocolVersion: negotiatedVersion ?? STATELESS_PROTOCOL_VERSION,
       clientInfo,
     };
+    const cleanParams = { ...params };
+    if (cleanParams._inputResponses) {
+      meta.inputResponses = cleanParams._inputResponses;
+      delete cleanParams._inputResponses;
+    }
     const body = JSON.stringify({
       jsonrpc: '2.0',
       id,
       method,
-      params: { ...params, _meta: meta },
+      params: { ...cleanParams, _meta: meta },
     });
 
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -314,33 +412,11 @@ export async function createStatelessConnection(
     );
   }
   negotiatedVersion = STATELESS_PROTOCOL_VERSION;
-  let serverInfoCache: ServerInfo | undefined;
+
+  const extra = buildStatelessMethods(request, discoverResult as Record<string, unknown> | null);
 
   return {
-    async info(): Promise<ServerInfo> {
-      if (serverInfoCache) return serverInfoCache;
-      serverInfoCache = buildServerInfo(discoverResult as Record<string, unknown> | null);
-      return serverInfoCache;
-    },
-    async listTools(): Promise<Tool[]> {
-      return ((await request('tools/list', {})) as { tools?: Tool[] } | null)?.tools ?? [];
-    },
-    async callTool(
-      name: string,
-      args?: Record<string, unknown>,
-      _callOptions?: CallToolOptions
-    ): Promise<CallToolResult> {
-      const result = (await request('tools/call', {
-        name,
-        arguments: args ?? {},
-      })) as CallToolResult & { resultType?: string };
-      if ((result.resultType ?? 'complete') === 'input_required') {
-        throw new InputRequiredError(
-          JSON.stringify({ name, arguments: args ?? {}, result }, null, 2)
-        );
-      }
-      return result;
-    },
+    ...extra,
     async close(): Promise<void> {},
   };
 }

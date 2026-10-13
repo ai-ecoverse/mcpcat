@@ -72,7 +72,7 @@ describe('host: mcpcat', () => {
   });
 
   it('known but unimplemented verb exits 1', () => {
-    const { stderr, status } = runHost(['resources']);
+    const { stderr, status } = runHost(['complete']);
     assert.equal(status, 1);
     assert.ok(stderr.includes('not implemented yet'));
   });

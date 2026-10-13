@@ -1,4 +1,11 @@
-import type { CallToolResult, ContentBlock } from '@earendil-works/pi-mcp';
+import type {
+  CallToolResult,
+  ContentBlock,
+  ReadResourceResult,
+  Resource,
+  ResourceTemplate,
+} from '@earendil-works/pi-mcp';
+import type { GetPromptResult, PromptInfo } from '../client/connection.ts';
 import type { Platform } from '../platform/types.ts';
 
 export interface RenderOptions {
@@ -114,4 +121,33 @@ export async function renderErrorJson(
   if (code !== undefined) errorObj.code = code;
   if (data !== undefined) errorObj.data = data;
   await platform.write(2, `${JSON.stringify({ error: errorObj }, null, 2)}\n`);
+}
+
+export async function renderResourcesJson(
+  platform: Platform,
+  resources: Resource[],
+  templates: ResourceTemplate[]
+): Promise<void> {
+  await platform.write(
+    1,
+    `${JSON.stringify({ resources, resourceTemplates: templates }, null, 2)}\n`
+  );
+}
+
+export async function renderPromptsJson(platform: Platform, prompts: PromptInfo[]): Promise<void> {
+  await platform.write(1, `${JSON.stringify({ prompts }, null, 2)}\n`);
+}
+
+export async function renderPromptResultJson(
+  platform: Platform,
+  result: GetPromptResult
+): Promise<void> {
+  await platform.write(1, `${JSON.stringify(result, null, 2)}\n`);
+}
+
+export async function renderReadResourceJson(
+  platform: Platform,
+  result: ReadResourceResult
+): Promise<void> {
+  await platform.write(1, `${JSON.stringify(result, null, 2)}\n`);
 }

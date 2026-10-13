@@ -6,6 +6,45 @@ const SERVER_INFO = {
   title: 'Test Server (2026-07-28)',
 };
 
+const RESOURCES = [
+  {
+    uri: 'file:///readme.txt',
+    name: 'readme',
+    description: 'A readme file',
+    mimeType: 'text/plain',
+  },
+  {
+    uri: 'file:///logo.png',
+    name: 'logo',
+    description: 'A logo image',
+    mimeType: 'image/png',
+  },
+];
+
+const RESOURCE_TEMPLATES = [
+  {
+    uriTemplate: 'file:///docs/{name}',
+    name: 'docs',
+    description: 'Documentation files',
+  },
+];
+
+const PROMPTS = [
+  {
+    name: 'greet',
+    description: 'Generate a greeting',
+    arguments: [
+      { name: 'name', description: 'Name to greet', required: true },
+      { name: 'style', description: 'Greeting style' },
+    ],
+  },
+  {
+    name: 'summarize',
+    description: 'Summarize text',
+    arguments: [{ name: 'text', description: 'Text to summarize', required: true }],
+  },
+];
+
 const TOOLS = [
   {
     name: 'echo',
@@ -105,12 +144,65 @@ function handleRequest(body) {
       return jsonRpc(id, {
         supportedVersions: ['2026-07-28'],
         serverInfo: SERVER_INFO,
-        capabilities: { tools: { listChanged: false } },
+        capabilities: { tools: { listChanged: false }, resources: {}, prompts: {} },
         instructions: 'A test server for integration tests.',
       });
 
     case 'tools/list':
       return jsonRpc(id, { tools: TOOLS });
+
+    case 'resources/list':
+      return jsonRpc(id, { resources: RESOURCES });
+
+    case 'resources/templates/list':
+      return jsonRpc(id, { resourceTemplates: RESOURCE_TEMPLATES });
+
+    case 'resources/read': {
+      const uri = params?.uri;
+      if (uri === 'file:///readme.txt') {
+        return jsonRpc(id, {
+          contents: [{ uri, mimeType: 'text/plain', text: 'Hello from readme' }],
+        });
+      }
+      if (uri === 'file:///logo.png') {
+        return jsonRpc(id, {
+          contents: [{ uri, mimeType: 'image/png', blob: 'iVBORw0KGgo=' }],
+        });
+      }
+      return jsonRpcError(id, -32602, `Resource not found: ${uri}`);
+    }
+
+    case 'prompts/list':
+      return jsonRpc(id, { prompts: PROMPTS });
+
+    case 'prompts/get': {
+      const promptName = params?.name;
+      const promptArgs = params?.arguments ?? {};
+      if (promptName === 'greet') {
+        const name = promptArgs.name ?? 'World';
+        const style = promptArgs.style ?? 'friendly';
+        return jsonRpc(id, {
+          description: `A ${style} greeting`,
+          messages: [
+            {
+              role: 'user',
+              content: { type: 'text', text: `Say hello to ${name} in a ${style} way` },
+            },
+          ],
+        });
+      }
+      if (promptName === 'summarize') {
+        return jsonRpc(id, {
+          messages: [
+            {
+              role: 'user',
+              content: { type: 'text', text: `Summarize: ${promptArgs.text ?? ''}` },
+            },
+          ],
+        });
+      }
+      return jsonRpcError(id, -32602, `Unknown prompt: ${promptName}`);
+    }
 
     case 'tools/call': {
       const toolName = params?.name;
@@ -133,11 +225,24 @@ function handleRequest(body) {
         });
       }
       if (toolName === 'needs-input') {
+        const meta = params?._meta ?? {};
+        if (meta.inputResponses) {
+          return jsonRpc(id, {
+            content: [{ type: 'text', text: `Got answer: ${JSON.stringify(meta.inputResponses)}` }],
+          });
+        }
         return jsonRpc(id, {
           resultType: 'input_required',
           content: [{ type: 'text', text: 'Please provide additional input' }],
           inputRequest: {
-            schema: { type: 'object', properties: { answer: { type: 'string' } } },
+            message: 'Additional info needed',
+            schema: {
+              type: 'object',
+              properties: {
+                answer: { type: 'string', description: 'Your answer' },
+              },
+              required: ['answer'],
+            },
           },
         });
       }
