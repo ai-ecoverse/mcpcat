@@ -13,7 +13,7 @@ import {
   type Tool,
 } from '@earendil-works/pi-mcp';
 import type { VerboseLogger } from '../cli/verbose.ts';
-import type { Platform } from '../platform/types.ts';
+import type { Platform, SpawnResult } from '../platform/types.ts';
 import type {
   CallToolOptions,
   GetPromptResult,
@@ -39,6 +39,7 @@ export interface PiConnectionOptions {
   verbose?: VerboseLogger;
   authProvider?: AuthProvider;
   roots?: { uri: string; name?: string }[];
+  existingProcess?: { proc: SpawnResult; pendingStdout: string };
 }
 
 function buildStderrHandler(options: PiConnectionOptions): ((chunk: string) => void) | undefined {
@@ -69,6 +70,8 @@ function buildTransport(options: PiConnectionOptions): McpTransport {
       inheritEnv: true,
       platform: options.platform,
       onStderr: buildStderrHandler(options),
+      existingProcess: options.existingProcess?.proc,
+      pendingStdout: options.existingProcess?.pendingStdout,
     }) as unknown as McpTransport;
   }
   return new StdioTransport({

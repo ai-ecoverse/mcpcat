@@ -16,7 +16,16 @@ const slowCli = join(fixturesDir, 'serve-slow-cli.mjs');
 const testHome = join(tmpdir(), `mcpcat-serve-test-${Date.now()}`);
 mkdirSync(join(testHome, '.pi', 'agent'), { recursive: true });
 const testEnv = { HOME: testHome, PI_CODING_AGENT_DIR: join(testHome, '.pi', 'agent') };
-after(() => rmSync(testHome, { recursive: true, force: true }));
+const spawnedChildren = [];
+after(() => {
+  for (const c of spawnedChildren) {
+    try {
+      c.kill('SIGKILL');
+    } catch {}
+  }
+  spawnedChildren.length = 0;
+  rmSync(testHome, { recursive: true, force: true });
+});
 
 function runHost(args, opts = {}) {
   const { cmd, args: cmdArgs } = mcpcatArgs(args);
@@ -50,6 +59,7 @@ async function startServeHttp(extraArgs = [], extraEnv = {}) {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv, ...extraEnv },
   });
+  spawnedChildren.push(child);
 
   const port = await new Promise((resolve, reject) => {
     let data = '';
@@ -73,6 +83,7 @@ async function startServeStdio(extraArgs = []) {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv },
   });
+  spawnedChildren.push(child);
   await sleep(500);
   return child;
 }
@@ -543,6 +554,7 @@ describe('serve: --json prints listening URL', () => {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv },
     });
+    spawnedChildren.push(child);
 
     const jsonLine = await new Promise((resolve, reject) => {
       let data = '';
@@ -618,6 +630,7 @@ describe('serve: SIGTERM kills in-flight children (no orphans)', { timeout: 30_0
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv },
     });
+    spawnedChildren.push(child);
 
     const port = await new Promise((resolve, reject) => {
       let data = '';
@@ -673,6 +686,73 @@ describe('serve: SIGTERM kills in-flight children (no orphans)', { timeout: 30_0
 
     if (grandchildPid) {
       assert.ok(!pidExists(grandchildPid), `grandchild ${grandchildPid} is still alive`);
+    }
+  });
+});
+
+const trapCli = join(fixturesDir, 'serve-trap-sigterm.mjs');
+
+describe('serve: SIGTERM-trapping command is killed on shutdown', { timeout: 15_000 }, () => {
+  it('escalates to SIGKILL when command traps SIGTERM', async () => {
+    const { cmd, args } = mcpcatArgs(['serve', '--http', '0', '--no-auth', `trap=${trapCli}`]);
+    const child = spawn(cmd, args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv },
+    });
+    spawnedChildren.push(child);
+    const port = await new Promise((resolve, reject) => {
+      let data = '';
+      child.stderr.on('data', (chunk) => {
+        data += chunk.toString();
+        const match = data.match(/listening on http:\/\/[^:]+:(\d+)\/mcp/);
+        if (match) resolve(Number(match[1]));
+      });
+      child.on('error', reject);
+    });
+
+    const callPromise = fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        connection: 'close',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'trap_sigterm_trap', arguments: {} },
+      }),
+    }).catch(() => {});
+
+    let trapPid;
+    await new Promise((resolve) => {
+      let buf = '';
+      const onData = (chunk) => {
+        buf += chunk.toString();
+        const match = buf.match(/pid:(\d+)/);
+        if (match) {
+          trapPid = Number(match[1]);
+          child.stderr.removeListener('data', onData);
+          resolve();
+        }
+      };
+      child.stderr.on('data', onData);
+      setTimeout(resolve, 5000);
+    });
+
+    child.kill('SIGTERM');
+
+    const exitCode = await new Promise((resolve) => {
+      child.on('exit', (code) => resolve(code));
+    });
+
+    await callPromise;
+
+    await sleep(500);
+
+    if (trapPid) {
+      assert.ok(!pidExists(trapPid), `trap-sigterm process ${trapPid} is still alive`);
     }
   });
 });

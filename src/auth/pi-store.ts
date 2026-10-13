@@ -9,6 +9,7 @@ type StoredStates = Record<string, McpOAuthState>;
 
 const AUTH_FILE = 'mcp-auth.json';
 const FILE_MODE = 0o600;
+const DIR_MODE = 0o700;
 
 function parseStates(raw: string | undefined): StoredStates {
   if (!raw?.trim()) return {};
@@ -39,6 +40,18 @@ export class PiFileTokenSource implements TokenSource {
 
   get path(): string {
     return this.authPath;
+  }
+
+  async loadWithoutLock(name: string, serverUrl: string): Promise<McpOAuthState | undefined> {
+    const key = storeKey(name, serverUrl);
+    const legacy = legacyKey(serverUrl);
+    try {
+      const raw = await this.readRaw();
+      const states = parseStates(raw);
+      return states[key] ?? states[legacy];
+    } catch {
+      return undefined;
+    }
   }
 
   async getToken(name: string, serverUrl: string): Promise<TokenResult | undefined> {
@@ -106,9 +119,21 @@ export class PiFileTokenSource implements TokenSource {
   }
 
   private async ensureDir(): Promise<void> {
+    const fs = this.platform.fs;
     try {
-      await this.platform.fs.mkdir(this.dirPath);
+      await fs.mkdir(this.dirPath, { mode: DIR_MODE });
     } catch {}
+    if (fs.chmod) {
+      try {
+        await fs.chmod(this.dirPath, DIR_MODE);
+      } catch {}
+      const piDir = this.dirPath.slice(0, this.dirPath.lastIndexOf('/'));
+      if (piDir) {
+        try {
+          await fs.chmod(piDir, DIR_MODE);
+        } catch {}
+      }
+    }
   }
 
   private async readRaw(): Promise<string | undefined> {
@@ -121,6 +146,22 @@ export class PiFileTokenSource implements TokenSource {
   }
 
   private async writeStates(states: StoredStates): Promise<void> {
-    await this.platform.fs.writeFile(this.authPath, serializeStates(states), { mode: FILE_MODE });
+    const fs = this.platform.fs;
+    const content = serializeStates(states);
+    const tmpPath = `${this.authPath}.tmp.${Date.now()}`;
+    try {
+      await fs.writeFile(tmpPath, content, { mode: FILE_MODE });
+      await fs.rename(tmpPath, this.authPath);
+    } catch (renameErr) {
+      try {
+        if (fs.unlink) await fs.unlink(tmpPath);
+      } catch {}
+      throw renameErr;
+    }
+    if (fs.chmod) {
+      try {
+        await fs.chmod(this.authPath, FILE_MODE);
+      } catch {}
+    }
   }
 }

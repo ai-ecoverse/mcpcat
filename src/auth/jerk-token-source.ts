@@ -2,7 +2,7 @@ import type { McpOAuthState } from '@earendil-works/pi-mcp/oauth';
 import type { Platform } from '../platform/types.ts';
 import type { TokenResult, TokenSource } from './token-source.ts';
 
-const MIN_VERSION = [0, 13, 0];
+const MIN_VERSION = [0, 14, 1];
 const VERSION_TIMEOUT_MS = 2_000;
 
 let cachedAvailable: boolean | undefined;

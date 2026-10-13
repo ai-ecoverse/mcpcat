@@ -10,8 +10,7 @@ import { mcpcatArgs } from './helpers/bin.mjs';
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
-const kernelArg = process.argv.find((a) => a.startsWith('--kernel='));
-const kernelTgz = kernelArg ? kernelArg.split('=')[1] : null;
+const kernelTgz = process.env.MCPCAT_CERT_KERNEL || null;
 
 function runBin(args) {
   const { cmd, args: cmdArgs } = mcpcatArgs(args);
@@ -36,36 +35,38 @@ describe('cert: host/kernel parity', () => {
 
 describe('cert: kernel parity via --kernel tgz', { skip: !kernelTgz }, () => {
   let tmpDir;
+  let kernelDir;
+  let kernelVersion;
 
   it('installs kernel tgz and runs kernel tests', { timeout: 120_000 }, () => {
     tmpDir = join(tmpdir(), `mcpcat-cert-kernel-${Date.now()}`);
     mkdirSync(tmpDir, { recursive: true });
 
-    execSync(`npm init -y`, { cwd: tmpDir, stdio: 'pipe' });
+    execSync('npm init -y', { cwd: tmpDir, stdio: 'pipe' });
     execSync(`npm install ${kernelTgz}`, {
       cwd: tmpDir,
       stdio: 'inherit',
       timeout: 60_000,
     });
 
-    const installedPkg = JSON.parse(
-      readFileSync(join(tmpDir, 'node_modules/@ai-ecoverse/slicc-kernel/package.json'), 'utf8')
-    );
-    assert.ok(installedPkg.version, 'kernel package installed');
+    kernelDir = join(tmpDir, 'node_modules/@ai-ecoverse/slicc-kernel');
+    const installedPkg = JSON.parse(readFileSync(join(kernelDir, 'package.json'), 'utf8'));
+    kernelVersion = installedPkg.version;
+    console.log(`cert: installed kernel ${kernelVersion} from ${kernelTgz}`);
+    assert.ok(kernelVersion, 'kernel package has a version');
 
-    execSync(
-      `NODE_PATH=${tmpDir}/node_modules node --test --test-timeout=30000 test/integration/*kernel*.test.mjs`,
-      {
-        cwd: root,
-        stdio: 'inherit',
-        timeout: 90_000,
-        env: {
-          ...process.env,
-          NODE_NO_WARNINGS: '1',
-          NODE_PATH: `${tmpDir}/node_modules`,
-        },
-      }
-    );
+    const output = execSync('node --test --test-timeout=30000 test/integration/*kernel*.test.mjs', {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: 90_000,
+      env: {
+        ...process.env,
+        NODE_NO_WARNINGS: '1',
+        MCPCAT_CERT_KERNEL_DIR: kernelDir,
+      },
+    });
+    console.log(`cert: kernel tests completed for ${kernelVersion}`);
+    assert.ok(output.includes(`kernel ${kernelVersion}`), `output should mention kernel version`);
   });
 
   it('cleans up temp dir', () => {

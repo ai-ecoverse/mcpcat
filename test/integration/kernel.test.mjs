@@ -5,14 +5,18 @@ import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { attachKernel } from '@ai-ecoverse/slicc-kernel';
-import { createNodeKernel, nodeTransport } from '@ai-ecoverse/slicc-kernel/node';
 import { mcpcatArgs } from './helpers/bin.mjs';
+import { attachKernel, createNodeKernel, nodeTransport } from './helpers/kernel.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const kernelBundle = join(root, 'dist/kernel/mcpcat.mjs');
 const fixturesDir = join(root, 'test/integration/fixtures');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+const kernelPkg = JSON.parse(
+  readFileSync(join(root, 'node_modules/@ai-ecoverse/slicc-kernel/package.json'), 'utf8')
+);
+const kernelVersion = kernelPkg.version.split('.').map(Number);
+const hasPgid = kernelVersion[0] > 1 || (kernelVersion[0] === 1 && kernelVersion[1] >= 74);
 
 async function startFixtureServer(script, extraArgs = []) {
   const child = spawn('node', [join(fixturesDir, script), ...extraArgs], {
@@ -426,7 +430,9 @@ describe('kernel: stdio client', () => {
   });
 });
 
-describe('kernel: stdio process group cleanup', () => {
+describe('kernel: stdio process group cleanup', {
+  skip: !hasPgid && 'pgid requires slicc-kernel >= 1.74.0',
+}, () => {
   let kernel;
   let client;
 
@@ -443,7 +449,7 @@ describe('kernel: stdio process group cleanup', () => {
     kernel?.terminate();
   });
 
-  it('server is gone after mcpcat exits', async () => {
+  it('server and grandchild are gone after mcpcat exits', async () => {
     const pidsResult = await kernel.run(
       ['mcpcat', 'call', 'stdio:mcpcat-test-gc', 'pids', '-d', '{}'],
       { stdout: 'pipe', stderr: 'pipe' }
@@ -460,6 +466,156 @@ describe('kernel: stdio process group cleanup', () => {
     const ps = await client.ps();
     const alivePids = new Set(ps.map((p) => p.pid));
     assert.ok(!alivePids.has(serverPid), `server pid ${serverPid} should be dead`);
+    assert.ok(!alivePids.has(grandchildPid), `grandchild pid ${grandchildPid} should be dead`);
+  });
+});
+
+describe('kernel: serve process group cleanup', {
+  skip: !hasPgid && 'pgid requires slicc-kernel >= 1.74.0',
+}, () => {
+  let kernel;
+  let client;
+
+  before(async () => {
+    kernel = await createNodeKernel({});
+    await installMcpcat(kernel);
+
+    const gcData = readFileSync(join(fixturesDir, 'kernel-serve-grandchild.mjs'));
+    await kernel.writeFile('/node_modules/@ai-ecoverse/mcpcat-test-serve-gc/dist/main.mjs', gcData);
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat-test-serve-gc/package.json',
+      JSON.stringify({
+        name: '@ai-ecoverse/mcpcat-test-serve-gc',
+        version: '1.0.0',
+        type: 'module',
+        slicc: {
+          commands: {
+            'mcpcat-test-serve-gc': { abi: 'js', module: 'dist/main.mjs' },
+          },
+        },
+      })
+    );
+
+    const sleeperData = readFileSync(join(fixturesDir, 'kernel-sleeper.mjs'));
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat-test-sleeper/dist/main.mjs',
+      sleeperData
+    );
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat-test-sleeper/package.json',
+      JSON.stringify({
+        name: '@ai-ecoverse/mcpcat-test-sleeper',
+        version: '1.0.0',
+        type: 'module',
+        slicc: {
+          commands: {
+            'mcpcat-test-sleeper': { abi: 'js', module: 'dist/main.mjs' },
+          },
+        },
+      })
+    );
+
+    const port = await kernel.connect();
+    client = await attachKernel(port);
+  });
+
+  after(() => {
+    client?.close();
+    kernel?.terminate();
+  });
+
+  it('serve command grandchild is gone after SIGTERM', async () => {
+    const sp = await client.spawn(
+      ['mcpcat', 'serve', '--http', '0', '--no-auth', 'mcpcat-test-serve-gc'],
+      {
+        stdin: 'pipe',
+        onStdout(chunk) {},
+        onStderr(chunk) {},
+      }
+    );
+
+    await sleep(1500);
+
+    const psBefore = await client.ps();
+    const sleepersBefore = psBefore.filter((p) =>
+      p.argv.some((a) => a.includes('mcpcat-test-sleeper'))
+    );
+    assert.ok(sleepersBefore.length > 0, 'sleeper grandchild should be running');
+
+    sp.signal('SIGTERM');
+    await sp.exited;
+
+    await sleep(500);
+
+    const psAfter = await client.ps();
+    const sleepersAfter = psAfter.filter((p) =>
+      p.argv.some((a) => a.includes('mcpcat-test-sleeper'))
+    );
+    assert.equal(sleepersAfter.length, 0, 'sleeper grandchild should be dead after serve exits');
+  });
+});
+
+describe('kernel: serve SIGTERM-trap escalates to SIGKILL', {
+  skip: !hasPgid && 'pgid requires slicc-kernel >= 1.74.0',
+}, () => {
+  let kernel;
+  let client;
+
+  before(async () => {
+    kernel = await createNodeKernel({});
+    await installMcpcat(kernel);
+
+    const trapData = readFileSync(join(fixturesDir, 'kernel-trap-sigterm.mjs'));
+    await kernel.writeFile('/node_modules/@ai-ecoverse/mcpcat-test-trap/dist/main.mjs', trapData);
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat-test-trap/package.json',
+      JSON.stringify({
+        name: '@ai-ecoverse/mcpcat-test-trap',
+        version: '1.0.0',
+        type: 'module',
+        slicc: {
+          commands: {
+            'mcpcat-test-trap': { abi: 'js', module: 'dist/main.mjs' },
+          },
+        },
+      })
+    );
+
+    const port = await kernel.connect();
+    client = await attachKernel(port);
+  });
+
+  after(() => {
+    client?.close();
+    kernel?.terminate();
+  });
+
+  it('SIGKILL reaps a SIGTERM-trapping command', async () => {
+    const sp = await client.spawn(
+      ['mcpcat', 'serve', '--http', '0', '--no-auth', 'mcpcat-test-trap'],
+      {
+        stdin: 'pipe',
+        onStdout(chunk) {},
+        onStderr(chunk) {},
+      }
+    );
+
+    await sleep(1500);
+
+    const psBefore = await client.ps();
+    const trapBefore = psBefore.filter((p) =>
+      p.argv.some((a) => a.includes('mcpcat-test-trap') && !a.includes('--mcp'))
+    );
+    assert.ok(trapBefore.length > 0, 'trap process should be running');
+
+    sp.signal('SIGTERM');
+    await sp.exited;
+
+    await sleep(500);
+
+    const psAfter = await client.ps();
+    const trapAfter = psAfter.filter((p) => p.argv.some((a) => a.includes('mcpcat-test-trap')));
+    assert.equal(trapAfter.length, 0, 'trap process should be dead after SIGKILL escalation');
   });
 });
 describe('kernel: discover', () => {
@@ -603,5 +759,52 @@ describe('kernel: sealed device per-description state', () => {
     });
     assert.equal(status, 2);
     assert.ok(stderr.includes('--bearer') || stderr.includes('--no-auth'));
+  });
+});
+
+describe('B5-1: kernel lock atomicity — 10 parallel add', () => {
+  let kernel;
+
+  before(async () => {
+    kernel = await createNodeKernel({});
+    await installMcpcat(kernel);
+    await kernel.writeFile('/mcp.json', '{}');
+  });
+
+  after(() => {
+    kernel?.terminate();
+  });
+
+  it('keeps all 10 entries from parallel add', async () => {
+    const adds = Array.from({ length: 10 }, (_, i) =>
+      kernel.run(
+        [
+          'mcpcat',
+          'add',
+          `srv${i}`,
+          `http://127.0.0.1:${9900 + i}/mcp`,
+          '--no-probe',
+          '--config',
+          '/mcp.json',
+        ],
+        { stdout: 'pipe', stderr: 'pipe' }
+      )
+    );
+    const results = await Promise.all(adds);
+    for (let i = 0; i < 10; i++) {
+      assert.equal(results[i].status, 0, `add srv${i} failed: ${results[i].stderr}`);
+    }
+
+    const raw = new TextDecoder().decode(await kernel.readFile('/mcp.json'));
+    const config = JSON.parse(raw);
+    const servers = Object.keys(config.mcpServers || {});
+    assert.equal(
+      servers.length,
+      10,
+      `expected 10 servers, got ${servers.length}: ${servers.join(', ')}`
+    );
+    for (let i = 0; i < 10; i++) {
+      assert.ok(servers.includes(`srv${i}`), `missing srv${i}`);
+    }
   });
 });

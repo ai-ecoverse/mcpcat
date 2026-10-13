@@ -3,7 +3,7 @@ export interface SpawnResult {
   stdout: ReadableStream<Uint8Array>;
   stderr: ReadableStream<Uint8Array>;
   wait(): Promise<{ status: number; signal?: string }>;
-  kill(signal?: string): void;
+  kill(signal?: string): void | Promise<void>;
 }
 
 export interface SpawnOptions {
@@ -41,6 +41,8 @@ export interface FsApi {
   mkdirExclusive(path: string): Promise<void>;
   rmdir(path: string): Promise<void>;
   unlink?(path: string): Promise<void>;
+  createExclusive?(path: string): Promise<void>;
+  chmod?(path: string, mode: number): Promise<void>;
 }
 
 export interface Platform {

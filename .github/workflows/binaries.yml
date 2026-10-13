@@ -196,6 +196,24 @@ jobs:
           TAG="${{ inputs.tag }}"
           gh release upload "$TAG" release/* --clobber
 
+      - name: Promote to latest if highest semver with assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ inputs.tag }}"
+          THIS_VER="${TAG#v}"
+
+          HIGHEST="$(gh api "repos/${{ github.repository }}/releases?per_page=100" \
+            --jq '[.[] | select(.assets | length > 1) | select(.prerelease | not) | select(.draft | not) | .tag_name | ltrimstr("v")] + ["'"$THIS_VER"'"] | sort_by(split(".") | map(tonumber)) | last')"
+
+          if [ "$HIGHEST" = "$THIS_VER" ]; then
+            echo "Promoting $TAG to latest (highest semver with assets)"
+            gh release edit "$TAG" --repo "${{ github.repository }}" --prerelease=false --latest
+          else
+            echo "Not promoting $TAG: $HIGHEST is higher. Clearing prerelease only."
+            gh release edit "$TAG" --repo "${{ github.repository }}" --prerelease=false
+          fi
+
   mark-failed:
     if: failure()
     needs: [attach]

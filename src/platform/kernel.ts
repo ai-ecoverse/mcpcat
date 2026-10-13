@@ -55,6 +55,7 @@ interface KernelContext {
     readlink(path: string): Promise<string>;
     readFile(path: string): Promise<Uint8Array>;
     writeFile(path: string, data: Uint8Array | string): Promise<void>;
+    chmod?(path: string, mode: number): Promise<void>;
   };
   fetch: typeof globalThis.fetch;
   spawn(options: {
@@ -64,6 +65,7 @@ interface KernelContext {
     stdin?: 'inherit' | 'pipe' | 'null';
     stdout?: 'inherit' | 'pipe' | 'null';
     stderr?: 'inherit' | 'pipe' | 'null';
+    pgid?: number;
   }): Promise<{
     pid: number;
     stdin?: WritableStream<Uint8Array>;
@@ -73,7 +75,7 @@ interface KernelContext {
     kill(signal?: string): void;
   }>;
   wait(pid: number): Promise<{ status: number; signal?: string }>;
-  kill(pid: number, signal?: string): void;
+  kill(pid: number, signal?: string): void | Promise<void>;
   net: {
     listen(options: { port: number; host?: string; backlog?: number }): Promise<{
       port: number;
@@ -126,10 +128,18 @@ function kernelFs(ctx: KernelContext): FsApi {
     },
     rmdir: (path: string) => ctx.fs.rm(path),
     unlink: (path: string) => ctx.fs.unlink(path),
+    async createExclusive(path: string): Promise<void> {
+      const f = await ctx.open(path, { create: true, exclusive: true, write: true });
+      await f.close();
+    },
+    chmod: ctx.fs.chmod ? (path: string, mode: number) => ctx.fs.chmod!(path, mode) : undefined,
   };
 }
 
+let groupSpawnSupported: boolean | undefined;
+
 async function kernelSpawn(ctx: KernelContext, options: SpawnOptions): Promise<SpawnResult> {
+  const tryGroup = groupSpawnSupported !== false;
   const result = await ctx.spawn({
     argv: options.argv,
     env: options.env as Record<string, string> | undefined,
@@ -137,19 +147,33 @@ async function kernelSpawn(ctx: KernelContext, options: SpawnOptions): Promise<S
     stdin: 'pipe',
     stdout: 'pipe',
     stderr: 'pipe',
+    ...(tryGroup ? { pgid: 0 } : {}),
   });
   const childPid = result.pid;
+
+  if (groupSpawnSupported === undefined) {
+    try {
+      await ctx.kill(-childPid, 'SIGCONT');
+      groupSpawnSupported = true;
+    } catch {
+      groupSpawnSupported = false;
+    }
+  }
+
+  const useGroupKill = groupSpawnSupported;
   return {
     stdin: result.stdin!,
     stdout: result.stdout!,
     stderr: result.stderr!,
     wait: () => result.wait(),
-    kill: (signal?: string) => {
+    kill: async (signal?: string) => {
+      if (useGroupKill) {
+        try {
+          await ctx.kill(-childPid, signal);
+        } catch {}
+      }
       try {
-        ctx.kill(-childPid, signal);
-      } catch {}
-      try {
-        ctx.kill(childPid, signal);
+        await ctx.kill(childPid, signal);
       } catch {}
     },
   };

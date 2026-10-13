@@ -11,7 +11,7 @@ function isEexist(err: unknown): boolean {
   return false;
 }
 
-async function removeStaleLock(fs: FsApi, lockPath: string): Promise<boolean> {
+async function removeStaleLockDir(fs: FsApi, lockPath: string): Promise<boolean> {
   try {
     const s = await fs.stat(lockPath);
     if (Date.now() - s.mtimeMs > LOCK_STALE_MS) {
@@ -24,7 +24,21 @@ async function removeStaleLock(fs: FsApi, lockPath: string): Promise<boolean> {
   return false;
 }
 
+async function removeStaleLockFile(fs: FsApi, lockPath: string): Promise<boolean> {
+  try {
+    const s = await fs.stat(lockPath);
+    if (Date.now() - s.mtimeMs > LOCK_STALE_MS) {
+      try {
+        await fs.unlink!(lockPath);
+      } catch {}
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
 export async function acquireLock(fs: FsApi, configPath: string): Promise<() => Promise<void>> {
+  const useFile = typeof fs.createExclusive === 'function';
   const lockPath = `${configPath}.lock`;
   const start = Date.now();
 
@@ -37,11 +51,19 @@ export async function acquireLock(fs: FsApi, configPath: string): Promise<() => 
 
   while (true) {
     try {
-      await fs.mkdirExclusive(lockPath);
+      if (useFile) {
+        await fs.createExclusive!(lockPath);
+      } else {
+        await fs.mkdirExclusive(lockPath);
+      }
       break;
     } catch (err) {
       if (!isEexist(err)) throw err;
-      await removeStaleLock(fs, lockPath);
+      if (useFile) {
+        await removeStaleLockFile(fs, lockPath);
+      } else {
+        await removeStaleLockDir(fs, lockPath);
+      }
     }
     if (Date.now() - start > LOCK_MAX_WAIT_MS) {
       throw new Error(`mcpcat: could not acquire lock ${lockPath} within ${LOCK_MAX_WAIT_MS}ms`);
@@ -54,7 +76,11 @@ export async function acquireLock(fs: FsApi, configPath: string): Promise<() => 
     if (released) return;
     released = true;
     try {
-      await fs.rmdir(lockPath);
+      if (useFile && fs.unlink) {
+        await fs.unlink(lockPath);
+      } else {
+        await fs.rmdir(lockPath);
+      }
     } catch {}
   };
 }
