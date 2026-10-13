@@ -55,6 +55,7 @@ interface KernelContext {
     readlink(path: string): Promise<string>;
     readFile(path: string): Promise<Uint8Array>;
     writeFile(path: string, data: Uint8Array | string): Promise<void>;
+    chmod?(path: string, mode: number): Promise<void>;
   };
   fetch: typeof globalThis.fetch;
   spawn(options: {
@@ -126,6 +127,11 @@ function kernelFs(ctx: KernelContext): FsApi {
     },
     rmdir: (path: string) => ctx.fs.rm(path),
     unlink: (path: string) => ctx.fs.unlink(path),
+    async createExclusive(path: string): Promise<void> {
+      const f = await ctx.open(path, { create: true, exclusive: true, write: true });
+      await f.close();
+    },
+    chmod: ctx.fs.chmod ? (path: string, mode: number) => ctx.fs.chmod!(path, mode) : undefined,
   };
 }
 

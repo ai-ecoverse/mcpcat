@@ -11,6 +11,7 @@ import {
 import type { McpOAuthConfig } from '../config/types.ts';
 import type { Platform } from '../platform/types.ts';
 import { JerkSignInRequiredError, JerkTokenSource } from './jerk-token-source.ts';
+import { PiFileTokenSource } from './pi-store.ts';
 import type { TokenSource } from './token-source.ts';
 
 const CIMD_URL = 'https://mcpcat.sliccy.ai/oauth/client.json';
@@ -35,11 +36,13 @@ class SourceBackedStore implements McpOAuthStateStore {
   private readonly source: TokenSource;
   private readonly name: string;
   private readonly serverUrl: string;
+  private readonly platform: Platform;
 
-  constructor(source: TokenSource, name: string, serverUrl: string) {
+  constructor(source: TokenSource, name: string, serverUrl: string, platform: Platform) {
     this.source = source;
     this.name = name;
     this.serverUrl = serverUrl;
+    this.platform = platform;
   }
 
   async load(): Promise<McpOAuthState | undefined> {
@@ -48,6 +51,18 @@ class SourceBackedStore implements McpOAuthStateStore {
 
   async save(state: McpOAuthState): Promise<void> {
     await this.source.save(this.name, this.serverUrl, state);
+  }
+
+  async withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
+    if (!(this.source instanceof PiFileTokenSource)) return fn();
+    const refreshPath = `${this.source.path}.refresh`;
+    const { acquireLock } = await import('../config/lock.ts');
+    const release = await acquireLock(this.platform.fs, refreshPath);
+    try {
+      return await fn();
+    } finally {
+      await release();
+    }
   }
 }
 
@@ -101,11 +116,10 @@ function createJerkAuthProvider(options: {
 }): AuthProvider {
   const { name, serverUrl, source } = options;
   let currentToken: string | undefined;
+  const _fetched = false;
 
   return {
     async token(): Promise<string | undefined> {
-      const result = await source.getToken(name, serverUrl);
-      currentToken = result?.accessToken;
       return currentToken;
     },
     async onUnauthorized(context: UnauthorizedContext): Promise<void> {
@@ -143,40 +157,42 @@ function createPiAuthProvider(options: {
   platform: Platform;
 }): AuthProvider {
   const { name, serverUrl, source, oauth, platform } = options;
-  const store = new SourceBackedStore(source, name, serverUrl);
+  const store = new SourceBackedStore(source, name, serverUrl, platform);
   let refreshing: Promise<void> | undefined;
 
   const refresh = async (staleToken: string | undefined) => {
-    refreshing ??= (async () => {
-      const state = await store.load();
-      if (state?.tokens?.access_token !== staleToken) return;
-      if (!state?.tokens?.refresh_token) throw new McpOAuthAuthorizationRequiredError();
-      const registered =
-        state.clientInformation && 'redirect_uris' in state.clientInformation
-          ? state.clientInformation.redirect_uris
-          : [];
-      const redirectUrl = registered[0] ?? FALLBACK_REDIRECT_URL;
-      const provider = new McpOAuthProvider({
-        serverUrl,
-        redirectUrl,
-        clientMetadata: { client_name: oauth?.clientName ?? CLIENT_NAME },
-        clientMetadataDocument: oauth?.clientId ? undefined : cimdFn(redirectUrl),
-        clientId: oauth?.clientId,
-        clientSecret: oauth?.clientSecret,
-        store,
-        onRedirect() {},
+    refreshing ??= store
+      .withRefreshLock(async () => {
+        const state = await store.load();
+        if (state?.tokens?.access_token !== staleToken) return;
+        if (!state?.tokens?.refresh_token) throw new McpOAuthAuthorizationRequiredError();
+        const registered =
+          state.clientInformation && 'redirect_uris' in state.clientInformation
+            ? state.clientInformation.redirect_uris
+            : [];
+        const redirectUrl = registered[0] ?? FALLBACK_REDIRECT_URL;
+        const provider = new McpOAuthProvider({
+          serverUrl,
+          redirectUrl,
+          clientMetadata: { client_name: oauth?.clientName ?? CLIENT_NAME },
+          clientMetadataDocument: oauth?.clientId ? undefined : cimdFn(redirectUrl),
+          clientId: oauth?.clientId,
+          clientSecret: oauth?.clientSecret,
+          store,
+          onRedirect() {},
+        });
+        const result = await authorizeMcp(provider, {
+          serverUrl,
+          authorizationServerMetadataUrl: oauth?.authServerMetadataUrl
+            ? new URL(oauth.authServerMetadataUrl)
+            : undefined,
+          fetch: timedFetch(platform.fetch),
+        });
+        if (result === 'REDIRECT') throw new McpOAuthAuthorizationRequiredError();
+      })
+      .finally(() => {
+        refreshing = undefined;
       });
-      const result = await authorizeMcp(provider, {
-        serverUrl,
-        authorizationServerMetadataUrl: oauth?.authServerMetadataUrl
-          ? new URL(oauth.authServerMetadataUrl)
-          : undefined,
-        fetch: timedFetch(platform.fetch),
-      });
-      if (result === 'REDIRECT') throw new McpOAuthAuthorizationRequiredError();
-    })().finally(() => {
-      refreshing = undefined;
-    });
     return refreshing;
   };
 

@@ -133,6 +133,7 @@ const server = createServer(async (req, res) => {
   if (path === '/token' && req.method === 'POST') {
     const body = new URLSearchParams(await readBody(req));
     const grantType = body.get('grant_type');
+    requestLog.push({ type: 'token_request', grantType });
 
     if (grantType === 'authorization_code') {
       const code = body.get('code');

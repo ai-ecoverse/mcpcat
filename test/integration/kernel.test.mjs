@@ -605,3 +605,50 @@ describe('kernel: sealed device per-description state', () => {
     assert.ok(stderr.includes('--bearer') || stderr.includes('--no-auth'));
   });
 });
+
+describe('B5-1: kernel lock atomicity — 10 parallel add', () => {
+  let kernel;
+
+  before(async () => {
+    kernel = await createNodeKernel({});
+    await installMcpcat(kernel);
+    await kernel.writeFile('/mcp.json', '{}');
+  });
+
+  after(() => {
+    kernel?.terminate();
+  });
+
+  it('keeps all 10 entries from parallel add', async () => {
+    const adds = Array.from({ length: 10 }, (_, i) =>
+      kernel.run(
+        [
+          'mcpcat',
+          'add',
+          `srv${i}`,
+          `http://127.0.0.1:${9900 + i}/mcp`,
+          '--no-probe',
+          '--config',
+          '/mcp.json',
+        ],
+        { stdout: 'pipe', stderr: 'pipe' }
+      )
+    );
+    const results = await Promise.all(adds);
+    for (let i = 0; i < 10; i++) {
+      assert.equal(results[i].status, 0, `add srv${i} failed: ${results[i].stderr}`);
+    }
+
+    const raw = new TextDecoder().decode(await kernel.readFile('/mcp.json'));
+    const config = JSON.parse(raw);
+    const servers = Object.keys(config.mcpServers || {});
+    assert.equal(
+      servers.length,
+      10,
+      `expected 10 servers, got ${servers.length}: ${servers.join(', ')}`
+    );
+    for (let i = 0; i < 10; i++) {
+      assert.ok(servers.includes(`srv${i}`), `missing srv${i}`);
+    }
+  });
+});

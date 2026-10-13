@@ -2,6 +2,7 @@ import type { Tool } from '@earendil-works/pi-mcp';
 import { coerceArgsBySchema, mergeArgs } from '../args/coerce.ts';
 import { AuthStepUpError, createMcpAuthProvider } from '../auth/auth-provider.ts';
 import { JerkSignInRequiredError } from '../auth/jerk-token-source.ts';
+import { PiFileTokenSource } from '../auth/pi-store.ts';
 import { connect } from '../client/connect.ts';
 import type { McpConnection } from '../client/connection.ts';
 import { handleElicitation, parseInputRequest } from '../client/elicit.ts';
@@ -834,7 +835,10 @@ async function probeServer(
     const opts: Record<string, unknown> = { version: 'probe' };
     if ('url' in config && config.url) {
       opts.url = config.url;
-      if ('headers' in config) opts.headers = config.headers;
+      if ('headers' in config) {
+        const expanded = expandHeaders(config.headers, platform.env);
+        if (expanded) opts.headers = expanded;
+      }
     } else if ('command' in config && config.command) {
       opts.command = config.command;
       if ('args' in config) opts.args = config.args;
@@ -1283,14 +1287,34 @@ async function resolveAuthProvider(
   url: string | undefined,
   target: string,
   config: MergedConfigSource
-): Promise<ReturnType<typeof createMcpAuthProvider> | undefined> {
+): Promise<
+  { provider: ReturnType<typeof createMcpAuthProvider>; credentialSecrets: string[] } | undefined
+> {
   if (hasAuthHeader || !url) return undefined;
-  const source = await createTokenSource(platform);
+  const piSource = new PiFileTokenSource(platform);
   const entry = config.entry(target);
   const oauth =
     entry && 'url' in entry.config ? (entry.config as { oauth?: McpOAuthConfig }).oauth : undefined;
   const name = entry ? target : `url:${new URL(url).origin}${new URL(url).pathname}`;
-  return createMcpAuthProvider({ name, serverUrl: url, source, oauth, platform });
+  const provider = createMcpAuthProvider({
+    name,
+    serverUrl: url,
+    source: piSource,
+    oauth,
+    platform,
+  });
+  const credentialSecrets: string[] = [];
+  const state = await piSource.loadWithoutLock(name, url);
+  if (state?.tokens?.access_token) credentialSecrets.push(state.tokens.access_token);
+  if (state?.tokens?.refresh_token) credentialSecrets.push(state.tokens.refresh_token);
+  if (
+    state?.clientInformation &&
+    'client_secret' in state.clientInformation &&
+    state.clientInformation.client_secret
+  ) {
+    credentialSecrets.push(state.clientInformation.client_secret as string);
+  }
+  return { provider, credentialSecrets };
 }
 
 function classifyConnectionError(
@@ -1383,6 +1407,7 @@ async function handleInputRequired(
   }
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: client dispatch with auth, redaction and error classification
 async function runClientVerb(
   platform: Platform,
   version: string,
@@ -1463,13 +1488,20 @@ async function runClientVerb(
 
   const mergedHeaders = { ...configHeaders, ...expanded };
   const hasAuthHeader = 'Authorization' in mergedHeaders;
-  const authProvider = await resolveAuthProvider(
+  const authResolved = await resolveAuthProvider(
     platform,
     hasAuthHeader,
     resolved.url,
     target,
     config
   );
+  const authProvider = authResolved?.provider;
+  if (authResolved?.credentialSecrets) {
+    for (const s of authResolved.credentialSecrets) {
+      allSecrets.add(s);
+      verbose.secrets.add(s);
+    }
+  }
 
   const roots = buildRoots(parsed.roots, !!resolved.command, platform.cwd);
 
