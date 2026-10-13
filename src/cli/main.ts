@@ -262,6 +262,24 @@ function renderCallResult(result: CallToolResult): string {
   return parts.join('\n');
 }
 
+const NETWORK_HINT =
+  'connection failed (use slicc-node, slicc-swift, or the browser extension for servers without CORS)';
+
+function transportHint(err: unknown): string | undefined {
+  if (err instanceof TypeError) {
+    const cause = (err as { cause?: { code?: string } }).cause;
+    if (cause?.code === 'ECONNREFUSED' || cause?.code === 'ENETUNREACH') {
+      return `connection failed: ${err.message}`;
+    }
+  }
+  if (err instanceof Error && 'status' in err && (err as { status?: number }).status === 502) {
+    const msg = err.message;
+    if (msg) return `${NETWORK_HINT}: ${msg}`;
+    return NETWORK_HINT;
+  }
+  return undefined;
+}
+
 async function readDataArg(platform: Platform, dataArg: string): Promise<Record<string, unknown>> {
   let raw: string;
   if (dataArg.startsWith('@-')) {
@@ -527,6 +545,11 @@ export async function run(platform: Platform, version: string, args: string[]): 
       version,
     });
   } catch (err) {
+    const hint = transportHint(err);
+    if (hint) {
+      await platform.write(2, `mcpcat: ${hint}\n`);
+      return 3;
+    }
     await platform.write(2, `mcpcat: connection failed: ${(err as Error).message}\n`);
     return 3;
   }

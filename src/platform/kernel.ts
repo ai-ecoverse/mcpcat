@@ -112,14 +112,23 @@ async function kernelSpawn(ctx: KernelContext, options: SpawnOptions): Promise<S
     stdout: 'pipe',
     stderr: 'pipe',
   });
+  const childPid = result.pid;
   return {
     stdin: result.stdin!,
     stdout: result.stdout!,
     stderr: result.stderr!,
     wait: () => result.wait(),
-    kill: (signal?: string) => result.kill(signal),
+    kill: (signal?: string) => {
+      try {
+        ctx.kill(-childPid, signal);
+      } catch {}
+      try {
+        ctx.kill(childPid, signal);
+      } catch {}
+    },
   };
 }
+
 
 async function kernelListen(ctx: KernelContext, options: ListenOptions): Promise<Listener> {
   const raw = await ctx.net.listen({ port: options.port, host: options.host });

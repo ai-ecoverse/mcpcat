@@ -26,6 +26,7 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
       env: options.env,
       cwd: options.cwd,
       version: options.version,
+      platform,
     });
   }
 
@@ -38,6 +39,8 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
       url: options.url,
       headers: options.headers,
       version: options.version,
+      fetchImpl: platform.fetch,
+      platform,
     });
   }
 
@@ -62,6 +65,8 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
         url: options.url,
         headers: options.headers,
         version: options.version,
+        fetchImpl: platform.fetch,
+        platform,
       });
     }
 

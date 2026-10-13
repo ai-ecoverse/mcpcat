@@ -2,11 +2,14 @@ import {
   type CallToolResult,
   McpClient,
   type McpClientOptions,
+  type McpTransport,
   StdioTransport,
   StreamableHttpTransport,
   type Tool,
 } from '@earendil-works/pi-mcp';
+import type { Platform } from '../platform/types.ts';
 import type { McpConnection, ServerInfo } from './connection.ts';
+import { PlatformStdioTransport } from './platform-stdio-transport.ts';
 
 export interface PiConnectionOptions {
   url?: string;
@@ -16,6 +19,8 @@ export interface PiConnectionOptions {
   env?: Record<string, string>;
   cwd?: string;
   version?: string;
+  fetchImpl?: typeof globalThis.fetch;
+  platform?: Platform;
 }
 
 export async function createPiConnection(options: PiConnectionOptions): Promise<McpConnection> {
@@ -26,21 +31,33 @@ export async function createPiConnection(options: PiConnectionOptions): Promise<
 
   const client = new McpClient(clientOptions);
 
-  let transport;
+  let transport: McpTransport;
   if (options.url) {
     transport = new StreamableHttpTransport({
       url: options.url,
       headers: options.headers,
+      fetch: options.fetchImpl,
     });
   } else if (options.command) {
-    transport = new StdioTransport({
-      command: options.command,
-      args: options.args,
-      env: options.env,
-      cwd: options.cwd,
-      inheritEnv: true,
-      stderr: 'pipe',
-    });
+    if (options.platform) {
+      transport = new PlatformStdioTransport({
+        command: options.command,
+        args: options.args,
+        env: options.env,
+        cwd: options.cwd,
+        inheritEnv: true,
+        platform: options.platform,
+      }) as unknown as McpTransport;
+    } else {
+      transport = new StdioTransport({
+        command: options.command,
+        args: options.args,
+        env: options.env,
+        cwd: options.cwd,
+        inheritEnv: true,
+        stderr: 'pipe',
+      });
+    }
   } else {
     throw new Error('PiConnection requires either a url or a command');
   }

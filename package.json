@@ -17,7 +17,7 @@
   },
   "engines": {
     "node": ">=24",
-    "slicc-kernel": ">=1.64.2"
+    "slicc-kernel": ">=1.65.2"
   },
   "publishConfig": {
     "access": "public",
@@ -48,9 +48,10 @@
     "prepare": "npm run build",
     "lint": "sh scripts/lint.sh",
     "typecheck": "tsc",
-    "test": "npm run test:unit && npm run test:integration",
+    "test": "npm run test:unit && npm run test:integration && npm run test:kernel-min",
     "test:unit": "mcr -c node_modules/@ai-ecoverse/slicc-shared-web/mcr.config.mjs node --test 'test/unit/**/*.test.mjs'",
     "test:integration": "node --test --test-timeout=30000 test/integration/*.test.mjs",
+    "test:kernel-min": "node scripts/test-kernel-min.mjs",
     "cert": "node --test --test-timeout=120000 test/integration/cert.test.mjs test/integration/serve-soak.cert.mjs",
     "release": "semantic-release",
     "trust": "npx fledgling sync -y --skip-publish",
