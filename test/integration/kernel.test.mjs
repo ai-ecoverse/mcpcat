@@ -554,6 +554,70 @@ describe('kernel: serve process group cleanup', {
     assert.equal(sleepersAfter.length, 0, 'sleeper grandchild should be dead after serve exits');
   });
 });
+
+describe('kernel: serve SIGTERM-trap escalates to SIGKILL', {
+  skip: !hasPgid && 'pgid requires slicc-kernel >= 1.74.0',
+}, () => {
+  let kernel;
+  let client;
+
+  before(async () => {
+    kernel = await createNodeKernel({});
+    await installMcpcat(kernel);
+
+    const trapData = readFileSync(join(fixturesDir, 'kernel-trap-sigterm.mjs'));
+    await kernel.writeFile('/node_modules/@ai-ecoverse/mcpcat-test-trap/dist/main.mjs', trapData);
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat-test-trap/package.json',
+      JSON.stringify({
+        name: '@ai-ecoverse/mcpcat-test-trap',
+        version: '1.0.0',
+        type: 'module',
+        slicc: {
+          commands: {
+            'mcpcat-test-trap': { abi: 'js', module: 'dist/main.mjs' },
+          },
+        },
+      })
+    );
+
+    const port = await kernel.connect();
+    client = await attachKernel(port);
+  });
+
+  after(() => {
+    client?.close();
+    kernel?.terminate();
+  });
+
+  it('SIGKILL reaps a SIGTERM-trapping command', async () => {
+    const sp = await client.spawn(
+      ['mcpcat', 'serve', '--http', '0', '--no-auth', 'mcpcat-test-trap'],
+      {
+        stdin: 'pipe',
+        onStdout(chunk) {},
+        onStderr(chunk) {},
+      }
+    );
+
+    await sleep(1500);
+
+    const psBefore = await client.ps();
+    const trapBefore = psBefore.filter((p) =>
+      p.argv.some((a) => a.includes('mcpcat-test-trap') && !a.includes('--mcp'))
+    );
+    assert.ok(trapBefore.length > 0, 'trap process should be running');
+
+    sp.signal('SIGTERM');
+    await sp.exited;
+
+    await sleep(500);
+
+    const psAfter = await client.ps();
+    const trapAfter = psAfter.filter((p) => p.argv.some((a) => a.includes('mcpcat-test-trap')));
+    assert.equal(trapAfter.length, 0, 'trap process should be dead after SIGKILL escalation');
+  });
+});
 describe('kernel: discover', () => {
   let kernel;
   let server;

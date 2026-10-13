@@ -386,12 +386,27 @@ function concat(chunks: Uint8Array[]): Uint8Array {
   return out;
 }
 
+const KILL_GRACE_MS = 2000;
+
 async function killInflight(): Promise<void> {
-  for (const proc of inflightProcs) {
-    try {
-      await proc.kill('SIGTERM');
-    } catch {}
-  }
+  const procs = [...inflightProcs];
+  if (procs.length === 0) return;
+  await Promise.all(
+    procs.map(async (proc) => {
+      try {
+        await proc.kill('SIGTERM');
+      } catch {}
+      const exited = await Promise.race([
+        proc.wait().then(() => true as const),
+        new Promise<false>((r) => setTimeout(() => r(false), KILL_GRACE_MS)),
+      ]);
+      if (!exited) {
+        try {
+          await proc.kill('SIGKILL');
+        } catch {}
+      }
+    })
+  );
   inflightProcs.clear();
 }
 
@@ -645,14 +660,15 @@ async function discoverWithSignal(
   commands: { path: string; name?: string }[],
   childEnv: Record<string, string>,
   cwd: string
-): Promise<{ clis: PublishedCli[] } | { exitCode: number }> {
+): Promise<{ clis: PublishedCli[] } | { exitCode: number; inflightDone?: Promise<void> }> {
   const clis: PublishedCli[] = [];
   let earlyShutdown = false;
+  let inflightDone: Promise<void> | undefined;
   const earlyAbort = new AbortController();
   const onShutdown = () => {
     earlyShutdown = true;
     earlyAbort.abort();
-    void killInflight();
+    inflightDone = killInflight();
   };
   platform.onSignal?.('SIGTERM', onShutdown);
   platform.onSignal?.('SIGINT', onShutdown);
@@ -661,12 +677,12 @@ async function discoverWithSignal(
       const cli = await discoverCli(platform, cmd.path, cmd.name, childEnv, cwd, earlyAbort.signal);
       clis.push(cli);
     } catch (err) {
-      if (earlyShutdown) return { exitCode: 143 };
+      if (earlyShutdown) return { exitCode: 143, inflightDone };
       await platform.write(2, `mcpcat serve: ${(err as Error).message}\n`);
       return { exitCode: 2 };
     }
   }
-  if (earlyShutdown) return { exitCode: 143 };
+  if (earlyShutdown) return { exitCode: 143, inflightDone };
   return { clis };
 }
 
@@ -723,7 +739,14 @@ export async function runServe(
   const childEnv = buildChildEnv(platform, options.envAllow);
 
   const discovery = await discoverWithSignal(platform, options.commands, childEnv, serveCwd);
-  if ('exitCode' in discovery) return discovery.exitCode;
+  if ('exitCode' in discovery) {
+    if (discovery.inflightDone !== undefined) {
+      try {
+        await discovery.inflightDone;
+      } catch {}
+    }
+    return discovery.exitCode;
+  }
   const { clis } = discovery;
 
   const allTools: ServeTool[] = clis.flatMap((cli) => buildTools(cli.name, cli.commands));
@@ -1223,12 +1246,13 @@ async function runHttpServer(
   await platform.write(2, `mcpcat serve: listening on ${listenUrl}\n`);
 
   let shutdownRequested = false;
+  let inflightDone: Promise<void> | undefined;
 
   const shutdown = () => {
     if (shutdownRequested) return;
     shutdownRequested = true;
     listener.close();
-    void killInflight();
+    inflightDone = killInflight();
     if (tokenFilePath) {
       platform.fs.unlink?.(tokenFilePath).catch(() => {});
     }
@@ -1270,6 +1294,12 @@ async function runHttpServer(
     }
   } catch {
     if (!shutdownRequested) throw new Error('listener closed unexpectedly');
+  }
+
+  if (inflightDone !== undefined) {
+    try {
+      await inflightDone;
+    } catch {}
   }
 
   return 0;
