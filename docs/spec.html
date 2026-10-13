@@ -717,8 +717,29 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
   <dt id="q-agent">Q1 · Agent access to MCP servers on the kernel loopback · <em>agreed with slicc-agent</em></dt>
   <dd><strong>Required from slicc-agent.</strong> An <code>mcp.json</code> URL such as <code>http://8810.kernel.localhost/mcp</code> must work as an agent MCP server, so <code>mcpcat serve --proxy</code> makes stdio servers usable by the agent in seven. M7's <code>add --bridge</code> depends on it. slicc-agent routes every <code>http(s)://&lt;port&gt;.kernel.localhost/…</code> request to the kernel client's <code>loopbackFetch({ port })</code>. Wire shape: no <code>Origin</code>, <code>Host: &lt;port&gt;.kernel.localhost</code>, one request per connection with <code>Connection: close</code>, <code>Content-Length</code> bodies, and JSON or SSE responses with no CORS. A <code>--bearer</code> bridge is configured as <code>"headers": {"Authorization": "Bearer ${NAME}"}</code>. There is no OAuth on kernel-loopback URLs (§12.3).</dd>
 
-  <dt id="q-auth">Q2 · MCP OAuth · <em>ask: slicc-jerk</em></dt>
-  <dd><strong>jerk gets an MCP provider kind; pi's file until then.</strong> v1: host-only <code>mcpcat login</code> on <code>~/.pi/agent/mcp-auth.json</code>, no sign-in in seven. Propose <code>kind = "mcp"</code> (keyed by server name + URL, PRM discovery, CIMD/DCR) to jerk; when it ships, mcpcat calls <code>jerk mcp:&lt;name&gt; get</code> and drops its own store.</dd>
+  <dt id="q-auth">Q2 · MCP OAuth · <em>agreed with slicc-jerk as J-11</em></dt>
+  <dd><strong>jerk gets an MCP provider kind; pi's file until then.</strong> v1: host-only <code>mcpcat login</code> on <code>~/.pi/agent/mcp-auth.json</code>, no sign-in in seven. Propose <code>kind = "mcp"</code> (keyed by server name + URL, PRM discovery, CIMD/DCR) to jerk; when it ships, mcpcat calls <code>jerk mcp:&lt;name&gt; get</code> and drops its own store.
+  <ul>
+    <li><strong>Agreed shape (J-11):</strong>
+      <ul>
+        <li>ids are <code>mcp:&lt;name&gt;</code> from <code>mcp.json</code>, or <code>mcp:url:&lt;origin+path&gt;</code>;</li>
+        <li>jerk reads <code>mcp.json</code> read-only, with pi's <code>oauth</code> fields;</li>
+        <li>the env name is <code>MCP_&lt;NAME&gt;_TOKEN</code>;</li>
+        <li>the PRM probe is a POST of <code>server/discover</code>/<code>initialize</code>;</li>
+        <li>the client is mcpcat's CIMD document, else DCR as <code>mcpcat</code>, else a configured <code>clientId</code>;</li>
+        <li>RFC 8707 <code>resource</code>, and an RFC 9207 <code>iss</code> check;</li>
+        <li>grants are kept in the OS keyring;</li>
+        <li><code>jerk mcp:&lt;name&gt; import-pi</code> is explicit only;</li>
+        <li>host-only in v1.</li>
+      </ul></li>
+    <li><strong>On mcpcat's side:</strong>
+      <ul>
+        <li><code>login</code>/<code>logout</code> exec <code>jerk mcp:&lt;name&gt; create</code>/<code>drop</code>;</li>
+        <li>tokens come from <code>jerk mcp:&lt;name&gt; get --reveal --json</code> and are held in memory only;</li>
+        <li>a jerk exit 3 becomes mcpcat exit 4;</li>
+        <li>without <code>jerk</code> on <code>PATH</code>, mcpcat keeps pi's <code>mcp-auth.json</code>.</li>
+      </ul></li>
+  </ul></dd>
 
   <dt id="q-alias">Q3 · <code>mcp</code> compat command</dt>
   <dd><strong>No.</strong> Only <code>mcpcat</code>; the <a href="#v6">§18</a> mapping is the migration path.</dd>
