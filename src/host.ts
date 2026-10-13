@@ -1,5 +1,5 @@
-import { createHostPlatform } from './platform/host.ts';
 import { run } from './cli/main.ts';
+import { createHostPlatform } from './platform/host.ts';
 
 declare const MCPCAT_VERSION: string;
 

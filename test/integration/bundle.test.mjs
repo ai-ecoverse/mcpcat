@@ -1,14 +1,11 @@
-import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import assert from 'node:assert/strict';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
-const kernelBundle = readFileSync(
-  join(root, 'dist/kernel/mcpcat.mjs'),
-  'utf8',
-);
+const kernelBundle = readFileSync(join(root, 'dist/kernel/mcpcat.mjs'), 'utf8');
 
 describe('kernel bundle', () => {
   it('has no import statements', () => {

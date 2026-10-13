@@ -59,7 +59,9 @@
   "devDependencies": {
     "@ai-ecoverse/slicc-kernel": "1.71.0",
     "@ai-ecoverse/slicc-shared-web": "1.13.1",
+    "@biomejs/biome": "2.5.15",
     "esbuild": "0.28.2",
+    "monocart-coverage-reports": "2.13.0",
     "semantic-release": "25.0.9",
     "typescript": "7.0.2",
     "@types/node": "26.6.5"

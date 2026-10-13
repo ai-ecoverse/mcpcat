@@ -1,13 +1,13 @@
-import type { Platform, SpawnOptions, SpawnResult, FsApi } from './types.ts';
-import { readFile, writeFile, mkdir, rename, stat, access } from 'node:fs/promises';
 import { spawn as cpSpawn } from 'node:child_process';
-import { Readable, Writable } from 'node:stream';
 import { constants } from 'node:fs';
+import { access, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { Readable, Writable } from 'node:stream';
 import * as tty from 'node:tty';
+import type { FsApi, Platform, SpawnOptions, SpawnResult } from './types.ts';
 
 function nodeSpawn(options: SpawnOptions): Promise<SpawnResult> {
   const child = cpSpawn(options.argv[0], options.argv.slice(1), {
-    env: options.env ?? process.env as Record<string, string>,
+    env: options.env ?? (process.env as Record<string, string>),
     cwd: options.cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -31,14 +31,18 @@ function nodeSpawn(options: SpawnOptions): Promise<SpawnResult> {
       });
     },
     kill(signal?: string) {
-      child.kill(signal as NodeJS.Signals ?? 'SIGTERM');
+      child.kill((signal as NodeJS.Signals) ?? 'SIGTERM');
     },
   });
 }
 
 function signalNumber(sig: string): number | undefined {
   const map: Record<string, number> = {
-    SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGTERM: 15, SIGKILL: 9,
+    SIGHUP: 1,
+    SIGINT: 2,
+    SIGQUIT: 3,
+    SIGTERM: 15,
+    SIGKILL: 9,
   };
   return map[sig];
 }

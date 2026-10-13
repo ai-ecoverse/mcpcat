@@ -1,9 +1,9 @@
-import { describe, it, before, after } from 'node:test';
-import { readFileSync } from 'node:fs';
-import { execFileSync as exec } from 'node:child_process';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import { execFileSync as exec } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { after, before, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { createNodeKernel } from '@ai-ecoverse/slicc-kernel/node';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -17,10 +17,7 @@ describe('kernel: mcpcat', () => {
   before(async () => {
     kernel = await createNodeKernel({});
     const bundleData = readFileSync(kernelBundle);
-    await kernel.writeFile(
-      '/node_modules/@ai-ecoverse/mcpcat/dist/kernel/mcpcat.mjs',
-      bundleData,
-    );
+    await kernel.writeFile('/node_modules/@ai-ecoverse/mcpcat/dist/kernel/mcpcat.mjs', bundleData);
     await kernel.writeFile(
       '/node_modules/@ai-ecoverse/mcpcat/package.json',
       JSON.stringify({
@@ -35,7 +32,7 @@ describe('kernel: mcpcat', () => {
             },
           },
         },
-      }),
+      })
     );
   });
 

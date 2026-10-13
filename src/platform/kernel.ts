@@ -1,4 +1,4 @@
-import type { Platform, SpawnOptions, SpawnResult, FsApi } from './types.ts';
+import type { FsApi, Platform, SpawnOptions, SpawnResult } from './types.ts';
 
 interface KernelContext {
   argv: string[];

@@ -1,5 +1,5 @@
-import { createKernelPlatform } from './platform/kernel.ts';
 import { run } from './cli/main.ts';
+import { createKernelPlatform } from './platform/kernel.ts';
 
 declare const MCPCAT_VERSION: string;
 

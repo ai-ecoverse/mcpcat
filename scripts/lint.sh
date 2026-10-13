@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-npx --no-install biome check .
+npx --no-install @biomejs/biome check .
 npm run --silent typecheck
 report=$(npx --no-install slicc-lint-comments 2>&1) || true
 rest=$(printf '%s\n' "$report" | grep -vE '^ok: |docs/spec\.html:' || true)

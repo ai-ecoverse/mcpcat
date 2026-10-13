@@ -35,7 +35,7 @@ Usage: mcpcat [options] <target> [<tool> [args…]]
        mcpcat [options] <verb> …
 
 Client verbs:
-  info <target>              Server identity and capabilities
+  info <target>              Server identity and capabilities (not implemented yet)
   tools <target>             List tools (not implemented yet)
   call <target> <tool>       Call a tool (not implemented yet)
   describe <target> [tool]   Tool schema and help (not implemented yet)
@@ -76,11 +76,7 @@ Options:
 `;
 }
 
-export async function run(
-  platform: Platform,
-  version: string,
-  args: string[],
-): Promise<number> {
+export async function run(platform: Platform, version: string, args: string[]): Promise<number> {
   if (args.includes('--version') || args.includes('-V')) {
     await platform.write(1, `${version}\n`);
     return 0;
