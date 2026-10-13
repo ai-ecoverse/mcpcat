@@ -4,10 +4,12 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-ASSET_DIR="${1:?usage: test-install.sh <asset-dir>}"
+ASSET_DIR="${1:?usage: test-install.sh <asset-dir> [expected-version]}"
 ASSET_DIR="$(cd "$ASSET_DIR" && pwd)"
+EXPECTED_VERSION="${2:-}"
 
 INSTALL_DIR="$(mktemp -d)"
+DATA_DIR="$(mktemp -d)"
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -17,13 +19,13 @@ fail() {
 SERVER_PID=""
 cleanup() {
   if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null || true; fi
-  rm -rf "$INSTALL_DIR"
+  rm -rf "$INSTALL_DIR" "$DATA_DIR"
 }
 trap cleanup EXIT
 
 PORT_FILE="$(mktemp)"
 python3 -c "
-import http.server, socketserver, sys, os, threading
+import http.server, socketserver, os
 os.chdir('$ASSET_DIR')
 h = http.server.SimpleHTTPRequestHandler
 s = socketserver.TCPServer(('127.0.0.1', 0), h)
@@ -45,21 +47,24 @@ BASE="http://127.0.0.1:${SERVER_PORT}"
 printf 'Asset server on %s\n' "$BASE"
 
 printf 'Test 1: install with custom dir\n'
-SLICC_INSTALL_BASE_URL="$BASE" INSTALL_DIR="$INSTALL_DIR" sh "$ROOT/install.sh"
-test -x "$INSTALL_DIR/mcpcat" || fail "binary not installed"
+XDG_DATA_HOME="$DATA_DIR" SLICC_INSTALL_BASE_URL="$BASE" INSTALL_DIR="$INSTALL_DIR" sh "$ROOT/install.sh"
+test -x "$INSTALL_DIR/mcpcat" || fail "launcher not installed"
 VERSION="$("$INSTALL_DIR/mcpcat" --version)"
 printf 'Installed version: %s\n' "$VERSION"
 test -n "$VERSION" || fail "no version output"
+if [ -n "$EXPECTED_VERSION" ]; then
+  test "$VERSION" = "$EXPECTED_VERSION" || fail "version mismatch: got $VERSION, expected $EXPECTED_VERSION"
+fi
 
 printf 'Test 2: idempotent reinstall\n'
-SLICC_INSTALL_BASE_URL="$BASE" INSTALL_DIR="$INSTALL_DIR" sh "$ROOT/install.sh"
+XDG_DATA_HOME="$DATA_DIR" SLICC_INSTALL_BASE_URL="$BASE" INSTALL_DIR="$INSTALL_DIR" sh "$ROOT/install.sh"
 VERSION2="$("$INSTALL_DIR/mcpcat" --version)"
 test "$VERSION" = "$VERSION2" || fail "version changed after reinstall"
 
 printf 'Test 3: checksum mismatch\n'
 cp "$ASSET_DIR/SHA256SUMS" "$ASSET_DIR/SHA256SUMS.bak"
 sed 's/^.\{8\}/aaaaaaaa/' "$ASSET_DIR/SHA256SUMS.bak" > "$ASSET_DIR/SHA256SUMS"
-if SLICC_INSTALL_BASE_URL="$BASE" INSTALL_DIR="$INSTALL_DIR" sh "$ROOT/install.sh" 2>/dev/null; then
+if XDG_DATA_HOME="$DATA_DIR" SLICC_INSTALL_BASE_URL="$BASE" INSTALL_DIR="$INSTALL_DIR" sh "$ROOT/install.sh" 2>/dev/null; then
   cp "$ASSET_DIR/SHA256SUMS.bak" "$ASSET_DIR/SHA256SUMS"
   fail "should have rejected tampered checksum"
 fi
