@@ -1,6 +1,7 @@
 import type { Tool } from '@earendil-works/pi-mcp';
 import { coerceArgsBySchema, mergeArgs } from '../args/coerce.ts';
 import { AuthStepUpError, createMcpAuthProvider } from '../auth/auth-provider.ts';
+import { JerkSignInRequiredError } from '../auth/jerk-token-source.ts';
 import { connect } from '../client/connect.ts';
 import type { McpConnection } from '../client/connection.ts';
 import { handleElicitation, parseInputRequest } from '../client/elicit.ts';
@@ -1036,12 +1037,12 @@ export async function run(platform: Platform, version: string, args: string[]): 
   if (discResult !== undefined) return discResult;
 
   if (parsed.verb === 'login') {
-    const source = createTokenSource(platform);
+    const source = await createTokenSource(platform);
     return runLogin(platform, args.slice(1), source);
   }
 
   if (parsed.verb === 'logout') {
-    const source = createTokenSource(platform);
+    const source = await createTokenSource(platform);
     return runLogout(platform, args.slice(1), source);
   }
 
@@ -1114,6 +1115,9 @@ function classifyError(err: unknown): { code: number; kind: string; msg: string 
   if (err instanceof McpAuthError) {
     return { code: EXIT_AUTH, kind: 'auth', msg: err.message };
   }
+  if (err instanceof JerkSignInRequiredError) {
+    return { code: EXIT_AUTH, kind: 'auth', msg: err.message };
+  }
   if (err instanceof AuthStepUpError) {
     const scopeHint = err.scope ? ` --scope ${err.scope}` : '';
     return {
@@ -1144,15 +1148,15 @@ function classifyError(err: unknown): { code: number; kind: string; msg: string 
   return { code: EXIT_RPC_ERROR, kind: 'rpc_error', msg };
 }
 
-function resolveAuthProvider(
+async function resolveAuthProvider(
   platform: Platform,
   hasAuthHeader: boolean,
   url: string | undefined,
   target: string,
   config: MergedConfigSource
-): ReturnType<typeof createMcpAuthProvider> | undefined {
+): Promise<ReturnType<typeof createMcpAuthProvider> | undefined> {
   if (hasAuthHeader || !url) return undefined;
-  const source = createTokenSource(platform);
+  const source = await createTokenSource(platform);
   const entry = config.entry(target);
   const oauth =
     entry && 'url' in entry.config ? (entry.config as { oauth?: McpOAuthConfig }).oauth : undefined;
@@ -1165,7 +1169,11 @@ function classifyConnectionError(
   target: string,
   interrupted: boolean
 ): { code: number; kind: string; msg: string } {
-  if (err instanceof McpAuthError || err instanceof AuthStepUpError) {
+  if (
+    err instanceof McpAuthError ||
+    err instanceof AuthStepUpError ||
+    err instanceof JerkSignInRequiredError
+  ) {
     return classifyError(err);
   }
   if (
@@ -1282,7 +1290,13 @@ async function runClientVerb(
   }
 
   const hasAuthHeader = 'Authorization' in expanded;
-  const authProvider = resolveAuthProvider(platform, hasAuthHeader, resolved.url, target, config);
+  const authProvider = await resolveAuthProvider(
+    platform,
+    hasAuthHeader,
+    resolved.url,
+    target,
+    config
+  );
 
   const roots = buildRoots(parsed.roots, !!resolved.command, platform.cwd);
 

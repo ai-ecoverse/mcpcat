@@ -10,6 +10,7 @@ import {
 } from '@earendil-works/pi-mcp/oauth';
 import type { McpOAuthConfig } from '../config/types.ts';
 import type { Platform } from '../platform/types.ts';
+import { JerkSignInRequiredError, JerkTokenSource } from './jerk-token-source.ts';
 import type { TokenSource } from './token-source.ts';
 
 const CIMD_URL = 'https://mcpcat.sliccy.ai/oauth/client.json';
@@ -79,6 +80,62 @@ export class AuthStepUpError extends Error {
 }
 
 export function createMcpAuthProvider(options: {
+  name: string;
+  serverUrl: string;
+  source: TokenSource;
+  oauth: McpOAuthConfig | undefined;
+  platform: Platform;
+}): AuthProvider {
+  if (options.source instanceof JerkTokenSource) {
+    return createJerkAuthProvider({ ...options, source: options.source });
+  }
+  return createPiAuthProvider(options);
+}
+
+function createJerkAuthProvider(options: {
+  name: string;
+  serverUrl: string;
+  source: JerkTokenSource;
+  oauth: McpOAuthConfig | undefined;
+  platform: Platform;
+}): AuthProvider {
+  const { name, serverUrl, source } = options;
+  let currentToken: string | undefined;
+
+  return {
+    async token(): Promise<string | undefined> {
+      const result = await source.getToken(name, serverUrl);
+      currentToken = result?.accessToken;
+      return currentToken;
+    },
+    async onUnauthorized(context: UnauthorizedContext): Promise<void> {
+      const challenge = parseWwwAuthenticate(context.response.headers.get('www-authenticate'));
+      if (challenge.error === 'insufficient_scope') {
+        try {
+          const result = await source.getToken(name, serverUrl, challenge.scope);
+          if (result) {
+            currentToken = result.accessToken;
+            return;
+          }
+        } catch (err) {
+          if (err instanceof JerkSignInRequiredError) {
+            throw new AuthStepUpError(challenge.scope, options.name);
+          }
+          throw err;
+        }
+        throw new AuthStepUpError(challenge.scope, options.name);
+      }
+      const result = await source.getToken(name, serverUrl);
+      if (result) {
+        currentToken = result.accessToken;
+        return;
+      }
+      throw new McpOAuthAuthorizationRequiredError();
+    },
+  };
+}
+
+function createPiAuthProvider(options: {
   name: string;
   serverUrl: string;
   source: TokenSource;
