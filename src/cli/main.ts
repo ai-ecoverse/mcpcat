@@ -591,6 +591,17 @@ async function runCall(
       return EXIT_USAGE;
     }
     fin = mergeArgs(base, c.value);
+  } else if (!dataArg && !opts.noValidate) {
+    const tools = await conn.listTools();
+    const tool = tools.find((t) => t.name === toolName);
+    const schema = tool?.inputSchema as { required?: string[] } | undefined;
+    const required = Array.isArray(schema?.required) ? schema!.required : [];
+    for (const r of required) {
+      if (!Object.hasOwn(base, r)) {
+        await writeErr(platform, opts.json ?? false, 'usage', `missing required flag --${r}`);
+        return EXIT_USAGE;
+      }
+    }
   }
   return renderCallResult(
     platform,
@@ -1364,7 +1375,7 @@ async function handleInputRequired(
     await platform.write(2, `${err.requestJson}\n`);
     return EXIT_INPUT_REQUIRED;
   }
-  const isTty = platform.isatty(0);
+  const isTty = platform.isatty(0) && platform.isatty(2);
   const elicitResult = await handleElicitation(platform, inputReq, isTty, respondData);
   if ('exitCode' in elicitResult) {
     await platform.write(2, `${err.requestJson}\n`);

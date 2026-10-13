@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { createNodeKernel } from '@ai-ecoverse/slicc-kernel/node';
+import { createNodeKernel } from './helpers/kernel.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const kernelBundle = join(root, 'dist/kernel/mcpcat.mjs');

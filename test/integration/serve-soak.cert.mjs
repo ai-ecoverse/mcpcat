@@ -10,10 +10,15 @@ const fixturesDir = join(root, 'test/integration/fixtures');
 const fixtureCli = join(fixturesDir, 'serve-cli.mjs');
 
 async function startServeHttp() {
-  const child = spawn('node', [hostBin, 'serve', '--http', '0', `node=${fixtureCli}`], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, NODE_NO_WARNINGS: '1' },
-  });
+  const bearerToken = `soak-test-${Date.now()}`;
+  const child = spawn(
+    'node',
+    [hostBin, 'serve', '--http', '0', '--no-auth', `node=${fixtureCli}`],
+    {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, NODE_NO_WARNINGS: '1' },
+    }
+  );
 
   const port = await new Promise((resolve, reject) => {
     let data = '';
@@ -61,6 +66,7 @@ describe('serve: soak test (500 sequential calls)', { timeout: 120_000 }, () => 
         method: 'POST',
         headers: {
           'content-type': 'application/json',
+          accept: 'application/json',
           connection: 'close',
         },
         body,
