@@ -8,10 +8,13 @@ import type {
 import type { GetPromptResult, PromptInfo } from '../client/connection.ts';
 import type { Platform } from '../platform/types.ts';
 
+export type Redactor = (text: string) => string;
+
 export interface RenderOptions {
   json?: boolean;
   outputPath?: string;
   maxChars?: number;
+  redact?: Redactor;
 }
 
 function formatBytes(n: number): string {
@@ -72,12 +75,30 @@ export async function renderCallResult(
   result: CallToolResult,
   options?: RenderOptions
 ): Promise<number> {
+  const r = options?.redact ?? ((s: string) => s);
+
+  if (options?.outputPath) {
+    const content = options.json
+      ? renderCallResultJson(result)
+      : renderCallResultText(result, options);
+    await platform.fs.writeFile(options.outputPath, content);
+    if (result.isError) {
+      await platform.write(
+        2,
+        r(`${result.isError ? '(tool reported error)' : ''}
+`)
+      );
+      return 1;
+    }
+    return 0;
+  }
+
   if (options?.json) {
     const json = renderCallResultJson(result);
     if (result.isError) {
       await platform.write(
         2,
-        `${JSON.stringify({ error: { kind: 'tool_error', message: json } }, null, 2)}\n`
+        r(`${JSON.stringify({ error: { kind: 'tool_error', message: json } }, null, 2)}\n`)
       );
       return 1;
     }
@@ -87,7 +108,7 @@ export async function renderCallResult(
 
   const text = renderCallResultText(result, options);
   if (result.isError) {
-    await platform.write(2, `${text || '(tool reported error)'}\n`);
+    await platform.write(2, r(`${text || '(tool reported error)'}\n`));
     return 1;
   }
   if (text) {
@@ -115,9 +136,11 @@ export async function renderErrorJson(
   kind: string,
   message: string,
   code?: number,
-  data?: unknown
+  data?: unknown,
+  redact?: Redactor
 ): Promise<void> {
-  const errorObj: Record<string, unknown> = { kind, message };
+  const r = redact ?? ((s: string) => s);
+  const errorObj: Record<string, unknown> = { kind, message: r(message) };
   if (code !== undefined) errorObj.code = code;
   if (data !== undefined) errorObj.data = data;
   await platform.write(2, `${JSON.stringify({ error: errorObj }, null, 2)}\n`);

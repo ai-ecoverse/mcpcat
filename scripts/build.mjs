@@ -90,3 +90,5 @@ await esbuild.build({
 console.log(
   'built dist/host/mcpcat.mjs, dist/host/codemode-worker.mjs, dist/kernel/mcpcat.mjs, and dist/quickjs.wasm'
 );
+
+await import('./notices.mjs');

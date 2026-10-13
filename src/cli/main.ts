@@ -13,12 +13,13 @@ import {
 import { resolveTarget } from '../client/targets.ts';
 import { runDescribeTs, runGrep } from '../codemode/describe.ts';
 import { runCode } from '../codemode/run.ts';
-import { expandPlaceholders } from '../config/expand.ts';
+import { expandHeaders, expandPlaceholders, missingPlaceholders } from '../config/expand.ts';
 import { MergedConfigSource } from '../config/index.ts';
 import type { McpOAuthConfig, McpServerConfig } from '../config/types.ts';
 import { runAddCandidate, runDiscover, runFromDiscovery, runInbox } from '../discovery/verbs.ts';
 import type { Platform } from '../platform/types.ts';
 import {
+  type Redactor,
   renderCallResult,
   renderErrorJson,
   renderInfoJson,
@@ -166,6 +167,7 @@ interface ParsedArgs {
   verb: string | undefined;
   target: string | undefined;
   toolName: string | undefined;
+  toolArgs: string[];
   dataArg: string | undefined;
   headers: Record<string, string>;
   protocolVersion: string | undefined;
@@ -182,10 +184,38 @@ interface ParsedArgs {
   memoryLimitMiB: number | undefined;
   verbose: boolean;
   silent: boolean;
+  noValidate: boolean;
   trailingCommand: string[] | undefined;
   respondArg: string | undefined;
   roots: string[];
   outputPath: string | undefined;
+}
+
+const VERBS_WITH_TOOL = new Set(['call', 'prompt', 'describe', 'read']);
+const VERBS_WITH_TARGET = new Set([
+  'info',
+  'tools',
+  'call',
+  'describe',
+  'serve',
+  'grep',
+  'code',
+  'discover',
+  'login',
+  'logout',
+  'resources',
+  'read',
+  'prompts',
+  'prompt',
+]);
+
+function resolveMaxPositional(positional: string[]): number {
+  if (positional.length === 0) return 3;
+  const first = positional[0];
+  if (!VERBS.includes(first)) return 2;
+  if (VERBS_WITH_TOOL.has(first)) return 3;
+  if (VERBS_WITH_TARGET.has(first)) return 2;
+  return 2;
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: flag-dispatching loop is inherently branchy
@@ -211,6 +241,8 @@ function parseFlags(args: string[]): {
   respondArg: string | undefined;
   roots: string[];
   outputPath: string | undefined;
+  noValidate: boolean;
+  rest: string[];
 } {
   const headers: Record<string, string> = {};
   let dataArg: string | undefined;
@@ -233,6 +265,8 @@ function parseFlags(args: string[]): {
   let respondArg: string | undefined;
   const roots: string[] = [];
   let outputPath: string | undefined;
+  let noValidate = false;
+  const rest: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -282,8 +316,34 @@ function parseFlags(args: string[]): {
       outputPath = args[++i];
     } else if (arg === '--memory' && args[i + 1]) {
       memoryLimitMiB = Number(args[++i]);
+    } else if (arg === '--no-validate') {
+      noValidate = true;
     } else if (!arg.startsWith('-')) {
       positional.push(arg);
+      const maxPositional = resolveMaxPositional(positional);
+      if (positional.length >= maxPositional) {
+        rest.push(...args.slice(i + 1));
+        break;
+      }
+    }
+  }
+
+  const toolArgs: string[] = [];
+  for (let j = 0; j < rest.length; j++) {
+    const ra = rest[j];
+    if (ra === '-d' && rest[j + 1] !== undefined) {
+      dataArg = rest[++j];
+    } else if (ra === '--json') {
+      jsonOutput = true;
+    } else if (ra === '--no-validate') {
+      noValidate = true;
+    } else if ((ra === '-o' || ra === '--output') && rest[j + 1] !== undefined) {
+      outputPath = rest[++j];
+    } else if (ra === '--help' || ra === '-h') {
+      toolArgs.length = 0;
+      break;
+    } else {
+      toolArgs.push(ra);
     }
   }
 
@@ -309,6 +369,8 @@ function parseFlags(args: string[]): {
     respondArg,
     roots,
     outputPath,
+    noValidate,
+    rest: toolArgs,
   };
 }
 
@@ -356,6 +418,7 @@ function parseArgs(args: string[]): ParsedArgs {
   const resolved = resolveVerb(flags.positional, flags.trailingCommand);
   return {
     ...resolved,
+    toolArgs: flags.rest,
     headers: flags.headers,
     dataArg: flags.dataArg,
     protocolVersion: flags.protocolVersion,
@@ -372,6 +435,7 @@ function parseArgs(args: string[]): ParsedArgs {
     memoryLimitMiB: flags.memoryLimitMiB,
     verbose: flags.verbose,
     silent: flags.silent,
+    noValidate: flags.noValidate,
     respondArg: flags.respondArg,
     roots: flags.roots,
     outputPath: flags.outputPath,
@@ -488,6 +552,7 @@ async function runTools(platform: Platform, conn: McpConnection, json: boolean):
 interface RunCallOptions {
   json?: boolean;
   noValidate?: boolean;
+  outputPath?: string;
   onProgress?: (progress: number, total?: number, message?: string) => void;
   inputResponses?: Record<string, unknown>;
 }
@@ -519,7 +584,8 @@ async function runCall(
     const tools = await conn.listTools();
     const tool = tools.find((t) => t.name === toolName);
     const schema = tool?.inputSchema ?? { type: 'object', properties: {} };
-    const c = coerceArgsBySchema(toolArgs, schema, { noValidate: opts.noValidate });
+    const skipRequired = opts.noValidate || !!dataArg;
+    const c = coerceArgsBySchema(toolArgs, schema, { noValidate: skipRequired });
     if (!c.ok) {
       await writeErr(platform, opts.json ?? false, 'usage', c.error);
       return EXIT_USAGE;
@@ -532,7 +598,7 @@ async function runCall(
       onProgress: opts.onProgress,
       inputResponses: opts.inputResponses,
     }),
-    { json: opts.json }
+    { json: opts.json, outputPath: opts.outputPath }
   );
 }
 
@@ -664,30 +730,41 @@ async function runPrompt(
   if (dataArg) {
     args = await readDataArg(platform, dataArg);
   }
-  if (toolArgs.length > 0) {
-    const prompts = await conn.listPrompts();
-    const prompt = prompts.find((p) => p.name === name);
-    const schema: Record<string, unknown> = {
-      type: 'object',
-      properties: {} as Record<string, unknown>,
-      required: [] as string[],
-    };
-    if (prompt?.arguments) {
-      const props: Record<string, unknown> = {};
-      const req: string[] = [];
-      for (const a of prompt.arguments) {
-        props[a.name] = { type: 'string', description: a.description };
-        if (a.required) req.push(a.name);
-      }
-      schema.properties = props;
-      schema.required = req;
+
+  const prompts = await conn.listPrompts();
+  const prompt = prompts.find((p) => p.name === name);
+  const schema: Record<string, unknown> = {
+    type: 'object',
+    properties: {} as Record<string, unknown>,
+    required: [] as string[],
+  };
+  if (prompt?.arguments) {
+    const props: Record<string, unknown> = {};
+    const req: string[] = [];
+    for (const a of prompt.arguments) {
+      props[a.name] = { type: 'string', description: a.description };
+      if (a.required) req.push(a.name);
     }
-    const c = coerceArgsBySchema(toolArgs, schema);
+    schema.properties = props;
+    schema.required = req;
+  }
+
+  if (toolArgs.length > 0) {
+    const skipRequired = !!dataArg;
+    const c = coerceArgsBySchema(toolArgs, schema, { noValidate: skipRequired });
     if (!c.ok) {
       await writeErr(platform, json, 'usage', c.error);
       return EXIT_USAGE;
     }
     args = mergeArgs(args, c.value);
+  } else if (!dataArg) {
+    const required = Array.isArray(schema.required) ? (schema.required as string[]) : [];
+    for (const r of required) {
+      if (!Object.hasOwn(args, r)) {
+        await writeErr(platform, json, 'usage', `missing required flag --${r}`);
+        return EXIT_USAGE;
+      }
+    }
   }
   const result = await conn.getPrompt(name, args);
   if (json) {
@@ -718,8 +795,10 @@ async function runVerb(
     case 'tools':
       return runTools(platform, conn, parsed.jsonOutput);
     case 'call':
-      return runCall(platform, conn, parsed.toolName!, parsed.dataArg, [], {
+      return runCall(platform, conn, parsed.toolName!, parsed.dataArg, parsed.toolArgs, {
         json: parsed.jsonOutput,
+        noValidate: parsed.noValidate,
+        outputPath: parsed.outputPath,
         onProgress,
         inputResponses: respondData,
       });
@@ -732,7 +811,14 @@ async function runVerb(
     case 'prompts':
       return runPrompts(platform, conn, parsed.jsonOutput);
     case 'prompt':
-      return runPrompt(platform, conn, parsed.toolName!, parsed.dataArg, [], parsed.jsonOutput);
+      return runPrompt(
+        platform,
+        conn,
+        parsed.toolName!,
+        parsed.dataArg,
+        parsed.toolArgs,
+        parsed.jsonOutput
+      );
     default:
       await platform.write(2, `mcpcat: unknown command '${parsed.verb}'\n`);
       return EXIT_USAGE;
@@ -1130,16 +1216,22 @@ async function runInner(platform: Platform, version: string, args: string[]): Pr
 function expandAndCollect(
   headers: Record<string, string>,
   env: Record<string, string | undefined>
-): { expanded: Record<string, string>; secrets: string[] } {
+): { expanded: Record<string, string>; secrets: string[]; unset: string[] } {
   const secrets: string[] = [];
   const result: Record<string, string> = {};
+  const unset: string[] = [];
   for (const [k, v] of Object.entries(headers)) {
+    const missing = missingPlaceholders(v, env);
+    if (missing.length > 0) {
+      unset.push(...missing);
+      continue;
+    }
     const e = expandPlaceholders(v, env);
     result[k] = e;
     if (e !== v) secrets.push(e);
     if (v.length > 0) secrets.push(v);
   }
-  return { expanded: result, secrets };
+  return { expanded: result, secrets, unset };
 }
 
 function classifyError(err: unknown): { code: number; kind: string; msg: string } {
@@ -1296,7 +1388,14 @@ async function runClientVerb(
   version: string,
   parsed: ParsedArgs
 ): Promise<number> {
-  const { expanded, secrets } = expandAndCollect(parsed.headers, platform.env);
+  const { expanded, secrets, unset } = expandAndCollect(parsed.headers, platform.env);
+  if (unset.length > 0) {
+    await platform.write(
+      2,
+      `mcpcat: unset variable${unset.length > 1 ? 's' : ''} in -H: ${unset.join(', ')}\n`
+    );
+    return EXIT_USAGE;
+  }
   const verbose = createVerboseLogger(platform, parsed.verbose);
   for (const s of secrets) verbose.secrets.add(s);
 
@@ -1343,7 +1442,27 @@ async function runClientVerb(
     return EXIT_USAGE;
   }
 
-  const hasAuthHeader = 'Authorization' in expanded;
+  const configHeaders = expandHeaders(resolved.headers, platform.env, (msg) => {
+    platform.write(2, `mcpcat: warning: ${msg}\n`).catch(() => {});
+  });
+  const configSecrets = collectConfigSecrets(resolved.headers, platform.env);
+  for (const s of configSecrets) verbose.secrets.add(s);
+
+  const allSecrets = new Set([...secrets, ...configSecrets]);
+  const redact: Redactor = (text: string) => {
+    let result = text;
+    for (const secret of allSecrets) {
+      if (secret.length > 0) {
+        while (result.includes(secret)) {
+          result = result.replace(secret, '[REDACTED]');
+        }
+      }
+    }
+    return result;
+  };
+
+  const mergedHeaders = { ...configHeaders, ...expanded };
+  const hasAuthHeader = 'Authorization' in mergedHeaders;
   const authProvider = await resolveAuthProvider(
     platform,
     hasAuthHeader,
@@ -1365,7 +1484,7 @@ async function runClientVerb(
   try {
     conn = await connect(platform, {
       ...resolved,
-      headers: { ...resolved.headers, ...expanded },
+      headers: mergedHeaders,
       protocolVersion: parsed.protocolVersion,
       version,
       timeoutMs,
@@ -1376,12 +1495,22 @@ async function runClientVerb(
     });
     activeConn = conn;
   } catch (err) {
+    if (isSpawnNotFound(err)) {
+      await writeErrRedacted(
+        platform,
+        parsed.jsonOutput,
+        'connection',
+        `command not found: ${resolved.command}`,
+        redact
+      );
+      return EXIT_CONNECTION;
+    }
     const e = classifyConnectionError(err, target, interrupted);
     if (e.code === EXIT_INTERRUPTED) {
       await platform.write(2, 'mcpcat: interrupted\n');
       return termExitCode;
     }
-    await writeErr(platform, parsed.jsonOutput, e.kind, e.msg);
+    await writeErrRedacted(platform, parsed.jsonOutput, e.kind, e.msg, redact);
     return e.code;
   }
 
@@ -1401,7 +1530,7 @@ async function runClientVerb(
       return handleInputRequired(platform, conn, err, respondData, parsed.jsonOutput);
     }
     const e = classifyError(err);
-    await writeErr(platform, parsed.jsonOutput, e.kind, e.msg);
+    await writeErrRedacted(platform, parsed.jsonOutput, e.kind, e.msg, redact);
     return e.code;
   } finally {
     try {
@@ -1413,4 +1542,37 @@ async function runClientVerb(
 async function writeErr(p: Platform, json: boolean, kind: string, msg: string): Promise<void> {
   if (json) await renderErrorJson(p, kind, msg);
   else await p.write(2, `mcpcat: ${msg}\n`);
+}
+
+async function writeErrRedacted(
+  p: Platform,
+  json: boolean,
+  kind: string,
+  msg: string,
+  redact: Redactor
+): Promise<void> {
+  if (json) await renderErrorJson(p, kind, msg, undefined, undefined, redact);
+  else await p.write(2, `mcpcat: ${redact(msg)}\n`);
+}
+
+function collectConfigSecrets(
+  headers: Record<string, string> | undefined,
+  env: Record<string, string | undefined>
+): string[] {
+  if (!headers) return [];
+  const secrets: string[] = [];
+  for (const [, v] of Object.entries(headers)) {
+    const expanded = expandPlaceholders(v, env);
+    if (expanded !== v && expanded.length > 0) secrets.push(expanded);
+    if (v.length > 0 && v !== expanded) secrets.push(v);
+  }
+  return secrets;
+}
+
+function isSpawnNotFound(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code === 'ENOENT' || code === 'EACCES') return true;
+  const msg = err.message;
+  return msg.includes('ENOENT') || msg.includes('EACCES');
 }

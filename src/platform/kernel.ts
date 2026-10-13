@@ -91,15 +91,20 @@ function kernelFs(ctx: KernelContext): FsApi {
     stat: (path: string) => ctx.fs.stat(path),
     exists: (path: string) => ctx.fs.exists(path),
     async mkdirExclusive(path: string): Promise<void> {
-      const exists = await ctx.fs.exists(path);
-      if (exists) {
-        const err = new Error(`EEXIST: directory already exists, mkdir '${path}'`);
-        (err as NodeJS.ErrnoException).code = 'EEXIST';
+      try {
+        await ctx.fs.mkdir(path);
+      } catch (err) {
+        const msg = (err as Error).message ?? '';
+        if (msg.includes('EEXIST') || msg.includes('already exists')) {
+          const wrapped = new Error(`EEXIST: directory already exists, mkdir '${path}'`);
+          (wrapped as NodeJS.ErrnoException).code = 'EEXIST';
+          throw wrapped;
+        }
         throw err;
       }
-      await ctx.fs.mkdir(path);
     },
     rmdir: (path: string) => ctx.fs.rm(path),
+    unlink: (path: string) => ctx.fs.unlink(path),
   };
 }
 

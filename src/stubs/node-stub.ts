@@ -24,6 +24,12 @@ export function rename() {
 export function stat() {
   throw new Error('not available in kernel');
 }
+export function rmdir() {
+  throw new Error('not available in kernel');
+}
+export function unlink() {
+  throw new Error('not available in kernel');
+}
 export function isatty() {
   return false;
 }

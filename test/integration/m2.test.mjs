@@ -71,7 +71,7 @@ describe('M2: schema-driven flags', () => {
   });
 
   it('--json for call returns spec-shaped JSON', () => {
-    const { stdout, status } = runHost(['call', url, 'echo', '-d', '{"message":"hi"}', '--json']);
+    const { stdout, status } = runHost(['--json', 'call', url, 'echo', '-d', '{"message":"hi"}']);
     assert.equal(status, 0);
     const parsed = JSON.parse(stdout);
     assert.ok(parsed.content);
@@ -94,7 +94,7 @@ describe('M2: schema-driven flags', () => {
   });
 
   it('--json for isError goes to stderr', () => {
-    const { stdout, stderr, status } = runHost(['call', url, 'fail', '-d', '{}', '--json']);
+    const { stdout, stderr, status } = runHost(['--json', 'call', url, 'fail', '-d', '{}']);
     assert.equal(status, 1);
     assert.equal(stdout.trim(), '');
     const parsed = JSON.parse(stderr);
@@ -102,7 +102,7 @@ describe('M2: schema-driven flags', () => {
   });
 
   it('--json for describe returns tool object', () => {
-    const { stdout, status } = runHost(['describe', url, 'echo', '--json']);
+    const { stdout, status } = runHost(['--json', 'describe', url, 'echo']);
     assert.equal(status, 0);
     const parsed = JSON.parse(stdout);
     assert.equal(parsed.name, 'echo');
@@ -161,7 +161,7 @@ describe('M2: rendering content types', () => {
   });
 
   it('--json for structured content', () => {
-    const { stdout, status } = runHost(['call', url, 'structured-tool', '-d', '{}', '--json']);
+    const { stdout, status } = runHost(['--json', 'call', url, 'structured-tool', '-d', '{}']);
     assert.equal(status, 0);
     const parsed = JSON.parse(stdout);
     assert.deepStrictEqual(parsed.structuredContent, { result: 'structured', count: 42 });
