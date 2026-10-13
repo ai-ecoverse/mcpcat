@@ -1383,7 +1383,6 @@ async function handleInputRequired(
   }
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: connection setup requires many branches
 async function runClientVerb(
   platform: Platform,
   version: string,

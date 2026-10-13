@@ -82,7 +82,7 @@ describe('M10: resources (2026 HTTP)', () => {
   });
 
   it('read --json returns full result', () => {
-    const { stdout, status } = runHost(['read', url, 'file:///readme.txt', '--json']);
+    const { stdout, status } = runHost(['--json', 'read', url, 'file:///readme.txt']);
     assert.equal(status, 0);
     const parsed = JSON.parse(stdout);
     assert.ok(parsed.contents);
@@ -149,7 +149,7 @@ describe('M10: prompts (2026 HTTP)', () => {
   });
 
   it('prompt --json returns full result', () => {
-    const { stdout, status } = runHost(['prompt', url, 'greet', '-d', '{"name":"Bob"}', '--json']);
+    const { stdout, status } = runHost(['--json', 'prompt', url, 'greet', '-d', '{"name":"Bob"}']);
     assert.equal(status, 0);
     const parsed = JSON.parse(stdout);
     assert.ok(parsed.messages);
@@ -217,7 +217,7 @@ describe('M10: elicitation (2026 HTTP)', () => {
     const tmp = join(tmpdir(), `mcpcat-respond-${Date.now()}.json`);
     writeFileSync(tmp, JSON.stringify({ answer: 'forty-two' }));
     try {
-      const { stdout, status } = runHost(['call', url, 'needs-input', '--respond', `@${tmp}`]);
+      const { stdout, status } = runHost(['--respond', `@${tmp}`, 'call', url, 'needs-input']);
       assert.equal(status, 0);
       assert.ok(stdout.includes('forty-two'));
     } finally {
