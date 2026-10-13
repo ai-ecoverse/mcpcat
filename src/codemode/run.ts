@@ -305,7 +305,7 @@ async function createSandbox(
   }[],
   timeoutMs: number
 ) {
-  const isKernel = platform.env.SLICC_KERNEL !== undefined;
+  const isKernel = platform.packageDir !== undefined;
 
   if (isKernel) {
     const { InlineCodemodeSandbox } = await import('@earendil-works/pi-codemode/portable');
@@ -339,7 +339,11 @@ async function resolveWasmPath(platform: Platform): Promise<string> {
 }
 
 async function loadWasmKernel(platform: Platform): Promise<object> {
-  const candidates = [`${platform.cwd}/quickjs.wasm`, `${platform.env.HOME ?? '.'}/quickjs.wasm`];
+  const candidates = [
+    ...(platform.packageDir ? [`${platform.packageDir}/dist/quickjs.wasm`] : []),
+    `${platform.cwd}/quickjs.wasm`,
+    `${platform.env.HOME ?? '.'}/quickjs.wasm`,
+  ];
 
   const wA = globalThis as unknown as { WebAssembly: { compile(b: Uint8Array): Promise<object> } };
   for (const path of candidates) {
