@@ -1,3 +1,4 @@
+import type { AuthProvider } from '@earendil-works/pi-mcp';
 import type { VerboseLogger } from '../cli/verbose.ts';
 import type { Platform } from '../platform/types.ts';
 import type { McpConnection } from './connection.ts';
@@ -20,6 +21,7 @@ export interface ConnectOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   verbose?: VerboseLogger;
+  authProvider?: AuthProvider;
 }
 
 export async function connect(platform: Platform, options: ConnectOptions): Promise<McpConnection> {
@@ -42,6 +44,19 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
   }
 
   if (!options.url) throw new Error('connect requires either a url or a command');
+
+  if (options.authProvider) {
+    const token = await options.authProvider.token();
+    if (token) {
+      return createPiConnection({
+        url: options.url,
+        headers: options.headers,
+        fetchImpl: platform.fetch,
+        authProvider: options.authProvider,
+        ...shared,
+      });
+    }
+  }
 
   if (options.protocolVersion && !options.protocolVersion.startsWith('2026')) {
     return createPiConnection({
@@ -72,6 +87,7 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
         url: options.url,
         headers: options.headers,
         fetchImpl: platform.fetch,
+        authProvider: options.authProvider,
         ...shared,
       });
     }

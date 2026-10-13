@@ -69,10 +69,12 @@ function cimdFn(redirectUrl: string): (
 
 export class AuthStepUpError extends Error {
   readonly scope: string | undefined;
-  constructor(scope: string | undefined) {
+  readonly target: string | undefined;
+  constructor(scope: string | undefined, target?: string) {
     super(scope ? `insufficient_scope: ${scope}` : 'insufficient_scope');
     this.name = 'AuthStepUpError';
     this.scope = scope;
+    this.target = target;
   }
 }
 
@@ -135,7 +137,7 @@ export function createMcpAuthProvider(options: {
     async onUnauthorized(context: UnauthorizedContext): Promise<void> {
       const challenge = parseWwwAuthenticate(context.response.headers.get('www-authenticate'));
       if (challenge.error === 'insufficient_scope') {
-        throw new AuthStepUpError(challenge.scope);
+        throw new AuthStepUpError(challenge.scope, options.name);
       }
       await refresh(context.token);
     },

@@ -1,4 +1,5 @@
 import {
+  type AuthProvider,
   type CallToolResult,
   McpClient,
   type McpClientOptions,
@@ -27,6 +28,7 @@ export interface PiConnectionOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   verbose?: VerboseLogger;
+  authProvider?: AuthProvider;
 }
 
 function buildStderrHandler(options: PiConnectionOptions): ((chunk: string) => void) | undefined {
@@ -44,6 +46,7 @@ function buildTransport(options: PiConnectionOptions): McpTransport {
       url: options.url,
       headers: options.headers,
       fetch: options.fetchImpl,
+      authProvider: options.authProvider,
     });
   }
   if (!options.command) throw new Error('PiConnection requires either a url or a command');

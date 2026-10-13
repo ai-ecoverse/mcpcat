@@ -107,13 +107,10 @@ async function expireOnAs(asPort, token) {
   });
 }
 
-function writeMcpJson(dir, serverName, url, asPort) {
+function writeMcpJson(dir, serverName, url) {
   const config = {
     mcpServers: {
-      [serverName]: {
-        url,
-        oauth: {},
-      },
+      [serverName]: { url },
     },
   };
   writeFileSync(join(dir, 'mcp.json'), JSON.stringify(config, null, 2));
@@ -468,6 +465,91 @@ describe('auth: automatic refresh after token expiry', () => {
   });
 });
 
+describe('auth: URL-target login and call (no mcp.json entry)', () => {
+  let as;
+  let mcp;
+  let tempDir;
+
+  before(async () => {
+    as = await startServer('oauth-as.mjs');
+    mcp = await startServer('server-oauth-protected.mjs', [as.issuer]);
+    tempDir = join(tmpdir(), `mcpcat-e2e-url-${Date.now()}`);
+    mkdirSync(join(tempDir, 'agent'), { recursive: true });
+    await clearAsLog(as.port);
+  });
+
+  after(() => {
+    as?.child.kill('SIGTERM');
+    mcp?.child.kill('SIGTERM');
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('login with URL target, then call succeeds with stored token', async () => {
+    const serverUrl = `http://127.0.0.1:${mcp.port}/mcp`;
+    const env = {
+      PI_CODING_AGENT_DIR: join(tempDir, 'agent'),
+      HOME: tempDir,
+    };
+
+    const loginProc = spawn('node', [hostBin, 'login', serverUrl, '--no-browser'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, NODE_NO_WARNINGS: '1', ...env },
+    });
+
+    let stderrData = '';
+    loginProc.stderr.on('data', (chunk) => {
+      stderrData += chunk.toString();
+    });
+
+    const authorizeUrl = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error(`No authorize URL: ${stderrData}`)),
+        10_000
+      );
+      const check = () => {
+        const match = stderrData.match(/(http:\/\/127\.0\.0\.1:\d+\/authorize\S+)/);
+        if (match) {
+          clearTimeout(timeout);
+          resolve(match[1]);
+        } else {
+          setTimeout(check, 100);
+        }
+      };
+      check();
+    });
+
+    const authRes = await fetch(authorizeUrl, { redirect: 'manual' });
+    const redirectUrl = authRes.headers.get('location');
+    loginProc.stdin.write(redirectUrl + '\n');
+    loginProc.stdin.end();
+
+    const exitCode = await new Promise((resolve) => {
+      loginProc.on('exit', (code) => resolve(code));
+    });
+    assert.equal(exitCode, 0, `login should exit 0, stderr: ${stderrData}`);
+
+    const log = await asLog(as.port);
+    const tokenEntry = log.find(
+      (e) => e.type === 'token_issued' && e.grant === 'authorization_code'
+    );
+    assert.ok(tokenEntry, 'token should have been issued');
+    await registerToken(mcp.port, tokenEntry.accessToken);
+
+    const callResult = runHost(['call', serverUrl, 'echo', '-d', '{"text":"url-target"}'], {
+      env,
+    });
+    assert.equal(callResult.status, 0, `call should succeed: ${callResult.stderr}`);
+    assert.ok(callResult.stdout.includes('url-target'));
+
+    const authPath = join(tempDir, 'agent', 'mcp-auth.json');
+    const store = JSON.parse(readFileSync(authPath, 'utf8'));
+    const u = new URL(serverUrl);
+    const urlKey = `url:${u.origin}${u.pathname}`;
+    const found = Object.keys(store).some((k) => k.includes(urlKey));
+    assert.ok(found, `store should have a key containing ${urlKey}`);
+  });
+});
+
 describe('auth: 401 without stored tokens exits 4', () => {
   let mcp;
   let tempDir;
@@ -591,7 +673,7 @@ describe('auth: header expansion', () => {
     );
     assert.ok(!stderr.includes('secret_value_42'), 'token must not appear in verbose output');
     if (stderr.includes('Authorization')) {
-      assert.ok(stderr.includes('***'), 'should be redacted');
+      assert.ok(stderr.includes('[REDACTED]'), 'should be redacted');
     }
   });
 });
