@@ -191,6 +191,7 @@ function nodeListen(options: ListenOptions): Promise<Listener> {
 export function createHostPlatform(): Platform {
   const encoder = new TextEncoder();
   return {
+    kind: 'host' as const,
     fetch: globalThis.fetch,
     spawn: nodeSpawn,
     listen: nodeListen,

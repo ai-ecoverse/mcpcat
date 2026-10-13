@@ -172,6 +172,7 @@ export function createKernelPlatform(
 ): Platform {
   const encoder = new TextEncoder();
   return {
+    kind: 'kernel' as const,
     fetch: ctx.fetch,
     spawn: (options: SpawnOptions) => kernelSpawn(ctx, options),
     listen: (options: ListenOptions) => kernelListen(ctx, options),

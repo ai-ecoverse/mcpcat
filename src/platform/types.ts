@@ -43,6 +43,7 @@ export interface FsApi {
 }
 
 export interface Platform {
+  readonly kind: 'host' | 'kernel';
   fetch: typeof globalThis.fetch;
   spawn(options: SpawnOptions): Promise<SpawnResult>;
   listen?(options: ListenOptions): Promise<Listener>;

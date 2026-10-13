@@ -10,7 +10,15 @@ import type { McpServerConfig } from '../config/types.ts';
 import { runAddCandidate, runDiscover, runFromDiscovery, runInbox } from '../discovery/verbs.ts';
 import type { Platform } from '../platform/types.ts';
 import { parseServeFlags, runServe } from '../serve/runtime.ts';
-import { runAdd, runEnable, runExposure, runImport, runList, runRm } from './config-verbs.ts';
+import {
+  runAdd,
+  runBridge,
+  runEnable,
+  runExposure,
+  runImport,
+  runList,
+  runRm,
+} from './config-verbs.ts';
 
 const VERBS = [
   'info',
@@ -78,6 +86,9 @@ Client verbs:
 
 Configuration verbs:
   add <name> <url>           Add a server to mcp.json
+  add <name> --bridge -- 
+    Bridge a stdio server to HTTP (kernel only,
+                             runs in foreground, does not survive reload)
   rm <name>                  Remove a server
   list                       List configured servers
   enable|disable <name>      Toggle a server
@@ -87,7 +98,7 @@ Configuration verbs:
   logout <target>            Remove tokens (not implemented yet)
 
 Server and code verbs:
-  serve [--stdio|--http] …   Expose commands as MCP server
+  serve [--stdio|--http] …   Expose commands or proxy upstream as MCP server
   code [-e src|file.js]      Run a codemode script
   grep <pattern> [target…]   Search tools by name or description
   discover <url>             Find MCP servers at a URL
@@ -517,11 +528,13 @@ async function probeServer(
 async function dispatchConfigVerb(
   platform: Platform,
   verb: string,
-  args: string[]
+  args: string[],
+  version: string
 ): Promise<number> {
   const rest = args.slice(1);
   switch (verb) {
     case 'add':
+      if (rest.includes('--bridge')) return runBridge(platform, rest, version);
       return runAdd(platform, rest, probeServer);
     case 'rm':
       return runRm(platform, rest);
@@ -575,7 +588,11 @@ async function dispatchServeVerb(
 ): Promise<number> {
   const serveArgs = args.slice(args.indexOf('serve') + 1);
   const serveOptions = parseServeFlags(serveArgs);
-  if (serveOptions.commands.length === 0 && serveOptions.toolTemplates.length === 0) {
+  if (
+    !serveOptions.proxy &&
+    serveOptions.commands.length === 0 &&
+    serveOptions.toolTemplates.length === 0
+  ) {
     await platform.write(2, 'mcpcat serve: no commands or --tool templates given\n');
     return 2;
   }
@@ -776,7 +793,7 @@ export async function run(platform: Platform, version: string, args: string[]): 
   if (parsed.verb in CONFIG_VERBS) {
     const disc = await dispatchDiscoveryVerb(platform, parsed, args);
     if (disc !== undefined) return disc;
-    return dispatchConfigVerb(platform, parsed.verb, args);
+    return dispatchConfigVerb(platform, parsed.verb, args, version);
   }
 
   const discResult = await dispatchDiscoveryVerb(platform, parsed, args);
