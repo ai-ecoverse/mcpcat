@@ -11,6 +11,7 @@ import type {
 } from '../config/types.ts';
 import { checkAgentWarnings, literalSecret, urlHasSecret } from '../config/warnings.ts';
 import type { Platform } from '../platform/types.ts';
+import { parseServeFlags, runServe } from '../serve/runtime.ts';
 
 type ProbeFn =
   | ((name: string, config: McpServerConfig, platform: Platform) => Promise<string | undefined>)
@@ -19,12 +20,14 @@ type ProbeFn =
 interface AddFlags {
   local: boolean;
   noProbe: boolean;
+  bridge: boolean;
   description?: string;
   exposure?: string;
   headers: Array<[string, string]>;
   envPairs: Array<[string, string]>;
   cwd?: string;
   configFile?: string;
+  bearer?: string;
   positional: string[];
   cmdArgs: string[];
 }
@@ -54,6 +57,14 @@ function parseAddFlagAt(
   if (arg === '--no-probe') {
     flags.noProbe = true;
     return { next: i + 1 };
+  }
+  if (arg === '--bridge') {
+    flags.bridge = true;
+    return { next: i + 1 };
+  }
+  if (arg === '--bearer' && i + 1 < flagArgs.length) {
+    flags.bearer = flagArgs[i + 1];
+    return { next: i + 2 };
   }
   if (arg === '--config' && i + 1 < flagArgs.length) {
     flags.configFile = flagArgs[i + 1];
@@ -92,6 +103,7 @@ function parseAddFlags(args: string[]): AddFlags | string {
   const flags: AddFlags = {
     local: false,
     noProbe: false,
+    bridge: false,
     headers: [],
     envPairs: [],
     positional: [],
@@ -462,4 +474,66 @@ export async function runImport(platform: Platform, args: string[]): Promise<num
     await platform.write(1, `${replaced ? 'replaced' : 'imported'} ${name}\n`);
   }
   return 0;
+}
+
+export async function runBridge(
+  platform: Platform,
+  args: string[],
+  version: string
+): Promise<number> {
+  const flags = parseAddFlags(args);
+  if (typeof flags === 'string') {
+    await platform.write(2, `mcpcat add --bridge: ${flags}\n`);
+    return 2;
+  }
+  const name = flags.positional[0];
+  if (!name) {
+    await platform.write(2, 'mcpcat add --bridge: requires a server name\n');
+    return 2;
+  }
+
+  if (flags.cmdArgs.length === 0) {
+    await platform.write(2, 'mcpcat add --bridge: requires -- <command> [args...]\n');
+    return 2;
+  }
+
+  const stdioParts = [flags.cmdArgs[0], ...flags.cmdArgs.slice(1)];
+  const stdioTarget = `stdio:${stdioParts.join(' ')}`;
+
+  const serveArgs: string[] = ['--proxy', stdioTarget, '--http', '0', '--json'];
+  if (flags.bearer) {
+    serveArgs.push('--bearer', flags.bearer);
+  }
+
+  const serveOptions = parseServeFlags(serveArgs);
+
+  if (!platform.listen) {
+    await platform.write(2, 'mcpcat add --bridge: HTTP transport requires platform.listen\n');
+    return 3;
+  }
+
+  const listener = await platform.listen({ host: '127.0.0.1', port: 0 });
+  const actualPort = listener.port;
+  listener.close();
+
+  const bridgeUrl = `http://${actualPort}.kernel.localhost/mcp`;
+
+  const httpConfig: McpHttpServerConfig = { url: bridgeUrl };
+  if (flags.bearer) {
+    httpConfig.headers = { Authorization: `Bearer ${flags.bearer}` };
+  }
+  if (flags.description) httpConfig.description = flags.description;
+  if (flags.exposure) httpConfig.exposure = flags.exposure as McpHttpServerConfig['exposure'];
+
+  const path =
+    flags.configFile ?? (flags.local ? projectConfigPath(platform) : userConfigPath(platform));
+  const { replaced } = await addServer(platform.fs, path, name, httpConfig);
+
+  await platform.write(
+    1,
+    `${replaced ? 'replaced' : 'added'} ${name} in ${path}\nbridge does not survive a reload\n`
+  );
+
+  serveOptions.port = actualPort;
+  return runServe(platform, serveOptions, version);
 }
