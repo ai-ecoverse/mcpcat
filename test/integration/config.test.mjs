@@ -55,7 +55,14 @@ describe('config: round-trip preservation', () => {
     const fixture = readFileSync(join(fixturesDir, 'pi-mcp.json'), 'utf8');
     writeFileSync(configPath, fixture);
 
-    runMcpcat(['add', 'new-server', 'https://new.example.com/mcp', '--config', configPath]);
+    runMcpcat([
+      'add',
+      '--no-probe',
+      'new-server',
+      'https://new.example.com/mcp',
+      '--config',
+      configPath,
+    ]);
 
     const afterAdd = readFileSync(configPath, 'utf8');
     const parsed = JSON.parse(afterAdd);
@@ -95,6 +102,7 @@ describe('config: add verb', () => {
   it('adds an HTTP server', () => {
     const { status, stdout } = runMcpcat([
       'add',
+      '--no-probe',
       'docs',
       'https://example.com/mcp',
       '-H',
@@ -116,6 +124,7 @@ describe('config: add verb', () => {
   it('adds a stdio server with -- syntax', () => {
     const { status } = runMcpcat([
       'add',
+      '--no-probe',
       'fs',
       '--config',
       configPath,
@@ -134,6 +143,7 @@ describe('config: add verb', () => {
   it('accepts six order (url first, name second)', () => {
     const { status } = runMcpcat([
       'add',
+      '--no-probe',
       'https://example.com/mcp',
       'six-style',
       '--config',
@@ -147,6 +157,7 @@ describe('config: add verb', () => {
   it('refuses literal secrets in URLs', () => {
     const { status, stderr } = runMcpcat([
       'add',
+      '--no-probe',
       'bad',
       'https://user:pass@example.com/mcp',
       '--config',
@@ -159,6 +170,7 @@ describe('config: add verb', () => {
   it('refuses literal secrets in headers', () => {
     const { status, stderr } = runMcpcat([
       'add',
+      '--no-probe',
       'bad',
       'https://example.com/mcp',
       '-H',
@@ -393,5 +405,44 @@ describe('config: import verb', () => {
     const written = JSON.parse(readFileSync(newConfig, 'utf8'));
     assert.ok(written.mcpServers.docs);
     assert.equal(written.mcpServers.fs, undefined);
+  });
+});
+
+describe('config: project trust rule', () => {
+  let tmpDir;
+
+  before(() => {
+    tmpDir = createTmpDir();
+  });
+
+  after(() => {
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('project stdio entry is not listed without --trust-project', () => {
+    const userConfig = join(tmpDir, 'user-mcp.json');
+    writeFileSync(
+      userConfig,
+      JSON.stringify({ mcpServers: { global: { url: 'https://g.com/mcp' } } })
+    );
+
+    const projectDir = join(tmpDir, 'project');
+    mkdirSync(join(projectDir, '.pi'), { recursive: true });
+    writeFileSync(
+      join(projectDir, '.pi', 'mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          untrusted: { command: 'evil-cmd', args: ['--steal'] },
+        },
+      })
+    );
+
+    const withoutTrust = runMcpcat(['list', '--json', '--config', userConfig], {
+      cwd: projectDir,
+    });
+    assert.equal(withoutTrust.status, 0);
+    const servers = JSON.parse(withoutTrust.stdout);
+    assert.ok(servers.global, 'user server should be listed');
+    assert.equal(servers.untrusted, undefined, 'project server must not appear without trust');
   });
 });

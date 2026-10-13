@@ -13,11 +13,12 @@ import { checkAgentWarnings, literalSecret, urlHasSecret } from '../config/warni
 import type { Platform } from '../platform/types.ts';
 
 type ProbeFn =
-  | ((name: string, config: McpServerConfig, platform: Platform) => Promise<boolean>)
+  | ((name: string, config: McpServerConfig, platform: Platform) => Promise<string | undefined>)
   | undefined;
 
 interface AddFlags {
   local: boolean;
+  noProbe: boolean;
   description?: string;
   exposure?: string;
   headers: Array<[string, string]>;
@@ -50,7 +51,10 @@ function parseAddFlagAt(
     flags.local = true;
     return { next: i + 1 };
   }
-  if (arg === '--no-probe') return { next: i + 1 };
+  if (arg === '--no-probe') {
+    flags.noProbe = true;
+    return { next: i + 1 };
+  }
   if (arg === '--config' && i + 1 < flagArgs.length) {
     flags.configFile = flagArgs[i + 1];
     return { next: i + 2 };
@@ -87,6 +91,7 @@ function parseAddFlagAt(
 function parseAddFlags(args: string[]): AddFlags | string {
   const flags: AddFlags = {
     local: false,
+    noProbe: false,
     headers: [],
     envPairs: [],
     positional: [],
@@ -136,11 +141,7 @@ function buildHttpConfig(urlStr: string, flags: AddFlags): McpHttpServerConfig |
   return config;
 }
 
-export async function runAdd(
-  platform: Platform,
-  args: string[],
-  _probe?: ProbeFn
-): Promise<number> {
+export async function runAdd(platform: Platform, args: string[], probe?: ProbeFn): Promise<number> {
   const flags = parseAddFlags(args);
   if (typeof flags === 'string') {
     await platform.write(2, `mcpcat add: ${flags}\n`);
@@ -205,6 +206,15 @@ export async function runAdd(
   }
 
   await platform.write(1, `${replaced ? 'replaced' : 'added'} ${name} in ${path}\n`);
+
+  if (!flags.noProbe && probe) {
+    const reason = await probe(name, config, platform);
+    if (reason) {
+      await platform.write(2, `mcpcat add: probe failed: ${reason}\n`);
+      return 3;
+    }
+  }
+
   return 0;
 }
 

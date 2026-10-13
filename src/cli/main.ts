@@ -4,6 +4,7 @@ import type { McpConnection } from '../client/connection.ts';
 import { InputRequiredError } from '../client/stateless-connection.ts';
 import { resolveTarget } from '../client/targets.ts';
 import { MergedConfigSource } from '../config/index.ts';
+import type { McpServerConfig } from '../config/types.ts';
 import type { Platform } from '../platform/types.ts';
 import { runAdd, runEnable, runExposure, runImport, runList, runRm } from './config-verbs.ts';
 
@@ -389,6 +390,38 @@ async function runVerb(
   }
 }
 
+async function probeServer(
+  _name: string,
+  config: McpServerConfig,
+  platform: Platform
+): Promise<string | undefined> {
+  try {
+    const opts: Record<string, unknown> = { version: 'probe' };
+    if ('url' in config && config.url) {
+      opts.url = config.url;
+      if ('headers' in config) opts.headers = config.headers;
+    } else if ('command' in config && config.command) {
+      opts.command = config.command;
+      if ('args' in config) opts.args = config.args;
+      if ('env' in config) opts.env = config.env;
+      if ('cwd' in config) opts.cwd = config.cwd;
+    } else {
+      return undefined;
+    }
+    const conn = await connect(platform, opts as Parameters<typeof connect>[1]);
+    try {
+      await conn.info();
+    } finally {
+      try {
+        await conn.close();
+      } catch {}
+    }
+    return undefined;
+  } catch (err) {
+    return (err as Error).message;
+  }
+}
+
 async function dispatchConfigVerb(
   platform: Platform,
   verb: string,
@@ -397,7 +430,7 @@ async function dispatchConfigVerb(
   const rest = args.slice(1);
   switch (verb) {
     case 'add':
-      return runAdd(platform, rest);
+      return runAdd(platform, rest, probeServer);
     case 'rm':
       return runRm(platform, rest);
     case 'list':
