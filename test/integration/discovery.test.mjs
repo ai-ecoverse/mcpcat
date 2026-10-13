@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -82,6 +82,31 @@ function listenOnPort0(handler) {
     const srv = createServer(handler);
     srv.listen(0, '127.0.0.1', () => {
       resolve(srv);
+    });
+  });
+}
+
+function startFixtureServer(script, extraArgs = []) {
+  const child = spawn('node', [join(fixturesDir, script), ...extraArgs], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, NODE_NO_WARNINGS: '1' },
+  });
+
+  return new Promise((resolve, reject) => {
+    let data = '';
+    child.stdout.on('data', (chunk) => {
+      data += chunk.toString();
+      if (data.includes('\n')) {
+        try {
+          resolve({ child, ...JSON.parse(data.trim()) });
+        } catch (e) {
+          reject(e);
+        }
+      }
+    });
+    child.on('error', reject);
+    child.on('exit', (code) => {
+      if (!data.includes('\n')) reject(new Error(`Server exited ${code}: ${data}`));
     });
   });
 }
@@ -363,6 +388,84 @@ describe('discovery: discover <url>', () => {
   it('does not send credentials', async () => {
     const r = await runMcpcatAsync(['discover', baseUrl], { stateHome, piDir });
     assert.equal(r.status, 0);
+  });
+});
+
+describe('discovery: discover <url> with MCP probe', () => {
+  let tmpDir;
+  let stateHome;
+  let piDir;
+  let configPath;
+  let mcpServer;
+  let mcpUrl;
+
+  before(async () => {
+    tmpDir = createTmpDir();
+    stateHome = join(tmpDir, 'state');
+    piDir = join(tmpDir, 'pi');
+    mkdirSync(piDir, { recursive: true });
+    configPath = join(piDir, 'mcp.json');
+    writeFileSync(configPath, '{"mcpServers":{}}\n');
+
+    mcpServer = await startFixtureServer('server-2026-http.mjs');
+    mcpUrl = `http://127.0.0.1:${mcpServer.port}`;
+  });
+
+  after(() => {
+    mcpServer?.child.kill('SIGTERM');
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('discovers MCP server via POST server/discover', async () => {
+    const hashBefore = hashFile(configPath);
+    const r = await runMcpcatAsync(['discover', mcpUrl], { stateHome, piDir });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.ok(r.stdout.includes(mcpUrl) || r.stdout.includes('/mcp'), 'should find MCP endpoint');
+    assert.ok(r.stdout.includes('mcp'), 'standard should be mcp');
+    const hashAfter = hashFile(configPath);
+    assert.equal(hashBefore, hashAfter, 'mcp.json must not be modified');
+  });
+});
+
+describe('discovery: discover <url> with 401 OAuth server', () => {
+  let tmpDir;
+  let stateHome;
+  let piDir;
+  let configPath;
+  let authServer;
+  let authUrl;
+
+  before(async () => {
+    tmpDir = createTmpDir();
+    stateHome = join(tmpDir, 'state');
+    piDir = join(tmpDir, 'pi');
+    mkdirSync(piDir, { recursive: true });
+    configPath = join(piDir, 'mcp.json');
+    writeFileSync(configPath, '{"mcpServers":{}}\n');
+
+    authServer = await listenOnPort0((req, res) => {
+      res.writeHead(401, {
+        'Content-Type': 'application/json',
+        'WWW-Authenticate':
+          'Bearer realm="mcp", resource_metadata="https://auth.test/.well-known/oauth-protected-resource"',
+      });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+    });
+    authUrl = `http://127.0.0.1:${authServer.address().port}`;
+  });
+
+  after(() => {
+    authServer?.close();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('discovers 401 server as auth-required candidate', async () => {
+    const hashBefore = hashFile(configPath);
+    const r = await runMcpcatAsync(['discover', authUrl], { stateHome, piDir });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.ok(r.stdout.includes('auth-required'), 'should show auth-required trust signal');
+    const hashAfter = hashFile(configPath);
+    assert.equal(hashBefore, hashAfter, 'mcp.json must not be modified');
   });
 });
 

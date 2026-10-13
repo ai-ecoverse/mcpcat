@@ -1,5 +1,5 @@
 import type { Platform } from '../platform/types.ts';
-import type { DiscoveryEvent } from './types.ts';
+import type { DiscoveryEvent, TrustSignal } from './types.ts';
 
 interface ProbeResult {
   events: DiscoveryEvent[];
@@ -27,27 +27,45 @@ function parseLinkHeaders(headers: Headers): Array<{ url: string; rel: string }>
   return links;
 }
 
+function wasRedirected(requestUrl: string, resp: Response): boolean {
+  if (resp.redirected) return true;
+  if (resp.url && resp.url !== requestUrl) return true;
+  return false;
+}
+
 async function probeUrl(
   fetcher: typeof globalThis.fetch,
   url: string,
   accept?: string
 ): Promise<{ ok: boolean; status: number; headers: Headers; body: string } | undefined> {
+  let resp: Response;
   try {
-    const resp = await fetcher(url, {
+    resp = await fetcher(url, {
       redirect: 'manual',
       headers: accept ? { Accept: accept } : undefined,
       credentials: 'omit' as RequestCredentials,
     });
-    if (resp.status !== 200)
-      return { ok: false, status: resp.status, headers: resp.headers, body: '' };
-    const ct = resp.headers.get('content-type');
-    if (!isJsonContentType(ct))
-      return { ok: false, status: resp.status, headers: resp.headers, body: '' };
-    const body = await resp.text();
-    return { ok: true, status: 200, headers: resp.headers, body };
   } catch {
-    return undefined;
+    try {
+      resp = await fetcher(url, {
+        redirect: 'follow',
+        headers: accept ? { Accept: accept } : undefined,
+        credentials: 'omit' as RequestCredentials,
+      });
+      if (wasRedirected(url, resp)) {
+        return { ok: false, status: 301, headers: resp.headers, body: '' };
+      }
+    } catch {
+      return undefined;
+    }
   }
+  if (resp.status !== 200)
+    return { ok: false, status: resp.status, headers: resp.headers, body: '' };
+  const ct = resp.headers.get('content-type');
+  if (!isJsonContentType(ct))
+    return { ok: false, status: resp.status, headers: resp.headers, body: '' };
+  const body = await resp.text();
+  return { ok: true, status: 200, headers: resp.headers, body };
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -192,20 +210,108 @@ async function probeLinkHeaders(
   return events;
 }
 
+interface McpProbeHit {
+  url: string;
+  serverInfo?: { name?: string; version?: string };
+  trust: TrustSignal[];
+}
+
+function mcpJsonRpc(method: string, params: unknown, id = 1): string {
+  return JSON.stringify({ jsonrpc: '2.0', id, method, params });
+}
+
+function parseServerInfo(
+  result: Record<string, unknown>
+): { name?: string; version?: string } | undefined {
+  const si = isRecord(result.serverInfo) ? result.serverInfo : undefined;
+  if (!si) return undefined;
+  return {
+    name: typeof si.name === 'string' ? si.name : undefined,
+    version: typeof si.version === 'string' ? si.version : undefined,
+  };
+}
+
+function checkAuthResponse(resp: Response): TrustSignal | undefined {
+  if (resp.status !== 401) return undefined;
+  const wwwAuth = resp.headers.get('www-authenticate');
+  if (!wwwAuth) return undefined;
+  return { type: 'auth-required', detail: wwwAuth.split(',')[0].trim() };
+}
+
+async function tryMcpPost(
+  fetcher: typeof globalThis.fetch,
+  url: string,
+  body: string,
+  extraHeaders?: Record<string, string>
+): Promise<McpProbeHit | undefined> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+    ...extraHeaders,
+  };
+  try {
+    const resp = await fetcher(url, {
+      method: 'POST',
+      headers,
+      body,
+      redirect: 'manual',
+      credentials: 'omit' as RequestCredentials,
+    });
+    const authSignal = checkAuthResponse(resp);
+    if (authSignal) return { url, trust: [authSignal] };
+    if (resp.status === 200) {
+      const text = await resp.text();
+      const parsed = tryParseJson(text);
+      if (isRecord(parsed) && isRecord(parsed.result)) {
+        return { url, serverInfo: parseServerInfo(parsed.result), trust: [] };
+      }
+    }
+  } catch {}
+  return undefined;
+}
+
+async function probeMcpEndpoint(
+  fetcher: typeof globalThis.fetch,
+  url: string
+): Promise<McpProbeHit | undefined> {
+  const discoverBody = mcpJsonRpc('server/discover', {
+    protocolVersion: '2026-07-28',
+    clientInfo: { name: 'mcpcat', version: '0.0.0' },
+  });
+  const hit = await tryMcpPost(fetcher, url, discoverBody, {
+    'Mcp-Method': 'server/discover',
+  });
+  if (hit) return hit;
+
+  const initBody = mcpJsonRpc('initialize', {
+    protocolVersion: '2025-11-25',
+    clientInfo: { name: 'mcpcat', version: '0.0.0' },
+    capabilities: {},
+  });
+  return tryMcpPost(fetcher, url, initBody);
+}
+
 async function probeMcp(
   fetcher: typeof globalThis.fetch,
   origin: string,
-  page: string
+  page: string,
+  targetUrl: string
 ): Promise<DiscoveryEvent[]> {
+  const events: DiscoveryEvent[] = [];
+  const urls = [targetUrl];
   const mcpUrl = `${origin}/mcp`;
-  const mcpResult = await probeUrl(fetcher, mcpUrl, 'application/json');
-  if (mcpResult?.ok) {
-    const body = tryParseJson(mcpResult.body);
-    if (isRecord(body)) {
-      return [makeEvent('mcp', origin, mcpUrl, 'well-known', page, 'valid', { endpoint: mcpUrl })];
+  if (mcpUrl !== targetUrl) urls.push(mcpUrl);
+
+  for (const url of urls) {
+    const hit = await probeMcpEndpoint(fetcher, url);
+    if (hit) {
+      const summary: Record<string, unknown> = { endpoint: hit.url };
+      if (hit.serverInfo) summary.serverInfo = hit.serverInfo;
+      if (hit.trust.length > 0) summary.trust = hit.trust;
+      events.push(makeEvent('mcp', origin, hit.url, 'well-known', page, 'valid', summary));
     }
   }
-  return [];
+  return events;
 }
 
 export async function probeDiscover(platform: Platform, targetUrl: string): Promise<ProbeResult> {
@@ -222,7 +328,7 @@ export async function probeDiscover(platform: Platform, targetUrl: string): Prom
   const events = [
     ...(await probeWellKnown(fetcher, origin, page)),
     ...(await probeLinkHeaders(fetcher, targetUrl, origin, page)),
-    ...(await probeMcp(fetcher, origin, page)),
+    ...(await probeMcp(fetcher, origin, page, targetUrl)),
   ];
   return { events };
 }

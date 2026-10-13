@@ -204,12 +204,71 @@ function hostFromUrl(url: string): string {
   }
 }
 
-function domainMatch(a: string, b: string): boolean {
-  const na = a.toLowerCase().replace(/^www\./, '');
-  const nb = b.toLowerCase().replace(/^www\./, '');
-  if (na === nb) return true;
-  if (nb.endsWith(`.${na}`) || na.endsWith(`.${nb}`)) return true;
-  return false;
+const TWO_LABEL_TLDS = new Set([
+  'co.uk',
+  'org.uk',
+  'ac.uk',
+  'co.jp',
+  'or.jp',
+  'co.kr',
+  'co.nz',
+  'co.za',
+  'com.au',
+  'com.br',
+  'com.cn',
+  'com.mx',
+  'com.tw',
+  'net.au',
+  'org.au',
+  'co.in',
+  'com.sg',
+  'co.il',
+]);
+
+export function registrableDomain(host: string): string {
+  const h = host.toLowerCase().replace(/^www\./, '');
+  const parts = h.split('.');
+  if (parts.length <= 2) return h;
+  const lastTwo = parts.slice(-2).join('.');
+  if (TWO_LABEL_TLDS.has(lastTwo) && parts.length > 2) {
+    return parts.slice(-3).join('.');
+  }
+  return lastTwo;
+}
+
+export function domainMatch(a: string, b: string): boolean {
+  return registrableDomain(a) === registrableDomain(b);
+}
+
+function extractMcp(event: DiscoveryEvent): Candidate[] {
+  const summary = event.summary;
+  if (!isRecord(summary)) return [];
+  const endpoint = typeof summary.endpoint === 'string' ? summary.endpoint : undefined;
+  if (!endpoint) return [];
+  const trust: TrustSignal[] = [];
+  if (Array.isArray(summary.trust)) {
+    for (const t of summary.trust) {
+      if (isRecord(t) && typeof t.type === 'string' && typeof t.detail === 'string') {
+        trust.push({ type: t.type, detail: t.detail });
+      }
+    }
+  }
+  const si = isRecord(summary.serverInfo) ? summary.serverInfo : undefined;
+  const name = si && typeof si.name === 'string' ? si.name : undefined;
+  return [
+    {
+      id: candidateId(),
+      endpoint,
+      standard: 'mcp',
+      origin: event.origin,
+      name,
+      transport: 'http',
+      trust,
+      status: event.status,
+      reason: event.reason,
+      discoveredAt: new Date().toISOString(),
+    },
+  ];
 }
 
 const EXTRACTORS: Record<string, (event: DiscoveryEvent) => Candidate[]> = {
@@ -219,6 +278,7 @@ const EXTRACTORS: Record<string, (event: DiscoveryEvent) => Candidate[]> = {
   poppy: extractPoppy,
   nlweb: extractNlweb,
   webmcp: extractWebmcp,
+  mcp: extractMcp,
 };
 
 export function extractCandidates(event: DiscoveryEvent): Candidate[] {
