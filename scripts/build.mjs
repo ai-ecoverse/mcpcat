@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { chmodSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
@@ -35,6 +36,21 @@ await esbuild.build({
 chmodSync(join(dist, 'host/mcpcat.mjs'), 0o755);
 
 await esbuild.build({
+  entryPoints: [join(root, 'src/codemode/worker.ts')],
+  outfile: join(dist, 'host/codemode-worker.mjs'),
+  bundle: true,
+  format: 'esm',
+  platform: 'node',
+  target: ['node24'],
+  define,
+  logLevel: 'info',
+});
+
+const require = createRequire(import.meta.url);
+const wasmSource = require.resolve('quickjs-wasi/quickjs.wasm');
+copyFileSync(wasmSource, join(dist, 'quickjs.wasm'));
+
+await esbuild.build({
   entryPoints: [join(root, 'src/kernel.ts')],
   outfile: join(dist, 'kernel/mcpcat.mjs'),
   bundle: true,
@@ -63,8 +79,12 @@ await esbuild.build({
     'node:events': join(root, 'src/stubs/node-stub.ts'),
     'node:util': join(root, 'src/stubs/node-stub.ts'),
     'node:process': join(root, 'src/stubs/node-stub.ts'),
+    'node:worker_threads': join(root, 'src/stubs/node-stub.ts'),
+    'node:module': join(root, 'src/stubs/node-stub.ts'),
     'cross-spawn': join(root, 'src/stubs/node-stub.ts'),
   },
 });
 
-console.log('built dist/host/mcpcat.mjs and dist/kernel/mcpcat.mjs');
+console.log(
+  'built dist/host/mcpcat.mjs, dist/host/codemode-worker.mjs, dist/kernel/mcpcat.mjs, and dist/quickjs.wasm'
+);

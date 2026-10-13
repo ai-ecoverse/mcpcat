@@ -73,3 +73,13 @@ export function promisify() {
 export function deprecate() {
   return () => {};
 }
+export function createRequire() {
+  return () => '';
+}
+export class Worker {
+  constructor() {
+    throw new Error('not available in kernel');
+  }
+}
+export const workerData = null;
+export const parentPort = null;

@@ -3,6 +3,8 @@ import { connect } from '../client/connect.ts';
 import type { McpConnection } from '../client/connection.ts';
 import { InputRequiredError } from '../client/stateless-connection.ts';
 import { resolveTarget } from '../client/targets.ts';
+import { runDescribeTs, runGrep } from '../codemode/describe.ts';
+import { runCode } from '../codemode/run.ts';
 import { MergedConfigSource } from '../config/index.ts';
 import type { McpServerConfig } from '../config/types.ts';
 import { runAddCandidate, runDiscover, runFromDiscovery, runInbox } from '../discovery/verbs.ts';
@@ -54,12 +56,10 @@ const UNIMPLEMENTED_VERBS = new Set([
   'read',
   'prompts',
   'prompt',
-  'grep',
   'complete',
   'task',
   'login',
   'logout',
-  'code',
 ]);
 
 const CLIENT_VERBS = new Set(['info', 'tools', 'call', 'describe', 'serve']);
@@ -88,7 +88,8 @@ Configuration verbs:
 
 Server and code verbs:
   serve [--stdio|--http] …   Expose commands as MCP server
-  code [-e src|file.js]      Run a codemode script (not implemented yet)
+  code [-e src|file.js]      Run a codemode script
+  grep <pattern> [target…]   Search tools by name or description
   discover <url>             Find MCP servers at a URL
   inbox [--json]             List discovery candidates
   help [verb]                Show help
@@ -100,6 +101,13 @@ Options:
   -m, --timeout <s>          Request timeout (default 60)
   --protocol-version <v>     Pin protocol version
   --schema                   Print raw JSON Schema (describe)
+  --ts                       TypeScript declarations (describe)
+  --budget <n>               Token budget for --ts (default 3000)
+  --rank                     BM25 ranking (grep)
+  -E                         Extended regex (grep)
+  -e <src>                   Inline script source (code)
+  -s, --server <name>        Server target (code, repeatable)
+  --allow-shell              Enable shell() global (code)
   -v, --verbose              Trace on stderr
   -s, --silent               Suppress progress
   -o, --output <path>        Write result to file
@@ -116,14 +124,33 @@ interface ParsedArgs {
   headers: Record<string, string>;
   protocolVersion: string | undefined;
   showSchema: boolean;
+  showTs: boolean;
+  tsBudget: number | undefined;
+  jsonOutput: boolean;
+  rank: boolean;
+  extendedRegex: boolean;
+  inlineSource: string | undefined;
+  serverTargets: string[];
+  allowShell: boolean;
+  timeoutMs: number | undefined;
   trailingCommand: string[] | undefined;
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: flag-dispatching loop is inherently branchy
 function parseFlags(args: string[]): {
   headers: Record<string, string>;
   dataArg: string | undefined;
   protocolVersion: string | undefined;
   showSchema: boolean;
+  showTs: boolean;
+  tsBudget: number | undefined;
+  jsonOutput: boolean;
+  rank: boolean;
+  extendedRegex: boolean;
+  inlineSource: string | undefined;
+  serverTargets: string[];
+  allowShell: boolean;
+  timeoutMs: number | undefined;
   positional: string[];
   trailingCommand: string[] | undefined;
 } {
@@ -131,6 +158,15 @@ function parseFlags(args: string[]): {
   let dataArg: string | undefined;
   let protocolVersion: string | undefined;
   let showSchema = false;
+  let showTs = false;
+  let tsBudget: number | undefined;
+  let jsonOutput = false;
+  let rank = false;
+  let extendedRegex = false;
+  let inlineSource: string | undefined;
+  const serverTargets: string[] = [];
+  let allowShell = false;
+  let timeoutMs: number | undefined;
   const positional: string[] = [];
   let trailingCommand: string[] | undefined;
 
@@ -152,22 +188,56 @@ function parseFlags(args: string[]): {
       protocolVersion = args[++i];
     } else if (arg === '--schema') {
       showSchema = true;
+    } else if (arg === '--ts') {
+      showTs = true;
+    } else if (arg === '--budget' && args[i + 1]) {
+      tsBudget = Number(args[++i]);
+    } else if (arg === '--json') {
+      jsonOutput = true;
+    } else if (arg === '--rank') {
+      rank = true;
+    } else if (arg === '-E') {
+      extendedRegex = true;
+    } else if (arg === '-e' && args[i + 1]) {
+      inlineSource = args[++i];
+    } else if ((arg === '-s' || arg === '--server') && args[i + 1]) {
+      serverTargets.push(args[++i]);
+    } else if (arg === '--allow-shell') {
+      allowShell = true;
+    } else if ((arg === '-m' || arg === '--timeout') && args[i + 1]) {
+      timeoutMs = Number(args[++i]) * 1000;
     } else if (!arg.startsWith('-')) {
       positional.push(arg);
     }
   }
 
-  return { headers, dataArg, protocolVersion, showSchema, positional, trailingCommand };
+  return {
+    headers,
+    dataArg,
+    protocolVersion,
+    showSchema,
+    showTs,
+    tsBudget,
+    jsonOutput,
+    rank,
+    extendedRegex,
+    inlineSource,
+    serverTargets,
+    allowShell,
+    timeoutMs,
+    positional,
+    trailingCommand,
+  };
 }
 
 function resolveVerb(
   positional: string[],
   trailingCommand: string[] | undefined
-): ParsedArgs & {
-  headers: Record<string, string>;
-  dataArg: string | undefined;
-  protocolVersion: string | undefined;
-  showSchema: boolean;
+): {
+  verb: string | undefined;
+  target: string | undefined;
+  toolName: string | undefined;
+  trailingCommand: string[] | undefined;
 } {
   let verb: string | undefined;
   let target: string | undefined;
@@ -195,10 +265,6 @@ function resolveVerb(
     verb,
     target,
     toolName,
-    dataArg: undefined,
-    headers: {},
-    protocolVersion: undefined,
-    showSchema: false,
     trailingCommand,
   };
 }
@@ -212,6 +278,15 @@ function parseArgs(args: string[]): ParsedArgs {
     dataArg: flags.dataArg,
     protocolVersion: flags.protocolVersion,
     showSchema: flags.showSchema,
+    showTs: flags.showTs,
+    tsBudget: flags.tsBudget,
+    jsonOutput: flags.jsonOutput,
+    rank: flags.rank,
+    extendedRegex: flags.extendedRegex,
+    inlineSource: flags.inlineSource,
+    serverTargets: flags.serverTargets,
+    allowShell: flags.allowShell,
+    timeoutMs: flags.timeoutMs,
   };
 }
 
@@ -507,6 +582,174 @@ async function dispatchServeVerb(
   return runServe(platform, serveOptions, version);
 }
 
+async function connectTargets(
+  platform: Platform,
+  names: string[],
+  config: Awaited<ReturnType<typeof MergedConfigSource.load>>,
+  parsed: ParsedArgs,
+  version: string
+): Promise<{
+  targets: { name: string; conn: McpConnection; instructions?: string }[];
+  cleanup: () => Promise<void>;
+}> {
+  const conns: McpConnection[] = [];
+  const targets: { name: string; conn: McpConnection; instructions?: string }[] = [];
+  for (const name of names) {
+    let resolved;
+    try {
+      resolved = await resolveTarget(name, undefined, config);
+    } catch (err) {
+      await platform.write(2, `mcpcat: ${(err as Error).message}\n`);
+      continue;
+    }
+    try {
+      const conn = await connect(platform, {
+        ...resolved,
+        headers: { ...resolved.headers, ...parsed.headers },
+        protocolVersion: parsed.protocolVersion,
+        version,
+      });
+      conns.push(conn);
+      const info = await conn.info();
+      targets.push({ name, conn, instructions: info.instructions });
+    } catch (err) {
+      await platform.write(2, `mcpcat: connection to ${name} failed: ${(err as Error).message}\n`);
+    }
+  }
+  return {
+    targets,
+    cleanup: async () => {
+      for (const conn of conns) {
+        try {
+          await conn.close();
+        } catch {}
+      }
+    },
+  };
+}
+
+async function resolveTargetNames(platform: Platform, parsed: ParsedArgs): Promise<string[]> {
+  if (parsed.serverTargets.length > 0) return parsed.serverTargets;
+
+  const targets: string[] = [];
+  if (parsed.target) targets.push(parsed.target);
+  const positionalExtra = parsed.toolName;
+  if (positionalExtra && parsed.verb !== 'call') targets.push(positionalExtra);
+  if (targets.length > 0) return targets;
+
+  const config = await MergedConfigSource.load(platform);
+  return config
+    .list()
+    .filter((e) => e.config.enabled !== false)
+    .map((e) => e.name);
+}
+
+async function dispatchMultiTarget(
+  platform: Platform,
+  parsed: ParsedArgs,
+  version: string
+): Promise<number> {
+  const config = await MergedConfigSource.load(platform);
+
+  if (parsed.verb === 'code') {
+    let source: string;
+    if (parsed.inlineSource) {
+      source = parsed.inlineSource;
+    } else if (parsed.target) {
+      try {
+        const data = await platform.fs.readFile(parsed.target);
+        source = new TextDecoder().decode(data);
+      } catch {
+        await platform.write(2, `mcpcat: cannot read file: ${parsed.target}\n`);
+        return 2;
+      }
+    } else {
+      await platform.write(2, 'mcpcat: code requires -e <source> or a file\n');
+      return 2;
+    }
+
+    let serverNames: string[];
+    if (parsed.serverTargets.length > 0) {
+      serverNames = parsed.serverTargets;
+    } else {
+      serverNames = config
+        .list()
+        .filter((e) => e.config.enabled !== false)
+        .map((e) => e.name);
+    }
+
+    const { targets, cleanup } = await connectTargets(
+      platform,
+      serverNames,
+      config,
+      parsed,
+      version
+    );
+    try {
+      return await runCode(targets, source, {
+        json: parsed.jsonOutput,
+        timeoutMs: parsed.timeoutMs,
+        allowShell: parsed.allowShell,
+        platform,
+      });
+    } catch (err) {
+      await platform.write(2, `mcpcat: ${(err as Error).message}\n`);
+      return 5;
+    } finally {
+      await cleanup();
+    }
+  }
+
+  if (parsed.verb === 'grep') {
+    const pattern = parsed.target;
+    if (!pattern) {
+      await platform.write(2, 'mcpcat: grep requires a pattern\n');
+      return 2;
+    }
+
+    const serverNames = parsed.toolName
+      ? [parsed.toolName]
+      : config
+          .list()
+          .filter((e) => e.config.enabled !== false)
+          .map((e) => e.name);
+    const { targets, cleanup } = await connectTargets(
+      platform,
+      serverNames,
+      config,
+      parsed,
+      version
+    );
+    try {
+      return await runGrep(platform, pattern, targets, {
+        rank: parsed.rank,
+        extended: parsed.extendedRegex,
+      });
+    } finally {
+      await cleanup();
+    }
+  }
+
+  if (parsed.verb === 'describe' && parsed.showTs) {
+    const serverNames = await resolveTargetNames(platform, parsed);
+    const { targets, cleanup } = await connectTargets(
+      platform,
+      serverNames,
+      config,
+      parsed,
+      version
+    );
+    try {
+      return await runDescribeTs(platform, targets, parsed.tsBudget);
+    } finally {
+      await cleanup();
+    }
+  }
+
+  return 2;
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: top-level dispatch over many verb kinds
 export async function run(platform: Platform, version: string, args: string[]): Promise<number> {
   if (args.includes('--version') || args.includes('-V')) {
     await platform.write(1, `${version}\n`);
@@ -548,6 +791,13 @@ export async function run(platform: Platform, version: string, args: string[]): 
     return dispatchServeVerb(platform, args, version);
   }
 
+  if (
+    parsed.verb === 'code' ||
+    parsed.verb === 'grep' ||
+    (parsed.verb === 'describe' && parsed.showTs)
+  ) {
+    return dispatchMultiTarget(platform, parsed, version);
+  }
   if (!CLIENT_VERBS.has(parsed.verb)) {
     await platform.write(2, `mcpcat: unknown command '${parsed.verb}'\n`);
     return 2;

@@ -166,7 +166,10 @@ async function kernelListen(ctx: KernelContext, options: ListenOptions): Promise
   };
 }
 
-export function createKernelPlatform(ctx: KernelContext): Platform {
+export function createKernelPlatform(
+  ctx: KernelContext,
+  options?: { packageDir?: string }
+): Platform {
   const encoder = new TextEncoder();
   return {
     fetch: ctx.fetch,
@@ -188,5 +191,6 @@ export function createKernelPlatform(ctx: KernelContext): Platform {
     onSignal(signal: 'SIGINT' | 'SIGTERM', handler: () => void) {
       ctx.signals.on(signal, handler);
     },
+    packageDir: options?.packageDir,
   };
 }

@@ -57,4 +57,5 @@ export interface Platform {
   exit(code: number): never;
   openUrl?(url: string): Promise<void>;
   onSignal?(signal: 'SIGINT' | 'SIGTERM', handler: () => void): void;
+  packageDir?: string;
 }
