@@ -461,3 +461,39 @@ describe('kernel: stdio process group cleanup', () => {
     assert.ok(!alivePids.has(serverPid), `server pid ${serverPid} should be dead`);
   });
 });
+
+describe('kernel: discover', () => {
+  let kernel;
+  let server;
+
+  before(async () => {
+    server = await startFixtureServer('server-2026-http.mjs');
+    kernel = await createNodeKernel({
+      network: { transport: nodeTransport() },
+    });
+    await installMcpcat(kernel);
+  });
+
+  after(() => {
+    server?.child.kill('SIGTERM');
+    kernel?.terminate();
+  });
+
+  it('discovers MCP server via kernel fetch', async () => {
+    const url = `http://127.0.0.1:${server.port}`;
+    const { status, stdout, stderr } = await kernel.run(['mcpcat', 'discover', url], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.equal(status, 0, `stderr: ${stderr}`);
+    assert.ok(stdout.includes('mcp'), 'should find MCP standard');
+  });
+
+  it('handles redirect in kernel (redirect: follow fallback)', async () => {
+    const { status } = await kernel.run(['mcpcat', 'discover', 'http://127.0.0.1:1'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.equal(status, 0, 'should exit 0 even with unreachable URL');
+  });
+});
