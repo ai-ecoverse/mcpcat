@@ -9,7 +9,7 @@ export interface ResolvedTarget {
   cwd?: string;
 }
 
-function splitShellStyle(input: string): string[] {
+export function splitShellStyle(input: string): string[] {
   const result: string[] = [];
   let current = '';
   let inSingle = false;

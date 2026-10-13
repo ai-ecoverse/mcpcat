@@ -12,6 +12,7 @@ import type {
 import { checkAgentWarnings, literalSecret, urlHasSecret } from '../config/warnings.ts';
 import type { Platform } from '../platform/types.ts';
 import { parseServeFlags, runServe } from '../serve/runtime.ts';
+import { sealErrorMessage, sealExitCode, sealSecret } from '../serve/seal.ts';
 
 type ProbeFn =
   | ((name: string, config: McpServerConfig, platform: Platform) => Promise<string | undefined>)
@@ -21,6 +22,7 @@ interface AddFlags {
   local: boolean;
   noProbe: boolean;
   bridge: boolean;
+  noAuth: boolean;
   description?: string;
   exposure?: string;
   headers: Array<[string, string]>;
@@ -56,6 +58,10 @@ function parseAddFlagAt(
   }
   if (arg === '--no-probe') {
     flags.noProbe = true;
+    return { next: i + 1 };
+  }
+  if (arg === '--no-auth') {
+    flags.noAuth = true;
     return { next: i + 1 };
   }
   if (arg === '--bridge') {
@@ -104,6 +110,7 @@ function parseAddFlags(args: string[]): AddFlags | string {
     local: false,
     noProbe: false,
     bridge: false,
+    noAuth: false,
     headers: [],
     envPairs: [],
     positional: [],
@@ -476,6 +483,12 @@ export async function runImport(platform: Platform, args: string[]): Promise<num
   return 0;
 }
 
+function generateBridgeToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 export async function runBridge(
   platform: Platform,
   args: string[],
@@ -510,8 +523,7 @@ export async function runBridge(
   if (flags.bearer) {
     await platform.write(
       2,
-      'mcpcat add --bridge: --bearer is not needed on the kernel loopback.\n' +
-        'The kernel loopback is only reachable from inside the kernel and the agent.\n'
+      'mcpcat add --bridge: --bearer is not supported for bridge; authentication is automatic via the vault\n'
     );
     return 2;
   }
@@ -522,9 +534,53 @@ export async function runBridge(
   const path =
     flags.configFile ?? (flags.local ? projectConfigPath(platform) : userConfigPath(platform));
 
+  if (flags.noAuth) {
+    await platform.write(
+      2,
+      'mcpcat add --bridge: warning: running without authentication on loopback\n'
+    );
+    serveOptions.noAuth = true;
+
+    serveOptions.onListening = async (actualPort: number) => {
+      const bridgeUrl = `http://${actualPort}.kernel.localhost/mcp`;
+      const httpConfig: McpHttpServerConfig = { url: bridgeUrl };
+      if (flags.description) httpConfig.description = flags.description;
+      if (flags.exposure) httpConfig.exposure = flags.exposure as McpHttpServerConfig['exposure'];
+      const { replaced } = await addServer(platform.fs, path, name, httpConfig);
+      await platform.write(
+        1,
+        `${replaced ? 'replaced' : 'added'} ${name} in ${path}\n` +
+          'bridge does not survive a reload; runs in the foreground (start with &)\n'
+      );
+    };
+
+    return runServe(platform, serveOptions, version);
+  }
+
+  const token = generateBridgeToken();
+  const secretName = `MCP_${name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_TOKEN`;
+  serveOptions._resolvedBearer = token;
+
   serveOptions.onListening = async (actualPort: number) => {
+    if (actualPort === 9222) {
+      await platform.write(2, 'mcpcat add --bridge: port 9222 is reserved; please retry\n');
+      return;
+    }
     const bridgeUrl = `http://${actualPort}.kernel.localhost/mcp`;
-    const httpConfig: McpHttpServerConfig = { url: bridgeUrl };
+
+    try {
+      await sealSecret(platform, secretName, token, { server: name, url: bridgeUrl });
+    } catch (err) {
+      const errno = (err as { sealErrno?: string }).sealErrno ?? 'EACCES';
+      const code = sealExitCode(errno);
+      await platform.write(2, `mcpcat add --bridge: ${sealErrorMessage(errno, secretName)}\n`);
+      platform.exit(code);
+    }
+
+    const httpConfig: McpHttpServerConfig = {
+      url: bridgeUrl,
+      headers: { Authorization: 'Bearer ${' + secretName + '}' },
+    };
     if (flags.description) httpConfig.description = flags.description;
     if (flags.exposure) httpConfig.exposure = flags.exposure as McpHttpServerConfig['exposure'];
     const { replaced } = await addServer(platform.fs, path, name, httpConfig);

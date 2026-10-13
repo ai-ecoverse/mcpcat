@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -10,12 +10,17 @@ import { mcpcatArgs } from './helpers/bin.mjs';
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const fixturesDir = join(root, 'test/integration/fixtures');
 
+const testHome = join(tmpdir(), `mcpcat-m10-test-${Date.now()}`);
+mkdirSync(join(testHome, '.pi', 'agent'), { recursive: true });
+const testEnv = { HOME: testHome, PI_CODING_AGENT_DIR: join(testHome, '.pi', 'agent') };
+after(() => rmSync(testHome, { recursive: true, force: true }));
+
 function runHost(args, opts = {}) {
   const { cmd, args: cmdArgs } = mcpcatArgs(args);
   const r = spawnSync(cmd, cmdArgs, {
     encoding: 'utf8',
     timeout: 15_000,
-    env: { ...process.env, NODE_NO_WARNINGS: '1', ...opts.env },
+    env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv, ...opts.env },
   });
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status ?? 1 };
 }

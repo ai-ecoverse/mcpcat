@@ -1,3 +1,4 @@
+import { readExact, readUntil } from '../serve/http.ts';
 import type {
   Connection,
   FsApi,
@@ -8,6 +9,15 @@ import type {
   SpawnResult,
 } from './types.ts';
 
+interface KernelFile {
+  read(position: number, length: number): Promise<Uint8Array>;
+  write(position: number, bytes: Uint8Array): Promise<void>;
+  size(): Promise<number>;
+  truncate(size?: number): Promise<void>;
+  sync(): Promise<void>;
+  close(): Promise<void>;
+}
+
 interface KernelContext {
   argv: string[];
   env: Record<string, string | undefined>;
@@ -17,6 +27,17 @@ interface KernelContext {
   stderr: WritableStream<Uint8Array>;
   write(fd: number, data: Uint8Array | string): Promise<void>;
   read(fd: number, max?: number): Promise<Uint8Array>;
+  open(
+    path: string,
+    options?: {
+      read?: boolean;
+      write?: boolean;
+      append?: boolean;
+      create?: boolean;
+      exclusive?: boolean;
+      truncate?: boolean;
+    }
+  ): Promise<KernelFile>;
   close(fd: number): Promise<void>;
   exit(status: number): never;
   fdStatus(fd: number): { type: string; tty: boolean; seekable: boolean };
@@ -171,6 +192,181 @@ async function kernelListen(ctx: KernelContext, options: ListenOptions): Promise
   };
 }
 
+const KERNEL_LOCALHOST_RE = /^(\d+)\.kernel\.localhost$/;
+
+function extractLoopbackPort(url: URL): number | null {
+  const m = KERNEL_LOCALHOST_RE.exec(url.hostname);
+  if (m) return Number(m[1]);
+  return null;
+}
+
+function collectHeaders(init?: RequestInit): [string, string][] {
+  const entries: [string, string][] = [];
+  if (!init?.headers) return entries;
+  if (init.headers instanceof Headers) {
+    for (const [k, v] of (init.headers as Headers).entries()) entries.push([k, v]);
+  } else if (Array.isArray(init.headers)) {
+    for (const pair of init.headers as [string, string][]) entries.push(pair);
+  } else {
+    for (const [k, v] of Object.entries(init.headers as Record<string, string>)) {
+      if (v != null) entries.push([k, String(v)]);
+    }
+  }
+  return entries;
+}
+
+function buildHttpRequest(
+  method: string,
+  url: URL,
+  headerEntries: [string, string][],
+  bodyBytes: Uint8Array
+): Uint8Array {
+  const enc = new TextEncoder();
+  const has = (n: string) => headerEntries.some(([k]) => k.toLowerCase() === n.toLowerCase());
+  if (!has('host')) headerEntries.push(['Host', url.host]);
+  if (!has('connection')) headerEntries.push(['Connection', 'close']);
+  if (bodyBytes.length > 0 && !has('content-length')) {
+    headerEntries.push(['Content-Length', String(bodyBytes.length)]);
+  }
+  const target = url.pathname + (url.search || '');
+  let reqText = `${method} ${target} HTTP/1.1\r\n`;
+  for (const [k, v] of headerEntries) reqText += `${k}: ${v}\r\n`;
+  reqText += '\r\n';
+  const headBytes = enc.encode(reqText);
+  if (bodyBytes.length === 0) return headBytes;
+  const full = new Uint8Array(headBytes.length + bodyBytes.length);
+  full.set(headBytes);
+  full.set(bodyBytes, headBytes.length);
+  return full;
+}
+
+function parseHttpResponse(
+  buf: Uint8Array,
+  headerPos: number,
+  bufLen: number
+): { status: number; statusText: string; headers: Record<string, string>; body: string } {
+  const dec = new TextDecoder();
+  const headerText = dec.decode(new Uint8Array(buf.buffer, buf.byteOffset, headerPos));
+  const lines = headerText.split('\r\n');
+  const statusMatch = /^HTTP\/1\.1\s+(\d+)\s*(.*)/.exec(lines[0] || '');
+  const status = statusMatch ? Number(statusMatch[1]) : 500;
+  const statusText = statusMatch ? statusMatch[2] : 'Error';
+  const respHeaders: Record<string, string> = {};
+  for (let i = 1; i < lines.length; i++) {
+    const colonIdx = lines[i].indexOf(':');
+    if (colonIdx > 0) {
+      respHeaders[lines[i].slice(0, colonIdx).trim().toLowerCase()] = lines[i]
+        .slice(colonIdx + 1)
+        .trim();
+    }
+  }
+  const contentLength = Number(respHeaders['content-length'] ?? 0);
+  const headerEndByte = headerPos + 4;
+  const responseBody = dec.decode(buf.slice(headerEndByte, headerEndByte + contentLength));
+  return { status, statusText, headers: respHeaders, body: responseBody };
+}
+
+async function kernelLoopbackFetch(
+  ctx: KernelContext,
+  url: URL,
+  port: number,
+  init?: RequestInit
+): Promise<Response> {
+  const method = (init?.method ?? 'GET').toUpperCase();
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+  let bodyStr = '';
+  if (init?.body != null) {
+    bodyStr = typeof init.body === 'string' ? init.body : dec.decode(init.body as ArrayBuffer);
+  }
+  const bodyBytes = enc.encode(bodyStr);
+  const headerEntries = collectHeaders(init);
+  const reqBytes = buildHttpRequest(method, url, headerEntries, bodyBytes);
+
+  const conn = await ctx.net.connect({ host: '127.0.0.1', port });
+  const writer = conn.writable.getWriter();
+  await writer.write(reqBytes);
+
+  const reader = conn.readable.getReader();
+  let buf = new Uint8Array(4096);
+  let bufLen = 0;
+
+  const headerResult = await readUntil(reader, buf, bufLen, '\r\n\r\n', 16384);
+  if (!headerResult) {
+    reader.releaseLock();
+    try {
+      await writer.close();
+    } catch {}
+    conn.close();
+    throw new Error('incomplete HTTP response headers');
+  }
+  buf = headerResult.buf;
+  bufLen = headerResult.bufLen;
+
+  const contentLength = Number(
+    dec
+      .decode(new Uint8Array(buf.buffer, buf.byteOffset, headerResult.pos))
+      .split('\r\n')
+      .find((l) => l.toLowerCase().startsWith('content-length:'))
+      ?.split(':')[1]
+      ?.trim() ?? 0
+  );
+  const totalNeeded = headerResult.pos + 4 + contentLength;
+  if (bufLen < totalNeeded && contentLength > 0) {
+    const bodyResult = await readExact(reader, buf, bufLen, totalNeeded);
+    if (bodyResult) {
+      buf = bodyResult.buf;
+      bufLen = bodyResult.bufLen;
+    }
+  }
+
+  const parsed = parseHttpResponse(buf, headerResult.pos, bufLen);
+  reader.releaseLock();
+  try {
+    await writer.close();
+  } catch {}
+  conn.close();
+  return new Response(parsed.body, {
+    status: parsed.status,
+    statusText: parsed.statusText,
+    headers: parsed.headers,
+  });
+}
+
+function createKernelFetch(
+  ctx: KernelContext
+): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const urlStr =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.href
+          : (input as { url: string }).url;
+    let url: URL;
+    try {
+      url = new URL(urlStr);
+    } catch {
+      return ctx.fetch(input, init);
+    }
+    const port = extractLoopbackPort(url);
+    if (port !== null) return kernelLoopbackFetch(ctx, url, port, init);
+    return ctx.fetch(input, init);
+  };
+}
+
+async function kernelSeal(ctx: KernelContext, request: string): Promise<string> {
+  const f = await ctx.open('/dev/sealed', { read: true, write: true });
+  try {
+    const enc = new TextEncoder();
+    await f.write(0, enc.encode(request));
+    const responseBytes = await f.read(0, 65536);
+    return new TextDecoder().decode(responseBytes);
+  } finally {
+    await f.close();
+  }
+}
+
 export function createKernelPlatform(
   ctx: KernelContext,
   options?: { packageDir?: string }
@@ -178,7 +374,7 @@ export function createKernelPlatform(
   const encoder = new TextEncoder();
   return {
     kind: 'kernel' as const,
-    fetch: ctx.fetch,
+    fetch: createKernelFetch(ctx) as typeof globalThis.fetch,
     spawn: (options: SpawnOptions) => kernelSpawn(ctx, options),
     listen: (options: ListenOptions) => kernelListen(ctx, options),
     fs: kernelFs(ctx),
@@ -196,6 +392,9 @@ export function createKernelPlatform(
     },
     onSignal(signal: 'SIGINT' | 'SIGTERM' | 'SIGHUP', handler: () => void) {
       ctx.signals.on(signal, handler);
+    },
+    async seal(request: string): Promise<string> {
+      return kernelSeal(ctx, request);
     },
     packageDir: options?.packageDir,
   };

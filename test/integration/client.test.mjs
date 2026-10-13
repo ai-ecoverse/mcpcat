@@ -11,13 +11,25 @@ import { mcpcatArgs } from './helpers/bin.mjs';
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const fixturesDir = join(root, 'test/integration/fixtures');
 
+const testHome = join(tmpdir(), `mcpcat-client-test-${Date.now()}`);
+mkdirSync(join(testHome, '.pi', 'agent'), { recursive: true });
+const testEnv = { HOME: testHome, PI_CODING_AGENT_DIR: join(testHome, '.pi', 'agent') };
+after(() => rmSync(testHome, { recursive: true, force: true }));
+
 function runHost(args, opts = {}) {
   const { cmd, args: cmdArgs } = mcpcatArgs(args);
   try {
     const result = execFileSync(cmd, cmdArgs, {
       encoding: 'utf8',
       timeout: 15_000,
-      env: { ...process.env, NODE_NO_WARNINGS: '1', ...opts.env },
+      env: {
+        ...process.env,
+        NODE_NO_WARNINGS: '1',
+        HOME: testHome,
+        PI_CODING_AGENT_DIR: join(testHome, '.pi', 'agent'),
+        ...opts.env,
+        ...(opts.env?.HOME ? { PI_CODING_AGENT_DIR: '' } : {}),
+      },
     });
     return { stdout: result, stderr: '', status: 0 };
   } catch (err) {

@@ -20,7 +20,7 @@ export interface HttpResponse {
 
 export type HttpHandler = (request: HttpRequest) => Promise<HttpResponse>;
 
-async function readUntil(
+export async function readUntil(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   buf: Uint8Array<ArrayBuffer>,
   bufLen: number,
@@ -44,7 +44,7 @@ async function readUntil(
   }
 }
 
-async function readExact(
+export async function readExact(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   buf: Uint8Array<ArrayBuffer>,
   bufLen: number,

@@ -528,3 +528,80 @@ describe('kernel: login/logout exits 4 in seven', () => {
     assert.ok(stderr.includes('not available in seven'));
   });
 });
+
+describe('kernel: file object open/write/read/close', () => {
+  let kernel;
+
+  before(async () => {
+    kernel = await createNodeKernel({});
+    await installMcpcat(kernel);
+  });
+
+  after(() => {
+    kernel?.terminate();
+  });
+
+  it('open, write, read, close on a regular file via JS program', async () => {
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat-file-test/dist/main.mjs',
+      `export default async function main(ctx) {
+        const f = await ctx.open('/tmp/seal-test.txt', { read: true, write: true, create: true, truncate: true });
+        await f.write(0, new TextEncoder().encode('hello'));
+        const bytes = await f.read(0, 100);
+        const text = new TextDecoder().decode(bytes);
+        await f.close();
+        await ctx.write(1, text);
+        return text === 'hello' ? 0 : 1;
+      }`
+    );
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat-file-test/package.json',
+      JSON.stringify({
+        name: '@ai-ecoverse/mcpcat-file-test',
+        version: '1.0.0',
+        type: 'module',
+        slicc: {
+          commands: {
+            'mcpcat-file-test': { abi: 'js', module: 'dist/main.mjs' },
+          },
+        },
+      })
+    );
+
+    const { status, stdout } = await kernel.run(['mcpcat-file-test'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.equal(status, 0, 'file object I/O should succeed');
+    assert.equal(stdout.trim(), 'hello');
+  });
+});
+
+describe('kernel: sealed device per-description state', () => {
+  let kernel;
+
+  before(async () => {
+    kernel = await createNodeKernel({
+      sealed: async (req) => {
+        if (req.op === 'seal') {
+          return { placeholder: '${' + req.name + '}', state: 'sealed' };
+        }
+        return { error: 'unknown op', errno: 'EINVAL' };
+      },
+    });
+    await installMcpcat(kernel);
+  });
+
+  after(() => {
+    kernel?.terminate();
+  });
+
+  it('kernel HTTP serve requires --bearer or --no-auth', async () => {
+    const { status, stderr } = await kernel.run(['mcpcat', 'serve', '--http', '0', '/bin/echo'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.equal(status, 2);
+    assert.ok(stderr.includes('--bearer') || stderr.includes('--no-auth'));
+  });
+});

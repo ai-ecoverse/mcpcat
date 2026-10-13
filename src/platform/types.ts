@@ -34,7 +34,7 @@ export interface Listener {
 export interface FsApi {
   readFile(path: string): Promise<Uint8Array>;
   writeFile(path: string, data: Uint8Array | string, options?: { mode?: number }): Promise<void>;
-  mkdir(path: string): Promise<void>;
+  mkdir(path: string, options?: { mode?: number }): Promise<void>;
   rename(from: string, to: string): Promise<void>;
   stat(path: string): Promise<{ size: number; mtimeMs: number }>;
   exists(path: string): Promise<boolean>;
@@ -59,5 +59,6 @@ export interface Platform {
   exit(code: number): never;
   openUrl?(url: string): Promise<void>;
   onSignal?(signal: 'SIGINT' | 'SIGTERM' | 'SIGHUP', handler: () => void): void;
+  seal?(request: string): Promise<string>;
   packageDir?: string;
 }

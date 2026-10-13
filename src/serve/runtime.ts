@@ -1,5 +1,6 @@
 import { containsPlaceholders, expandPlaceholdersStrict } from '../config/expand.ts';
 import { MergedConfigSource } from '../config/index.ts';
+import { stateDir } from '../config/paths.ts';
 import type { Platform, SpawnResult } from '../platform/types.ts';
 import {
   argvForCommand,
@@ -18,7 +19,13 @@ import {
 } from './catalog.ts';
 import { type HttpRequest, type HttpResponse, handleConnection } from './http.ts';
 import { handleJsonRpc, type RpcTool, type ToolRunResult } from './jsonrpc.ts';
-import { checkHost, checkOrigin } from './origin.ts';
+import {
+  buildAllowedHosts,
+  buildServerOrigins,
+  checkHost,
+  checkOrigin,
+  isLoopbackBind,
+} from './origin.ts';
 import { createProxyHandler } from './proxy.ts';
 
 const CALL_TIMEOUT_MS = 120_000;
@@ -35,7 +42,9 @@ export interface ServeOptions {
   onListening?: (port: number) => Promise<void>;
   toolTemplates: string[];
   bearer?: string;
+  noAuth: boolean;
   allowOrigins: string[];
+  allowHosts: string[];
   envAllow: string[];
   callTimeout: number;
   concurrency: number;
@@ -43,6 +52,7 @@ export interface ServeOptions {
   cwd?: string;
   json: boolean;
   proxyHeaders: Array<[string, string]>;
+  _resolvedBearer?: string;
 }
 
 function parseHttpFlag(args: string[], i: number): { host: string; port: number; next: number } {
@@ -71,7 +81,9 @@ function parseSingleFlag(
     host: string;
     port: number;
     bearer?: string;
+    noAuth: boolean;
     allowOrigins: string[];
+    allowHosts: string[];
     envAllow: string[];
     toolTemplates: string[];
     callTimeout: number;
@@ -95,6 +107,8 @@ function parseSingleFlag(
     return parsed.next;
   } else if (arg === '--json') {
     opts.json = true;
+  } else if (arg === '--no-auth') {
+    opts.noAuth = true;
   } else if (!arg.startsWith('-')) {
     opts.commands.push(parseCommandTarget(arg));
   } else {
@@ -109,6 +123,7 @@ function parseValueFlag(
   opts: {
     bearer?: string;
     allowOrigins: string[];
+    allowHosts: string[];
     envAllow: string[];
     toolTemplates: string[];
     callTimeout: number;
@@ -130,6 +145,9 @@ function parseValueFlag(
       break;
     case '--allow-origin':
       opts.allowOrigins.push(args[++i]);
+      break;
+    case '--allow-host':
+      opts.allowHosts.push(args[++i]);
       break;
     case '--env':
       opts.envAllow.push(args[++i]);
@@ -170,7 +188,9 @@ export function parseServeFlags(args: string[]): ServeOptions {
     host: '127.0.0.1',
     port: 0,
     bearer: undefined as string | undefined,
+    noAuth: false,
     allowOrigins: [] as string[],
+    allowHosts: [] as string[],
     envAllow: [] as string[],
     toolTemplates: [] as string[],
     callTimeout: CALL_TIMEOUT_MS,
@@ -205,6 +225,27 @@ function constantTimeEqual(a: string, b: string): boolean {
     mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
   }
   return mismatch === 0;
+}
+
+function generateToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function checkContentType(ct: string | undefined): boolean {
+  if (!ct) return false;
+  return ct.toLowerCase().startsWith('application/json');
+}
+
+function checkAcceptHeader(accept: string | undefined): boolean {
+  if (!accept) return false;
+  const lower = accept.toLowerCase();
+  return (
+    lower.includes('application/json') ||
+    lower.includes('text/event-stream') ||
+    lower.includes('*/*')
+  );
 }
 
 function buildChildEnv(platform: Platform, envAllow: string[]): Record<string, string> {
@@ -583,7 +624,11 @@ export async function runServe(
   version: string
 ): Promise<number> {
   let resolvedBearer: string | undefined;
-  if (options.bearer) {
+  let generatedBearer = false;
+
+  if (options._resolvedBearer) {
+    resolvedBearer = options._resolvedBearer;
+  } else if (options.bearer) {
     const expanded = expandBearerToken(options.bearer, platform.env);
     if (!expanded) {
       await platform.write(
@@ -594,10 +639,32 @@ export async function runServe(
       return 2;
     }
     resolvedBearer = expanded;
+  } else if (options.noAuth) {
+    if (options.transport === 'http' && !isLoopbackBind(options.host)) {
+      await platform.write(2, 'mcpcat serve: --no-auth is only allowed on loopback\n');
+      return 2;
+    }
+    if (options.transport === 'http') {
+      await platform.write(
+        2,
+        'mcpcat serve: warning: running without authentication on loopback\n'
+      );
+    }
+    resolvedBearer = undefined;
+  } else if (options.transport === 'http') {
+    if (platform.kind === 'kernel') {
+      await platform.write(
+        2,
+        "mcpcat serve: kernel HTTP serve requires --bearer '${VAR}' or --no-auth\n"
+      );
+      return 2;
+    }
+    resolvedBearer = generateToken();
+    generatedBearer = true;
   }
 
   if (options.proxy) {
-    return runProxyServe(platform, options, version, resolvedBearer);
+    return runProxyServe(platform, options, version, resolvedBearer, generatedBearer);
   }
 
   const serveCwd = options.cwd ?? platform.cwd;
@@ -640,7 +707,8 @@ export async function runServe(
     executor.invoke,
     serverName,
     version,
-    resolvedBearer
+    resolvedBearer,
+    generatedBearer
   );
 }
 
@@ -649,11 +717,37 @@ interface ProxyHandle {
   shutdown: () => Promise<void>;
 }
 
+async function publishBearer(
+  platform: Platform,
+  token: string,
+  port: number,
+  listenUrl: string,
+  json: boolean
+): Promise<string | undefined> {
+  if (!json && platform.isatty(2)) {
+    await platform.write(2, `mcpcat serve: bearer ${token}\n`);
+    return undefined;
+  }
+  const dir = stateDir(platform);
+  await platform.fs.mkdir(dir, { mode: 0o700 });
+  const tokenPath = `${dir}/serve-${port}.token`;
+  try {
+    await platform.fs.unlink?.(tokenPath);
+  } catch {}
+  await platform.fs.writeFile(tokenPath, token, { mode: 0o600 });
+  await platform.write(2, `mcpcat serve: bearer saved to ${tokenPath}\n`);
+  if (json) {
+    await platform.write(1, `${JSON.stringify({ url: listenUrl, bearerFile: tokenPath })}\n`);
+  }
+  return tokenPath;
+}
+
 import type { ConnectOptions } from '../client/connect.ts';
+import { splitShellStyle } from '../client/targets.ts';
 
 function resolveProxyStdio(target: string, version: string): ConnectOptions {
   const rest = target.slice(6);
-  const parts = rest.split(/\s+/).filter(Boolean);
+  const parts = splitShellStyle(rest);
   return { command: parts[0], args: parts.slice(1), version };
 }
 
@@ -751,7 +845,8 @@ async function runProxyServe(
   platform: Platform,
   options: ServeOptions,
   version: string,
-  resolvedBearer: string | undefined
+  resolvedBearer: string | undefined,
+  generatedBearer: boolean
 ): Promise<number> {
   const built = await buildProxyConnectOpts(platform, options, version);
   if ('error' in built) {
@@ -773,7 +868,7 @@ async function runProxyServe(
     return runProxyStdio(platform, proxy);
   }
 
-  return runProxyHttp(platform, options, proxy, resolvedBearer);
+  return runProxyHttp(platform, options, proxy, resolvedBearer, generatedBearer);
 }
 
 async function runProxyStdio(platform: Platform, proxy: ProxyHandle): Promise<number> {
@@ -813,15 +908,15 @@ async function runProxyHttp(
   platform: Platform,
   options: ServeOptions,
   proxy: ProxyHandle,
-  resolvedBearer: string | undefined
+  resolvedBearer: string | undefined,
+  generatedBearer: boolean
 ): Promise<number> {
   if (!platform.listen) {
     await platform.write(2, 'mcpcat serve --proxy: HTTP transport requires platform.listen\n');
     return 3;
   }
 
-  const boundLoopback =
-    options.host === '127.0.0.1' || options.host === 'localhost' || options.host === '::1';
+  const boundLoopback = isLoopbackBind(options.host);
   if (!boundLoopback && !resolvedBearer) {
     await platform.write(
       2,
@@ -837,9 +932,24 @@ async function runProxyHttp(
   });
   const actualPort = listener.port;
 
+  const serverOrigins = buildServerOrigins(options.host, actualPort);
+  const allowedHosts = buildAllowedHosts(options.host, actualPort, options.allowHosts);
+
   const listenUrl = `http://${options.host}:${actualPort}/mcp`;
-  if (options.json) {
-    await platform.write(1, `${JSON.stringify({ url: listenUrl })}\n`);
+  let tokenFilePath: string | undefined;
+
+  if (generatedBearer && resolvedBearer) {
+    tokenFilePath = await publishBearer(
+      platform,
+      resolvedBearer,
+      actualPort,
+      listenUrl,
+      options.json
+    );
+  } else {
+    if (options.json) {
+      await platform.write(1, `${JSON.stringify({ url: listenUrl })}\n`);
+    }
   }
   await platform.write(2, `mcpcat serve --proxy: listening on ${listenUrl}\n`);
 
@@ -854,6 +964,9 @@ async function runProxyHttp(
     shutdownRequested = true;
     listener.close();
     void proxy.shutdown();
+    if (tokenFilePath) {
+      platform.fs.unlink?.(tokenFilePath).catch(() => {});
+    }
   };
 
   if (platform.onSignal) {
@@ -862,7 +975,14 @@ async function runProxyHttp(
   }
 
   const handler = (request: HttpRequest): Promise<HttpResponse> =>
-    handleProxyMcpRequest(request, proxy, allowedOrigins, boundLoopback, resolvedBearer);
+    handleProxyMcpRequest(
+      request,
+      proxy,
+      serverOrigins,
+      allowedOrigins,
+      allowedHosts,
+      resolvedBearer
+    );
 
   try {
     for await (const connection of listener) {
@@ -890,43 +1010,11 @@ async function runProxyHttp(
 async function handleProxyMcpRequest(
   request: HttpRequest,
   proxy: ProxyHandle,
+  serverOrigins: Set<string>,
   allowedOrigins: Set<string>,
-  boundLoopback: boolean,
+  allowedHosts: Set<string>,
   resolvedBearer: string | undefined
 ): Promise<HttpResponse> {
-  if (resolvedBearer) {
-    const authHeader = request.headers.authorization;
-    const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
-    if (!provided || !constantTimeEqual(provided, resolvedBearer)) {
-      return {
-        status: 401,
-        reason: 'Unauthorized',
-        headers: { 'content-type': 'text/plain' },
-        body: 'Unauthorized',
-      };
-    }
-  }
-
-  const originCheck = checkOrigin(request.headers.origin, allowedOrigins, boundLoopback);
-  if (!originCheck.ok) {
-    return {
-      status: 403,
-      reason: 'Forbidden',
-      headers: { 'content-type': 'text/plain' },
-      body: originCheck.reason ?? 'Forbidden',
-    };
-  }
-
-  const hostCheck = checkHost(request.headers.host, boundLoopback);
-  if (!hostCheck.ok) {
-    return {
-      status: 403,
-      reason: 'Forbidden',
-      headers: { 'content-type': 'text/plain' },
-      body: hostCheck.reason ?? 'Forbidden',
-    };
-  }
-
   if (request.target !== '/mcp') {
     return {
       status: 404,
@@ -943,6 +1031,57 @@ async function handleProxyMcpRequest(
       headers: { 'content-type': 'text/plain', allow: 'POST' },
       body: 'Method Not Allowed',
     };
+  }
+
+  if (!checkContentType(request.headers['content-type'])) {
+    return {
+      status: 415,
+      reason: 'Unsupported Media Type',
+      headers: { 'content-type': 'text/plain' },
+      body: 'Content-Type must be application/json',
+    };
+  }
+
+  if (!checkAcceptHeader(request.headers.accept)) {
+    return {
+      status: 406,
+      reason: 'Not Acceptable',
+      headers: { 'content-type': 'text/plain' },
+      body: 'Accept must include application/json or text/event-stream',
+    };
+  }
+
+  const originCheck = checkOrigin(request.headers.origin, serverOrigins, allowedOrigins);
+  if (!originCheck.ok) {
+    return {
+      status: 403,
+      reason: 'Forbidden',
+      headers: { 'content-type': 'text/plain' },
+      body: originCheck.reason ?? 'Forbidden',
+    };
+  }
+
+  const hostCheck = checkHost(request.headers.host, allowedHosts);
+  if (!hostCheck.ok) {
+    return {
+      status: 403,
+      reason: 'Forbidden',
+      headers: { 'content-type': 'text/plain' },
+      body: hostCheck.reason ?? 'Forbidden',
+    };
+  }
+
+  if (resolvedBearer) {
+    const authHeader = request.headers.authorization;
+    const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    if (!provided || !constantTimeEqual(provided, resolvedBearer)) {
+      return {
+        status: 401,
+        reason: 'Unauthorized',
+        headers: { 'content-type': 'text/plain' },
+        body: 'Unauthorized',
+      };
+    }
   }
 
   const outcome = await proxy.handle(request.body);
@@ -999,15 +1138,15 @@ async function runHttpServer(
   call: (name: string, args: unknown) => Promise<ToolRunResult>,
   serverName: string,
   version: string,
-  resolvedBearer: string | undefined
+  resolvedBearer: string | undefined,
+  generatedBearer: boolean
 ): Promise<number> {
   if (!platform.listen) {
     await platform.write(2, 'mcpcat serve: HTTP transport requires platform.listen\n');
     return 3;
   }
 
-  const boundLoopback =
-    options.host === '127.0.0.1' || options.host === 'localhost' || options.host === '::1';
+  const boundLoopback = isLoopbackBind(options.host);
   if (!boundLoopback && !resolvedBearer) {
     await platform.write(2, 'mcpcat serve: --bearer is required when binding off loopback\n');
     return 2;
@@ -1017,9 +1156,24 @@ async function runHttpServer(
   const listener = await platform.listen({ host: options.host, port: options.port });
   const actualPort = listener.port;
 
+  const serverOrigins = buildServerOrigins(options.host, actualPort);
+  const allowedHosts = buildAllowedHosts(options.host, actualPort, options.allowHosts);
+
   const listenUrl = `http://${options.host}:${actualPort}/mcp`;
-  if (options.json) {
-    await platform.write(1, `${JSON.stringify({ url: listenUrl })}\n`);
+  let tokenFilePath: string | undefined;
+
+  if (generatedBearer && resolvedBearer) {
+    tokenFilePath = await publishBearer(
+      platform,
+      resolvedBearer,
+      actualPort,
+      listenUrl,
+      options.json
+    );
+  } else {
+    if (options.json) {
+      await platform.write(1, `${JSON.stringify({ url: listenUrl })}\n`);
+    }
   }
   await platform.write(2, `mcpcat serve: listening on ${listenUrl}\n`);
 
@@ -1030,6 +1184,9 @@ async function runHttpServer(
     shutdownRequested = true;
     listener.close();
     void killInflight();
+    if (tokenFilePath) {
+      platform.fs.unlink?.(tokenFilePath).catch(() => {});
+    }
   };
 
   if (platform.onSignal) {
@@ -1044,8 +1201,9 @@ async function runHttpServer(
       call,
       serverName,
       version,
+      serverOrigins,
       allowedOrigins,
-      boundLoopback,
+      allowedHosts,
       resolvedBearer
     );
 
@@ -1078,43 +1236,11 @@ async function handleMcpRequest(
   call: (name: string, args: unknown) => Promise<ToolRunResult>,
   serverName: string,
   version: string,
+  serverOrigins: Set<string>,
   allowedOrigins: Set<string>,
-  boundLoopback: boolean,
+  allowedHosts: Set<string>,
   resolvedBearer: string | undefined
 ): Promise<HttpResponse> {
-  if (resolvedBearer) {
-    const authHeader = request.headers.authorization;
-    const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
-    if (!provided || !constantTimeEqual(provided, resolvedBearer)) {
-      return {
-        status: 401,
-        reason: 'Unauthorized',
-        headers: { 'content-type': 'text/plain' },
-        body: 'Unauthorized',
-      };
-    }
-  }
-
-  const originCheck = checkOrigin(request.headers.origin, allowedOrigins, boundLoopback);
-  if (!originCheck.ok) {
-    return {
-      status: 403,
-      reason: 'Forbidden',
-      headers: { 'content-type': 'text/plain' },
-      body: originCheck.reason ?? 'Forbidden',
-    };
-  }
-
-  const hostCheck = checkHost(request.headers.host, boundLoopback);
-  if (!hostCheck.ok) {
-    return {
-      status: 403,
-      reason: 'Forbidden',
-      headers: { 'content-type': 'text/plain' },
-      body: hostCheck.reason ?? 'Forbidden',
-    };
-  }
-
   if (request.target !== '/mcp') {
     return {
       status: 404,
@@ -1131,6 +1257,57 @@ async function handleMcpRequest(
       headers: { 'content-type': 'text/plain', allow: 'POST' },
       body: 'Method Not Allowed',
     };
+  }
+
+  if (!checkContentType(request.headers['content-type'])) {
+    return {
+      status: 415,
+      reason: 'Unsupported Media Type',
+      headers: { 'content-type': 'text/plain' },
+      body: 'Content-Type must be application/json',
+    };
+  }
+
+  if (!checkAcceptHeader(request.headers.accept)) {
+    return {
+      status: 406,
+      reason: 'Not Acceptable',
+      headers: { 'content-type': 'text/plain' },
+      body: 'Accept must include application/json or text/event-stream',
+    };
+  }
+
+  const originCheck = checkOrigin(request.headers.origin, serverOrigins, allowedOrigins);
+  if (!originCheck.ok) {
+    return {
+      status: 403,
+      reason: 'Forbidden',
+      headers: { 'content-type': 'text/plain' },
+      body: originCheck.reason ?? 'Forbidden',
+    };
+  }
+
+  const hostCheck = checkHost(request.headers.host, allowedHosts);
+  if (!hostCheck.ok) {
+    return {
+      status: 403,
+      reason: 'Forbidden',
+      headers: { 'content-type': 'text/plain' },
+      body: hostCheck.reason ?? 'Forbidden',
+    };
+  }
+
+  if (resolvedBearer) {
+    const authHeader = request.headers.authorization;
+    const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    if (!provided || !constantTimeEqual(provided, resolvedBearer)) {
+      return {
+        status: 401,
+        reason: 'Unauthorized',
+        headers: { 'content-type': 'text/plain' },
+        body: 'Unauthorized',
+      };
+    }
   }
 
   const outcome = await handleJsonRpc(request.body, tools, call, serverName, version);
