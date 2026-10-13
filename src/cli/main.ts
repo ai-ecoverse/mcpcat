@@ -3,6 +3,7 @@ import { coerceArgsBySchema, mergeArgs } from '../args/coerce.ts';
 import { AuthStepUpError, createMcpAuthProvider } from '../auth/auth-provider.ts';
 import { connect } from '../client/connect.ts';
 import type { McpConnection } from '../client/connection.ts';
+import { handleElicitation, parseInputRequest } from '../client/elicit.ts';
 import {
   InputRequiredError,
   McpAuthError,
@@ -20,6 +21,10 @@ import {
   renderCallResult,
   renderErrorJson,
   renderInfoJson,
+  renderPromptResultJson,
+  renderPromptsJson,
+  renderReadResourceJson,
+  renderResourcesJson,
   renderToolsJson,
 } from '../render/result.ts';
 import { parseServeFlags, runServe } from '../serve/runtime.ts';
@@ -86,9 +91,19 @@ const CONFIG_VERBS: Record<string, boolean> = {
   import: true,
 };
 
-const UNIMPLEMENTED_VERBS = new Set(['resources', 'read', 'prompts', 'prompt', 'complete', 'task']);
+const UNIMPLEMENTED_VERBS = new Set(['complete', 'task']);
 
-const CLIENT_VERBS = new Set(['info', 'tools', 'call', 'describe', 'serve']);
+const CLIENT_VERBS = new Set([
+  'info',
+  'tools',
+  'call',
+  'describe',
+  'serve',
+  'resources',
+  'read',
+  'prompts',
+  'prompt',
+]);
 
 function helpText(version: string): string {
   return `mcpcat ${version} – a curl for the Model Context Protocol
@@ -165,6 +180,9 @@ interface ParsedArgs {
   verbose: boolean;
   silent: boolean;
   trailingCommand: string[] | undefined;
+  respondArg: string | undefined;
+  roots: string[];
+  outputPath: string | undefined;
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: flag-dispatching loop is inherently branchy
@@ -186,6 +204,9 @@ function parseFlags(args: string[]): {
   silent: boolean;
   positional: string[];
   trailingCommand: string[] | undefined;
+  respondArg: string | undefined;
+  roots: string[];
+  outputPath: string | undefined;
 } {
   const headers: Record<string, string> = {};
   let dataArg: string | undefined;
@@ -204,6 +225,9 @@ function parseFlags(args: string[]): {
   let silent = false;
   const positional: string[] = [];
   let trailingCommand: string[] | undefined;
+  let respondArg: string | undefined;
+  const roots: string[] = [];
+  let outputPath: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -245,6 +269,12 @@ function parseFlags(args: string[]): {
       silent = true;
     } else if ((arg === '-m' || arg === '--timeout') && args[i + 1]) {
       timeoutMs = Number(args[++i]) * 1000;
+    } else if (arg === '--respond' && args[i + 1]) {
+      respondArg = args[++i];
+    } else if (arg === '--root' && args[i + 1]) {
+      roots.push(args[++i]);
+    } else if ((arg === '-o' || arg === '--output') && args[i + 1]) {
+      outputPath = args[++i];
     } else if (!arg.startsWith('-')) {
       positional.push(arg);
     }
@@ -268,6 +298,9 @@ function parseFlags(args: string[]): {
     silent,
     positional,
     trailingCommand,
+    respondArg,
+    roots,
+    outputPath,
   };
 }
 
@@ -330,6 +363,9 @@ function parseArgs(args: string[]): ParsedArgs {
     timeoutMs: flags.timeoutMs,
     verbose: flags.verbose,
     silent: flags.silent,
+    respondArg: flags.respondArg,
+    roots: flags.roots,
+    outputPath: flags.outputPath,
   };
 }
 
@@ -444,6 +480,7 @@ interface RunCallOptions {
   json?: boolean;
   noValidate?: boolean;
   onProgress?: (progress: number, total?: number, message?: string) => void;
+  inputResponses?: Record<string, unknown>;
 }
 
 async function runCall(
@@ -482,7 +519,10 @@ async function runCall(
   }
   return renderCallResult(
     platform,
-    await conn.callTool(toolName, fin, { onProgress: opts.onProgress }),
+    await conn.callTool(toolName, fin, {
+      onProgress: opts.onProgress,
+      inputResponses: opts.inputResponses,
+    }),
     { json: opts.json }
   );
 }
@@ -522,11 +562,146 @@ async function runDescribe(
   return EXIT_OK;
 }
 
+async function runResources(
+  platform: Platform,
+  conn: McpConnection,
+  json: boolean
+): Promise<number> {
+  const resources = await conn.listResources();
+  const templates = await conn.listResourceTemplates();
+  if (json) {
+    await renderResourcesJson(platform, resources, templates);
+    return EXIT_OK;
+  }
+  if (resources.length === 0 && templates.length === 0) {
+    await platform.write(1, '(no resources)\n');
+    return EXIT_OK;
+  }
+  for (const r of resources) {
+    const desc = r.description ? `  ${r.description}` : '';
+    const mime = r.mimeType ? ` [${r.mimeType}]` : '';
+    await platform.write(1, `${r.uri}  ${r.name}${mime}${desc}\n`);
+  }
+  if (templates.length > 0) {
+    if (resources.length > 0) await platform.write(1, '\n');
+    await platform.write(1, 'Templates:\n');
+    for (const t of templates) {
+      const desc = t.description ? `  ${t.description}` : '';
+      await platform.write(1, `  ${t.uriTemplate}  ${t.name}${desc}\n`);
+    }
+  }
+  return EXIT_OK;
+}
+
+async function runRead(
+  platform: Platform,
+  conn: McpConnection,
+  uri: string,
+  json: boolean,
+  outputPath: string | undefined
+): Promise<number> {
+  const result = await conn.readResource(uri);
+  if (json) {
+    await renderReadResourceJson(platform, result);
+    return EXIT_OK;
+  }
+  for (const content of result.contents) {
+    if ('text' in content) {
+      if (outputPath) {
+        await platform.fs.writeFile(outputPath, content.text);
+        await platform.write(1, `${outputPath}\n`);
+      } else {
+        await platform.write(1, `${content.text}\n`);
+      }
+    } else if ('blob' in content) {
+      if (outputPath) {
+        const bytes = Uint8Array.from(atob(content.blob), (c) => c.charCodeAt(0));
+        await platform.fs.writeFile(outputPath, bytes);
+        await platform.write(1, `${outputPath}\n`);
+      } else {
+        await platform.write(1, `${content.blob}\n`);
+      }
+    }
+  }
+  return EXIT_OK;
+}
+
+async function runPrompts(platform: Platform, conn: McpConnection, json: boolean): Promise<number> {
+  const prompts = await conn.listPrompts();
+  if (json) {
+    await renderPromptsJson(platform, prompts);
+    return EXIT_OK;
+  }
+  if (prompts.length === 0) {
+    await platform.write(1, '(no prompts)\n');
+    return EXIT_OK;
+  }
+  for (const p of prompts) {
+    const desc = p.description ? `  ${p.description}` : '';
+    await platform.write(1, `${p.name}${desc}\n`);
+  }
+  return EXIT_OK;
+}
+
+async function runPrompt(
+  platform: Platform,
+  conn: McpConnection,
+  name: string,
+  dataArg: string | undefined,
+  toolArgs: string[],
+  json: boolean
+): Promise<number> {
+  let args: Record<string, unknown> = {};
+  if (dataArg) {
+    args = await readDataArg(platform, dataArg);
+  }
+  if (toolArgs.length > 0) {
+    const prompts = await conn.listPrompts();
+    const prompt = prompts.find((p) => p.name === name);
+    const schema: Record<string, unknown> = {
+      type: 'object',
+      properties: {} as Record<string, unknown>,
+      required: [] as string[],
+    };
+    if (prompt?.arguments) {
+      const props: Record<string, unknown> = {};
+      const req: string[] = [];
+      for (const a of prompt.arguments) {
+        props[a.name] = { type: 'string', description: a.description };
+        if (a.required) req.push(a.name);
+      }
+      schema.properties = props;
+      schema.required = req;
+    }
+    const c = coerceArgsBySchema(toolArgs, schema);
+    if (!c.ok) {
+      await writeErr(platform, json, 'usage', c.error);
+      return EXIT_USAGE;
+    }
+    args = mergeArgs(args, c.value);
+  }
+  const result = await conn.getPrompt(name, args);
+  if (json) {
+    await renderPromptResultJson(platform, result);
+    return EXIT_OK;
+  }
+  if (result.description) {
+    await platform.write(1, `${result.description}\n\n`);
+  }
+  for (const msg of result.messages) {
+    const text =
+      msg.content?.text ?? (msg.content?.data ? `[${msg.content.mimeType ?? 'binary'}]` : '');
+    await platform.write(1, `[${msg.role}] ${text}\n`);
+  }
+  return EXIT_OK;
+}
+
 async function runVerb(
   platform: Platform,
   parsed: ParsedArgs,
   conn: McpConnection,
-  onProgress?: (progress: number, total?: number, message?: string) => void
+  onProgress?: (progress: number, total?: number, message?: string) => void,
+  respondData?: Record<string, unknown>
 ): Promise<number> {
   switch (parsed.verb) {
     case 'info':
@@ -537,9 +712,18 @@ async function runVerb(
       return runCall(platform, conn, parsed.toolName!, parsed.dataArg, [], {
         json: parsed.jsonOutput,
         onProgress,
+        inputResponses: respondData,
       });
     case 'describe':
       return runDescribe(platform, conn, parsed.toolName, parsed.showSchema, parsed.jsonOutput);
+    case 'resources':
+      return runResources(platform, conn, parsed.jsonOutput);
+    case 'read':
+      return runRead(platform, conn, parsed.toolName!, parsed.jsonOutput, parsed.outputPath);
+    case 'prompts':
+      return runPrompts(platform, conn, parsed.jsonOutput);
+    case 'prompt':
+      return runPrompt(platform, conn, parsed.toolName!, parsed.dataArg, [], parsed.jsonOutput);
     default:
       await platform.write(2, `mcpcat: unknown command '${parsed.verb}'\n`);
       return EXIT_USAGE;
@@ -887,6 +1071,16 @@ export async function run(platform: Platform, version: string, args: string[]): 
     return 2;
   }
 
+  if (parsed.verb === 'read' && !parsed.toolName) {
+    await platform.write(2, 'mcpcat: read requires a URI\n');
+    return 2;
+  }
+
+  if (parsed.verb === 'prompt' && !parsed.toolName) {
+    await platform.write(2, 'mcpcat: prompt requires a name\n');
+    return 2;
+  }
+
   if (!parsed.target) {
     await platform.write(2, `mcpcat: ${parsed.verb} requires a target\n`);
     return 2;
@@ -966,6 +1160,92 @@ function resolveAuthProvider(
   return createMcpAuthProvider({ name, serverUrl: url, source, oauth, platform });
 }
 
+function classifyConnectionError(
+  err: unknown,
+  target: string,
+  interrupted: boolean
+): { code: number; kind: string; msg: string } {
+  if (err instanceof McpAuthError || err instanceof AuthStepUpError) {
+    return classifyError(err);
+  }
+  if (
+    (err as Error).name === 'McpOAuthAuthorizationRequiredError' ||
+    (err as Error).name === 'McpAuthRequiredError'
+  ) {
+    return { code: EXIT_AUTH, kind: 'auth', msg: `unauthorized. Run: mcpcat login ${target}` };
+  }
+  if (interrupted) {
+    return { code: EXIT_INTERRUPTED, kind: 'interrupted', msg: 'interrupted' };
+  }
+  const msg = transportHint(err) ?? `connection failed: ${(err as Error).message}`;
+  return { code: EXIT_CONNECTION, kind: 'connection', msg };
+}
+
+function buildRoots(
+  rootArgs: string[],
+  isStdio: boolean,
+  cwd: string
+): { uri: string; name?: string }[] | undefined {
+  const roots = rootArgs.map((r) => ({
+    uri: r.startsWith('file://') ? r : `file://${r}`,
+  }));
+  if (roots.length === 0 && isStdio) {
+    roots.push({ uri: `file://${cwd}` });
+  }
+  return roots.length > 0 ? roots : undefined;
+}
+
+async function loadRespondData(
+  platform: Platform,
+  respondArg: string | undefined,
+  json: boolean
+): Promise<{ data: Record<string, unknown> | undefined } | { exitCode: number }> {
+  if (!respondArg) return { data: undefined };
+  try {
+    return { data: await readDataArg(platform, respondArg) };
+  } catch (err) {
+    await writeErr(
+      platform,
+      json,
+      'usage',
+      `invalid --respond argument: ${(err as Error).message}`
+    );
+    return { exitCode: EXIT_USAGE };
+  }
+}
+
+async function handleInputRequired(
+  platform: Platform,
+  conn: McpConnection,
+  err: InputRequiredError,
+  respondData: Record<string, unknown> | undefined,
+  json: boolean
+): Promise<number> {
+  const parsed2 = JSON.parse(err.requestJson) as Record<string, unknown>;
+  const inputReq = parseInputRequest((parsed2.result as Record<string, unknown>) ?? parsed2);
+  if (!inputReq) {
+    await platform.write(2, `${err.requestJson}\n`);
+    return EXIT_INPUT_REQUIRED;
+  }
+  const isTty = platform.isatty(0);
+  const elicitResult = await handleElicitation(platform, inputReq, isTty, respondData);
+  if ('exitCode' in elicitResult) {
+    await platform.write(2, `${err.requestJson}\n`);
+    return EXIT_INPUT_REQUIRED;
+  }
+  try {
+    const retryResult = await conn.callTool(parsed2.name as string, {
+      ...(parsed2.arguments as Record<string, unknown>),
+      _meta: { inputResponses: elicitResult.answers },
+    });
+    return renderCallResult(platform, retryResult, { json });
+  } catch (retryErr) {
+    const e2 = classifyError(retryErr);
+    await writeErr(platform, json, e2.kind, e2.msg);
+    return e2.code;
+  }
+}
+
 async function runClientVerb(
   platform: Platform,
   version: string,
@@ -1004,6 +1284,15 @@ async function runClientVerb(
   const hasAuthHeader = 'Authorization' in expanded;
   const authProvider = resolveAuthProvider(platform, hasAuthHeader, resolved.url, target, config);
 
+  const roots = buildRoots(parsed.roots, !!resolved.command, platform.cwd);
+
+  let respondData: Record<string, unknown> | undefined;
+  if (parsed.respondArg) {
+    const loaded = await loadRespondData(platform, parsed.respondArg, parsed.jsonOutput);
+    if ('exitCode' in loaded) return loaded.exitCode;
+    respondData = loaded.data;
+  }
+
   let conn: McpConnection;
   try {
     conn = await connect(platform, {
@@ -1015,36 +1304,17 @@ async function runClientVerb(
       signal: sigintController.signal,
       verbose,
       authProvider,
+      roots,
     });
   } catch (err) {
-    if (err instanceof McpAuthError || err instanceof AuthStepUpError) {
-      const e = classifyError(err);
-      await writeErr(platform, parsed.jsonOutput, e.kind, e.msg);
-      return EXIT_AUTH;
-    }
-    if (
-      (err as Error).name === 'McpOAuthAuthorizationRequiredError' ||
-      (err as Error).name === 'McpAuthRequiredError'
-    ) {
-      await writeErr(
-        platform,
-        parsed.jsonOutput,
-        'auth',
-        `unauthorized. Run: mcpcat login ${target}`
-      );
-      return EXIT_AUTH;
-    }
-    const msg = transportHint(err) ?? `connection failed: ${(err as Error).message}`;
-    if (interrupted) {
-      await platform.write(2, 'mcpcat: interrupted\n');
-      return EXIT_INTERRUPTED;
-    }
-    await writeErr(platform, parsed.jsonOutput, 'connection', msg);
-    return EXIT_CONNECTION;
+    const e = classifyConnectionError(err, target, interrupted);
+    if (e.code === EXIT_INTERRUPTED) await platform.write(2, 'mcpcat: interrupted\n');
+    else await writeErr(platform, parsed.jsonOutput, e.kind, e.msg);
+    return e.code;
   }
 
   try {
-    const code = await runVerb(platform, parsed, conn, onProgress);
+    const code = await runVerb(platform, parsed, conn, onProgress, respondData);
     if (interrupted) {
       await platform.write(2, 'mcpcat: interrupted\n');
       return EXIT_INTERRUPTED;
@@ -1055,9 +1325,11 @@ async function runClientVerb(
       await platform.write(2, 'mcpcat: interrupted\n');
       return EXIT_INTERRUPTED;
     }
+    if (err instanceof InputRequiredError) {
+      return handleInputRequired(platform, conn, err, respondData, parsed.jsonOutput);
+    }
     const e = classifyError(err);
-    if (err instanceof InputRequiredError) await platform.write(2, `${e.msg}\n`);
-    else await writeErr(platform, parsed.jsonOutput, e.kind, e.msg);
+    await writeErr(platform, parsed.jsonOutput, e.kind, e.msg);
     return e.code;
   } finally {
     try {

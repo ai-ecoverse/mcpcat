@@ -24,6 +24,7 @@ export interface ConnectOptions {
   signal?: AbortSignal;
   verbose?: VerboseLogger;
   authProvider?: AuthProvider;
+  roots?: { uri: string; name?: string }[];
 }
 
 export async function connect(platform: Platform, options: ConnectOptions): Promise<McpConnection> {
@@ -41,6 +42,7 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
       args: options.args,
       env: options.env,
       cwd: options.cwd,
+      roots: options.roots,
       ...shared,
     });
   }

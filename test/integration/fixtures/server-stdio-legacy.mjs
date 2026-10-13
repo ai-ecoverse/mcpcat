@@ -17,6 +17,31 @@ const TOOLS = [
   },
 ];
 
+const RESOURCES = [
+  {
+    uri: 'file:///notes.txt',
+    name: 'notes',
+    description: 'Some notes',
+    mimeType: 'text/plain',
+  },
+];
+
+const RESOURCE_TEMPLATES = [
+  {
+    uriTemplate: 'file:///items/{id}',
+    name: 'items',
+    description: 'An item by ID',
+  },
+];
+
+const PROMPTS = [
+  {
+    name: 'hello',
+    description: 'Say hello',
+    arguments: [{ name: 'name', description: 'Who to greet', required: true }],
+  },
+];
+
 function jsonRpc(id, result) {
   return JSON.stringify({ jsonrpc: '2.0', id, result });
 }
@@ -46,7 +71,7 @@ rl.on('line', (line) => {
     case 'initialize':
       response = jsonRpc(id, {
         protocolVersion: '2025-11-25',
-        capabilities: { tools: { listChanged: false } },
+        capabilities: { tools: { listChanged: false }, resources: {}, prompts: {} },
         serverInfo: SERVER_INFO,
         instructions: 'A legacy stdio test server.',
       });
@@ -54,6 +79,40 @@ rl.on('line', (line) => {
     case 'tools/list':
       response = jsonRpc(id, { tools: TOOLS });
       break;
+    case 'resources/list':
+      response = jsonRpc(id, { resources: RESOURCES });
+      break;
+    case 'resources/templates/list':
+      response = jsonRpc(id, { resourceTemplates: RESOURCE_TEMPLATES });
+      break;
+    case 'resources/read': {
+      const uri = params?.uri;
+      if (uri === 'file:///notes.txt') {
+        response = jsonRpc(id, {
+          contents: [{ uri, mimeType: 'text/plain', text: 'These are notes' }],
+        });
+      } else {
+        response = jsonRpcError(id, -32602, `Resource not found: ${uri}`);
+      }
+      break;
+    }
+    case 'prompts/list':
+      response = jsonRpc(id, { prompts: PROMPTS });
+      break;
+    case 'prompts/get': {
+      const pName = params?.name;
+      const pArgs = params?.arguments ?? {};
+      if (pName === 'hello') {
+        response = jsonRpc(id, {
+          messages: [
+            { role: 'user', content: { type: 'text', text: `Hello, ${pArgs.name ?? 'World'}!` } },
+          ],
+        });
+      } else {
+        response = jsonRpcError(id, -32602, `Unknown prompt: ${pName}`);
+      }
+      break;
+    }
     case 'tools/call': {
       const toolName = params?.name;
       const args = params?.arguments ?? {};

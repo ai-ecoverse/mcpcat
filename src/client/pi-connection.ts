@@ -5,13 +5,22 @@ import {
   type McpClientOptions,
   type McpRequestOptions,
   type McpTransport,
+  type ReadResourceResult,
+  type Resource,
+  type ResourceTemplate,
   StdioTransport,
   StreamableHttpTransport,
   type Tool,
 } from '@earendil-works/pi-mcp';
 import type { VerboseLogger } from '../cli/verbose.ts';
 import type { Platform } from '../platform/types.ts';
-import type { CallToolOptions, McpConnection, ServerInfo } from './connection.ts';
+import type {
+  CallToolOptions,
+  GetPromptResult,
+  McpConnection,
+  PromptInfo,
+  ServerInfo,
+} from './connection.ts';
 import { PlatformStdioTransport } from './platform-stdio-transport.ts';
 import { McpAuthError, McpTimeoutError } from './stateless-connection.ts';
 
@@ -29,6 +38,7 @@ export interface PiConnectionOptions {
   signal?: AbortSignal;
   verbose?: VerboseLogger;
   authProvider?: AuthProvider;
+  roots?: { uri: string; name?: string }[];
 }
 
 function buildStderrHandler(options: PiConnectionOptions): ((chunk: string) => void) | undefined {
@@ -77,6 +87,8 @@ export async function createPiConnection(options: PiConnectionOptions): Promise<
     name: 'mcpcat',
     version: options.version ?? '0.0.0',
     requestTimeoutMs: options.timeoutMs,
+    capabilities: { elicitation: {} },
+    roots: options.roots,
   };
 
   const client = new McpClient(clientOptions);
@@ -132,7 +144,34 @@ export async function createPiConnection(options: PiConnectionOptions): Promise<
             inner?.(p);
           };
         }
-        return client.callTool(name, args, o);
+        const callArgs = callOptions?.inputResponses
+          ? { ...args, _meta: { inputResponses: callOptions.inputResponses } }
+          : args;
+        return client.callTool(name, callArgs, o);
+      },
+      async listResources(): Promise<Resource[]> {
+        return client.listResources(reqOpts());
+      },
+      async listResourceTemplates(): Promise<ResourceTemplate[]> {
+        return client.listResourceTemplates(reqOpts());
+      },
+      async readResource(uri: string): Promise<ReadResourceResult> {
+        return client.readResource(uri, reqOpts());
+      },
+      async listPrompts(): Promise<PromptInfo[]> {
+        const result = await client.request<{ prompts?: PromptInfo[] }>(
+          'prompts/list',
+          {},
+          reqOpts()
+        );
+        return result?.prompts ?? [];
+      },
+      async getPrompt(name: string, args?: Record<string, unknown>): Promise<GetPromptResult> {
+        return client.request<GetPromptResult>(
+          'prompts/get',
+          { name, arguments: args ?? {} },
+          reqOpts()
+        );
       },
       async close(): Promise<void> {
         await client.close();
