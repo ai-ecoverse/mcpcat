@@ -5,8 +5,16 @@ A curl for the Model Context Protocol. One command that talks to any MCP server 
 ## Install
 
 ```sh
+curl -fsSL https://get.sliccy.ai/mcpcat | sh
+```
+
+The same installer from the GitHub release, if the short URL is unreachable:
+
+```sh
 curl -fsSL https://github.com/ai-ecoverse/mcpcat/releases/latest/download/install.sh | sh
 ```
+
+Options pass through, for example `curl -fsSL https://get.sliccy.ai/mcpcat | sh -s -- --help`.
 
 Or via npm:
 
