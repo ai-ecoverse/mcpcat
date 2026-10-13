@@ -188,6 +188,9 @@ ensure_node() {
 
 OS="$(detect_os)"
 
+NODE_BIN="$(ensure_node)"
+NODE_ABS="$(cd "$(dirname "$NODE_BIN")" && pwd)/$(basename "$NODE_BIN")"
+
 if [ -z "$BASE_URL" ]; then
   if [ -z "$VERSION" ]; then
     BASE_URL="https://github.com/${REPO}/releases/latest/download"
@@ -232,8 +235,6 @@ CURRENT_LINK="$DATA_DIR/current"
 rm -f "$CURRENT_LINK"
 ln -s "$BUNDLE_VERSION" "$CURRENT_LINK"
 
-NODE_BIN="$(ensure_node)"
-NODE_ABS="$(cd "$(dirname "$NODE_BIN")" && pwd)/$(basename "$NODE_BIN")"
 ENTRY="$BUNDLE_DIR/dist/host/mcpcat.mjs"
 
 mkdir -p "$INSTALL_DIR"
