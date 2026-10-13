@@ -144,6 +144,7 @@ Options:
   -H, --header 'N: V'       Extra header
   -d <json>                  Tool arguments as JSON (or @file, @- for stdin)
   -m, --timeout <s>          Request timeout (default 60)
+  --memory <MiB>             Code mode memory limit (default 256, max 1024)
   --protocol-version <v>     Pin protocol version
   --schema                   Print raw JSON Schema (describe)
   --ts                       TypeScript declarations (describe)
@@ -178,6 +179,7 @@ interface ParsedArgs {
   serverTargets: string[];
   allowShell: boolean;
   timeoutMs: number | undefined;
+  memoryLimitMiB: number | undefined;
   verbose: boolean;
   silent: boolean;
   trailingCommand: string[] | undefined;
@@ -201,6 +203,7 @@ function parseFlags(args: string[]): {
   serverTargets: string[];
   allowShell: boolean;
   timeoutMs: number | undefined;
+  memoryLimitMiB: number | undefined;
   verbose: boolean;
   silent: boolean;
   positional: string[];
@@ -222,6 +225,7 @@ function parseFlags(args: string[]): {
   const serverTargets: string[] = [];
   let allowShell = false;
   let timeoutMs: number | undefined;
+  let memoryLimitMiB: number | undefined;
   let verbose = false;
   let silent = false;
   const positional: string[] = [];
@@ -276,6 +280,8 @@ function parseFlags(args: string[]): {
       roots.push(args[++i]);
     } else if ((arg === '-o' || arg === '--output') && args[i + 1]) {
       outputPath = args[++i];
+    } else if (arg === '--memory' && args[i + 1]) {
+      memoryLimitMiB = Number(args[++i]);
     } else if (!arg.startsWith('-')) {
       positional.push(arg);
     }
@@ -295,6 +301,7 @@ function parseFlags(args: string[]): {
     serverTargets,
     allowShell,
     timeoutMs,
+    memoryLimitMiB,
     verbose,
     silent,
     positional,
@@ -362,6 +369,7 @@ function parseArgs(args: string[]): ParsedArgs {
     serverTargets: flags.serverTargets,
     allowShell: flags.allowShell,
     timeoutMs: flags.timeoutMs,
+    memoryLimitMiB: flags.memoryLimitMiB,
     verbose: flags.verbose,
     silent: flags.silent,
     respondArg: flags.respondArg,
@@ -904,6 +912,19 @@ async function dispatchMultiTarget(
   parsed: ParsedArgs,
   version: string
 ): Promise<number> {
+  let activeCleanup: (() => Promise<void>) | undefined;
+
+  async function killTreeAndExit(exitCode: number): Promise<never> {
+    if (activeCleanup) {
+      try {
+        await Promise.race([activeCleanup(), new Promise((r) => setTimeout(r, 3000))]);
+      } catch {}
+    }
+    platform.exit(exitCode);
+  }
+
+  platform.onSignal?.('SIGTERM', () => void killTreeAndExit(143));
+  platform.onSignal?.('SIGHUP', () => void killTreeAndExit(129));
   const config = await MergedConfigSource.load(platform);
 
   if (parsed.verb === 'code') {
@@ -940,10 +961,12 @@ async function dispatchMultiTarget(
       parsed,
       version
     );
+    activeCleanup = cleanup;
     try {
       return await runCode(targets, source, {
         json: parsed.jsonOutput,
         timeoutMs: parsed.timeoutMs,
+        memoryLimitMiB: parsed.memoryLimitMiB,
         allowShell: parsed.allowShell,
         platform,
       });
@@ -975,6 +998,7 @@ async function dispatchMultiTarget(
       parsed,
       version
     );
+    activeCleanup = cleanup;
     try {
       return await runGrep(platform, pattern, targets, {
         rank: parsed.rank,
@@ -994,6 +1018,7 @@ async function dispatchMultiTarget(
       parsed,
       version
     );
+    activeCleanup = cleanup;
     try {
       return await runDescribeTs(platform, targets, parsed.tsBudget);
     } finally {
@@ -1005,6 +1030,18 @@ async function dispatchMultiTarget(
 }
 
 export async function run(platform: Platform, version: string, args: string[]): Promise<number> {
+  try {
+    return await runInner(platform, version, args);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EACCES') {
+      await platform.write(2, `mcpcat: ${(err as Error).message}\n`);
+      return EXIT_USAGE;
+    }
+    throw err;
+  }
+}
+
+async function runInner(platform: Platform, version: string, args: string[]): Promise<number> {
   if (args.includes('--version') || args.includes('-V')) {
     await platform.write(1, `${version}\n`);
     return 0;
@@ -1266,10 +1303,27 @@ async function runClientVerb(
   const timeoutMs = parsed.timeoutMs;
   const sigintController = new AbortController();
   let interrupted = false;
+  let termExitCode = EXIT_INTERRUPTED;
+  let activeConn: McpConnection | undefined;
+
+  async function killTreeAndExit(exitCode: number): Promise<never> {
+    interrupted = true;
+    termExitCode = exitCode;
+    sigintController.abort();
+    if (activeConn) {
+      try {
+        await Promise.race([activeConn.close(), new Promise((r) => setTimeout(r, 3000))]);
+      } catch {}
+    }
+    platform.exit(exitCode);
+  }
+
   platform.onSignal?.('SIGINT', () => {
     interrupted = true;
     sigintController.abort();
   });
+  platform.onSignal?.('SIGTERM', () => void killTreeAndExit(143));
+  platform.onSignal?.('SIGHUP', () => void killTreeAndExit(129));
 
   const showProgress = !parsed.silent && (parsed.verbose || platform.isatty(2));
   const onProgress = (progress: number, total?: number, message?: string) => {
@@ -1320,10 +1374,14 @@ async function runClientVerb(
       authProvider,
       roots,
     });
+    activeConn = conn;
   } catch (err) {
     const e = classifyConnectionError(err, target, interrupted);
-    if (e.code === EXIT_INTERRUPTED) await platform.write(2, 'mcpcat: interrupted\n');
-    else await writeErr(platform, parsed.jsonOutput, e.kind, e.msg);
+    if (e.code === EXIT_INTERRUPTED) {
+      await platform.write(2, 'mcpcat: interrupted\n');
+      return termExitCode;
+    }
+    await writeErr(platform, parsed.jsonOutput, e.kind, e.msg);
     return e.code;
   }
 
@@ -1331,13 +1389,13 @@ async function runClientVerb(
     const code = await runVerb(platform, parsed, conn, onProgress, respondData);
     if (interrupted) {
       await platform.write(2, 'mcpcat: interrupted\n');
-      return EXIT_INTERRUPTED;
+      return termExitCode;
     }
     return code;
   } catch (err) {
     if (interrupted) {
       await platform.write(2, 'mcpcat: interrupted\n');
-      return EXIT_INTERRUPTED;
+      return termExitCode;
     }
     if (err instanceof InputRequiredError) {
       return handleInputRequired(platform, conn, err, respondData, parsed.jsonOutput);
