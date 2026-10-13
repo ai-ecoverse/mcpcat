@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -12,13 +13,18 @@ const fixturesDir = join(root, 'test/integration/fixtures');
 const fixtureCli = join(fixturesDir, 'serve-cli.mjs');
 const slowCli = join(fixturesDir, 'serve-slow-cli.mjs');
 
+const testHome = join(tmpdir(), `mcpcat-serve-test-${Date.now()}`);
+mkdirSync(join(testHome, '.pi', 'agent'), { recursive: true });
+const testEnv = { HOME: testHome, PI_CODING_AGENT_DIR: join(testHome, '.pi', 'agent') };
+after(() => rmSync(testHome, { recursive: true, force: true }));
+
 function runHost(args, opts = {}) {
   const { cmd, args: cmdArgs } = mcpcatArgs(args);
   try {
     const result = execFileSync(cmd, cmdArgs, {
       encoding: 'utf8',
       timeout: 15_000,
-      env: { ...process.env, NODE_NO_WARNINGS: '1', ...opts.env },
+      env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv, ...opts.env },
       input: opts.input,
     });
     return { stdout: result, stderr: '', status: 0 };
@@ -32,10 +38,17 @@ function runHost(args, opts = {}) {
 }
 
 async function startServeHttp(extraArgs = [], extraEnv = {}) {
-  const { cmd, args } = mcpcatArgs(['serve', '--http', '0', `node=${fixtureCli}`, ...extraArgs]);
+  const { cmd, args } = mcpcatArgs([
+    'serve',
+    '--http',
+    '0',
+    '--no-auth',
+    `node=${fixtureCli}`,
+    ...extraArgs,
+  ]);
   const child = spawn(cmd, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, NODE_NO_WARNINGS: '1', ...extraEnv },
+    env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv, ...extraEnv },
   });
 
   const port = await new Promise((resolve, reject) => {
@@ -58,7 +71,7 @@ async function startServeStdio(extraArgs = []) {
   const { cmd, args } = mcpcatArgs(['serve', '--stdio', `node=${fixtureCli}`, ...extraArgs]);
   const child = spawn(cmd, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, NODE_NO_WARNINGS: '1' },
+    env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv },
   });
   await sleep(500);
   return child;
@@ -171,16 +184,37 @@ describe('serve: HTTP transport', () => {
   it('non-loopback Origin is rejected', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', origin: 'https://evil.example.com' },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        origin: 'https://evil.example.com',
+      },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} }),
     });
     assert.equal(res.status, 403);
   });
 
-  it('loopback Origin is accepted', async () => {
+  it('different-port localhost Origin is rejected (CSRF)', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', origin: 'http://localhost:3000' },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        origin: 'http://localhost:3000',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} }),
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('same-origin is accepted', async () => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        origin: `http://127.0.0.1:${server.port}`,
+      },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} }),
     });
     assert.equal(res.status, 200);
@@ -189,16 +223,43 @@ describe('serve: HTTP transport', () => {
   it('absent Origin is accepted (slicc-agent wire shape)', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} }),
     });
     assert.equal(res.status, 200);
   });
 
+  it('text/plain Content-Type is rejected (CSRF)', async () => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'text/plain',
+        accept: 'application/json',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} }),
+    });
+    assert.equal(res.status, 415);
+  });
+
+  it('wrong Accept is rejected', async () => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'text/html' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} }),
+    });
+    assert.equal(res.status, 406);
+  });
+
   it('no Mcp-Session-Id in response (stateless)', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
       body: JSON.stringify({
         jsonrpc: '2.0',
         id: 1,
@@ -213,7 +274,11 @@ describe('serve: HTTP transport', () => {
   it('Connection: close works', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', connection: 'close' },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        connection: 'close',
+      },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} }),
     });
     assert.equal(res.status, 200);
@@ -234,7 +299,10 @@ describe('serve: protocol versions', () => {
   it('server/discover advertises 2025-11-25', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: {} }),
     });
     const json = await res.json();
@@ -246,7 +314,10 @@ describe('serve: protocol versions', () => {
   it('initialize with 2025-11-25 is answered with that version', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
       body: JSON.stringify({
         jsonrpc: '2.0',
         id: 1,
@@ -321,6 +392,7 @@ describe('serve: slicc-agent loopback wire shape', () => {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
         'content-length': String(new TextEncoder().encode(body).length),
         host: `${server.port}.kernel.localhost`,
         connection: 'close',
@@ -343,6 +415,7 @@ describe('serve: slicc-agent loopback wire shape', () => {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
         host: `${server.port}.kernel.localhost`,
         connection: 'close',
       },
@@ -369,7 +442,10 @@ describe('serve: --bearer ${NAME} authentication', () => {
   it('rejects requests without bearer token', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} }),
     });
     assert.equal(res.status, 401);
@@ -378,7 +454,11 @@ describe('serve: --bearer ${NAME} authentication', () => {
   it('rejects wrong bearer token', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer wrong-token' },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: 'Bearer wrong-token',
+      },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} }),
     });
     assert.equal(res.status, 401);
@@ -387,7 +467,11 @@ describe('serve: --bearer ${NAME} authentication', () => {
   it('accepts correct bearer token', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${MARKER}` },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${MARKER}`,
+      },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} }),
     });
     assert.equal(res.status, 200);
@@ -452,11 +536,12 @@ describe('serve: --json prints listening URL', () => {
       '--http',
       '0',
       '--json',
+      '--no-auth',
       `node=${fixtureCli}`,
     ]);
     const child = spawn(jsonCmd, jsonArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, NODE_NO_WARNINGS: '1' },
+      env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv },
     });
 
     const jsonLine = await new Promise((resolve, reject) => {
@@ -507,7 +592,11 @@ describe('serve: secrets never passed to children', () => {
     });
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${MARKER}` },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${MARKER}`,
+      },
       body,
     });
     assert.equal(res.status, 200);
@@ -522,11 +611,12 @@ describe('serve: SIGTERM kills in-flight children (no orphans)', { timeout: 30_0
       'serve',
       '--http',
       '0',
+      '--no-auth',
       `slow=${slowCli}`,
     ]);
     const child = spawn(slowCmd, slowArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, NODE_NO_WARNINGS: '1' },
+      env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv },
     });
 
     const port = await new Promise((resolve, reject) => {
@@ -541,7 +631,11 @@ describe('serve: SIGTERM kills in-flight children (no orphans)', { timeout: 30_0
 
     const callPromise = fetch(`http://127.0.0.1:${port}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', connection: 'close' },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        connection: 'close',
+      },
       body: JSON.stringify({
         jsonrpc: '2.0',
         id: 1,

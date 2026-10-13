@@ -1,13 +1,19 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { mcpcatArgs } from './helpers/bin.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+
+const testHome = join(tmpdir(), `mcpcat-host-test-${Date.now()}`);
+mkdirSync(join(testHome, '.pi', 'agent'), { recursive: true });
+const testEnv = { HOME: testHome, PI_CODING_AGENT_DIR: join(testHome, '.pi', 'agent') };
+after(() => rmSync(testHome, { recursive: true, force: true }));
 
 function runHost(args) {
   const { cmd, args: cmdArgs } = mcpcatArgs(args);
@@ -15,7 +21,7 @@ function runHost(args) {
     const result = execFileSync(cmd, cmdArgs, {
       encoding: 'utf8',
       timeout: 10_000,
-      env: { ...process.env, NODE_NO_WARNINGS: '1' },
+      env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv },
     });
     return { stdout: result, stderr: '', status: 0 };
   } catch (err) {

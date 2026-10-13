@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
+import { mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -9,13 +11,18 @@ import { mcpcatArgs } from './helpers/bin.mjs';
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const fixturesDir = join(root, 'test/integration/fixtures');
 
+const testHome = join(tmpdir(), `mcpcat-proxy-test-${Date.now()}`);
+mkdirSync(join(testHome, '.pi', 'agent'), { recursive: true });
+const testEnv = { HOME: testHome, PI_CODING_AGENT_DIR: join(testHome, '.pi', 'agent') };
+after(() => rmSync(testHome, { recursive: true, force: true }));
+
 function runHost(args, opts = {}) {
   const { cmd, args: cmdArgs } = mcpcatArgs(args);
   try {
     const result = execFileSync(cmd, cmdArgs, {
       encoding: 'utf8',
       timeout: 15_000,
-      env: { ...process.env, NODE_NO_WARNINGS: '1', ...opts.env },
+      env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv, ...opts.env },
     });
     return { stdout: result, stderr: '', status: 0 };
   } catch (err) {
@@ -30,7 +37,7 @@ function runHost(args, opts = {}) {
 async function startFixtureServer(script, extraArgs = []) {
   const child = spawn('node', [join(fixturesDir, script), ...extraArgs], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, NODE_NO_WARNINGS: '1' },
+    env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv },
   });
 
   const info = await new Promise((resolve, reject) => {
@@ -62,11 +69,12 @@ async function startProxy(target, extraArgs = [], extraEnv = {}) {
     '--http',
     '0',
     '--json',
+    '--no-auth',
     ...extraArgs,
   ]);
   const child = spawn(cmd, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, NODE_NO_WARNINGS: '1', ...extraEnv },
+    env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv, ...extraEnv },
   });
 
   const port = await new Promise((resolve, reject) => {
@@ -141,7 +149,10 @@ describe('proxy: stdio upstream served as HTTP (2025-11-25 → 2026-07-28)', () 
     });
     const res = await fetch(`http://127.0.0.1:${proxy.port}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
       body,
     });
     assert.equal(res.status, 200);
@@ -160,7 +171,10 @@ describe('proxy: stdio upstream served as HTTP (2025-11-25 → 2026-07-28)', () 
     });
     const res = await fetch(`http://127.0.0.1:${proxy.port}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
       body,
     });
     assert.equal(res.status, 200);
@@ -229,7 +243,10 @@ describe('proxy: credential hiding', () => {
     });
     const res = await fetch(`http://127.0.0.1:${proxy.port}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
       body,
     });
     assert.equal(res.status, 200);
@@ -247,7 +264,10 @@ describe('proxy: credential hiding', () => {
     });
     const res = await fetch(`http://127.0.0.1:${proxy.port}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
       body,
     });
     assert.equal(res.status, 200);
@@ -280,6 +300,7 @@ describe('proxy: slicc-agent loopback wire shape', () => {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
         'content-length': String(new TextEncoder().encode(body).length),
         host: `${proxy.port}.kernel.localhost`,
         connection: 'close',
@@ -302,6 +323,7 @@ describe('proxy: slicc-agent loopback wire shape', () => {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
         host: `${proxy.port}.kernel.localhost`,
         connection: 'close',
       },
@@ -332,7 +354,10 @@ describe('proxy: --bearer authentication on proxy', () => {
   it('rejects requests without bearer token', async () => {
     const res = await fetch(`http://127.0.0.1:${proxy.port}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} }),
     });
     assert.equal(res.status, 401);
@@ -343,6 +368,7 @@ describe('proxy: --bearer authentication on proxy', () => {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
         authorization: `Bearer ${PROXY_TOKEN}`,
       },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} }),
@@ -427,7 +453,11 @@ describe('proxy: reconnect on upstream failure (idempotent)', { timeout: 30_000 
     });
     const res1 = await fetch(`http://127.0.0.1:${proxy.port}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', connection: 'close' },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        connection: 'close',
+      },
       body,
     });
     assert.equal(res1.status, 200);
@@ -449,7 +479,7 @@ describe('add --bridge: host refuses', () => {
   });
 });
 
-describe('add --bridge: --bearer refused on kernel loopback', () => {
+describe('add --bridge: --bearer refused', () => {
   it('exits 2 when --bearer is given with --bridge', () => {
     const { stderr, status } = runHost([
       'add',
@@ -462,6 +492,6 @@ describe('add --bridge: --bearer refused on kernel loopback', () => {
       'hi',
     ]);
     assert.equal(status, 2);
-    assert.ok(stderr.includes('not available on the host') || stderr.includes('not needed'));
+    assert.ok(stderr.includes('not available on the host') || stderr.includes('not supported'));
   });
 });

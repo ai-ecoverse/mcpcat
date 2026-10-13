@@ -92,8 +92,11 @@ const hostFs: FsApi = {
   ): Promise<void> {
     await writeFile(path, data, options?.mode !== undefined ? { mode: options.mode } : undefined);
   },
-  async mkdir(path: string): Promise<void> {
-    await mkdir(path, { recursive: true });
+  async mkdir(path: string, options?: { mode?: number }): Promise<void> {
+    await mkdir(path, {
+      recursive: true,
+      ...(options?.mode !== undefined ? { mode: options.mode } : {}),
+    });
   },
   async rename(from: string, to: string): Promise<void> {
     await rename(from, to);
