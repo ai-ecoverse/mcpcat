@@ -1,4 +1,5 @@
 import { containsPlaceholders, expandPlaceholdersStrict } from '../config/expand.ts';
+import { MergedConfigSource } from '../config/index.ts';
 import type { Platform, SpawnResult } from '../platform/types.ts';
 import {
   argvForCommand,
@@ -18,6 +19,7 @@ import {
 import { type HttpRequest, type HttpResponse, handleConnection } from './http.ts';
 import { handleJsonRpc, type RpcTool, type ToolRunResult } from './jsonrpc.ts';
 import { checkHost, checkOrigin } from './origin.ts';
+import { createProxyHandler } from './proxy.ts';
 
 const CALL_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_DEFAULT = 1_048_576;
@@ -28,6 +30,9 @@ export interface ServeOptions {
   host: string;
   port: number;
   commands: { path: string; name?: string }[];
+  proxy?: string;
+  proxyCommand?: string[];
+  onListening?: (port: number) => Promise<void>;
   toolTemplates: string[];
   bearer?: string;
   allowOrigins: string[];
@@ -37,6 +42,7 @@ export interface ServeOptions {
   maxOutput: number;
   cwd?: string;
   json: boolean;
+  proxyHeaders: Array<[string, string]>;
 }
 
 function parseHttpFlag(args: string[], i: number): { host: string; port: number; next: number } {
@@ -74,6 +80,8 @@ function parseSingleFlag(
     cwd?: string;
     json: boolean;
     commands: { path: string; name?: string }[];
+    proxy?: string;
+    proxyHeaders: Array<[string, string]>;
   }
 ): number {
   const arg = args[i];
@@ -85,26 +93,73 @@ function parseSingleFlag(
     opts.host = parsed.host;
     opts.port = parsed.port;
     return parsed.next;
-  } else if (arg === '--bearer' && args[i + 1]) {
-    opts.bearer = args[++i];
-  } else if (arg === '--allow-origin' && args[i + 1]) {
-    opts.allowOrigins.push(args[++i]);
-  } else if (arg === '--env' && args[i + 1]) {
-    opts.envAllow.push(args[++i]);
-  } else if (arg === '--tool' && args[i + 1]) {
-    opts.toolTemplates.push(args[++i]);
-  } else if (arg === '--call-timeout' && args[i + 1]) {
-    opts.callTimeout = Number(args[++i]) * 1000;
-  } else if (arg === '--concurrency' && args[i + 1]) {
-    opts.concurrency = Number(args[++i]);
-  } else if (arg === '--max-output' && args[i + 1]) {
-    opts.maxOutput = Number(args[++i]);
-  } else if (arg === '--cwd' && args[i + 1]) {
-    opts.cwd = args[++i];
   } else if (arg === '--json') {
     opts.json = true;
   } else if (!arg.startsWith('-')) {
     opts.commands.push(parseCommandTarget(arg));
+  } else {
+    return parseValueFlag(args, i, opts);
+  }
+  return i;
+}
+
+function parseValueFlag(
+  args: string[],
+  i: number,
+  opts: {
+    bearer?: string;
+    allowOrigins: string[];
+    envAllow: string[];
+    toolTemplates: string[];
+    callTimeout: number;
+    concurrency: number;
+    maxOutput: number;
+    cwd?: string;
+    proxy?: string;
+    proxyHeaders: Array<[string, string]>;
+  }
+): number {
+  const arg = args[i];
+  if (!args[i + 1]) return i;
+  switch (arg) {
+    case '--proxy':
+      opts.proxy = args[++i];
+      break;
+    case '--bearer':
+      opts.bearer = args[++i];
+      break;
+    case '--allow-origin':
+      opts.allowOrigins.push(args[++i]);
+      break;
+    case '--env':
+      opts.envAllow.push(args[++i]);
+      break;
+    case '--tool':
+      opts.toolTemplates.push(args[++i]);
+      break;
+    case '--call-timeout':
+      opts.callTimeout = Number(args[++i]) * 1000;
+      break;
+    case '--concurrency':
+      opts.concurrency = Number(args[++i]);
+      break;
+    case '--max-output':
+      opts.maxOutput = Number(args[++i]);
+      break;
+    case '--cwd':
+      opts.cwd = args[++i];
+      break;
+    case '-H':
+    case '--header': {
+      const hdr = args[++i];
+      const colonIdx = hdr.indexOf(':');
+      if (colonIdx > 0) {
+        opts.proxyHeaders.push([hdr.slice(0, colonIdx).trim(), hdr.slice(colonIdx + 1).trim()]);
+      }
+      break;
+    }
+    default:
+      break;
   }
   return i;
 }
@@ -124,6 +179,8 @@ export function parseServeFlags(args: string[]): ServeOptions {
     cwd: undefined as string | undefined,
     json: false,
     commands: [] as { path: string; name?: string }[],
+    proxy: undefined as string | undefined,
+    proxyHeaders: [] as Array<[string, string]>,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -539,6 +596,10 @@ export async function runServe(
     resolvedBearer = expanded;
   }
 
+  if (options.proxy) {
+    return runProxyServe(platform, options, version, resolvedBearer);
+  }
+
   const serveCwd = options.cwd ?? platform.cwd;
   const childEnv = buildChildEnv(platform, options.envAllow);
   const clis: PublishedCli[] = [];
@@ -581,6 +642,316 @@ export async function runServe(
     version,
     resolvedBearer
   );
+}
+
+interface ProxyHandle {
+  handle: (raw: string) => Promise<{ status: number; contentType: string; body: string }>;
+  shutdown: () => Promise<void>;
+}
+
+import type { ConnectOptions } from '../client/connect.ts';
+
+function resolveProxyStdio(target: string, version: string): ConnectOptions {
+  const rest = target.slice(6);
+  const parts = rest.split(/\s+/).filter(Boolean);
+  return { command: parts[0], args: parts.slice(1), version };
+}
+
+function resolveProxyUrl(
+  target: string,
+  headers: Record<string, string>,
+  version: string
+): ConnectOptions {
+  const url = target.startsWith('http') ? target : `https://${target}`;
+  return { url, headers, version };
+}
+
+async function resolveProxyConfig(
+  platform: Platform,
+  target: string,
+  connectHeaders: Record<string, string>,
+  hiddenValues: Set<string>,
+  version: string
+): Promise<ConnectOptions | string> {
+  const config = await MergedConfigSource.load(platform);
+  const entry = await config.get(target);
+  if (!entry) return `unknown target '${target}'`;
+  if ('url' in entry && entry.url) {
+    const merged = { ...entry.headers, ...connectHeaders };
+    if (entry.headers) {
+      for (const v of Object.values(entry.headers)) hiddenValues.add(v);
+    }
+    return { url: entry.url, headers: merged, version };
+  }
+  if ('command' in entry && entry.command) {
+    return {
+      command: entry.command,
+      args: (entry as { args?: string[] }).args,
+      env: (entry as { env?: Record<string, string> }).env,
+      cwd: (entry as { cwd?: string }).cwd,
+      version,
+    };
+  }
+  return `target '${target}' has no url or command`;
+}
+
+async function buildProxyConnectOpts(
+  platform: Platform,
+  options: ServeOptions,
+  version: string
+): Promise<{ connectOpts: ConnectOptions; hiddenValues: Set<string> } | { error: string }> {
+  const target = options.proxy!;
+  const connectHeaders: Record<string, string> = {};
+  const hiddenValues = new Set<string>();
+
+  for (const [k, v] of options.proxyHeaders) {
+    const expanded = expandPlaceholdersStrict(v, platform.env);
+    if (expanded === undefined) return { error: `unset variable in header '${k}'` };
+    const key = k.toLowerCase() === 'authorization' ? 'Authorization' : k;
+    connectHeaders[key] = expanded;
+    hiddenValues.add(expanded);
+  }
+
+  const isUrl =
+    target.startsWith('http://') || target.startsWith('https://') || target.includes('.');
+
+  let connectOpts: ConnectOptions;
+  if (options.proxyCommand && options.proxyCommand.length > 0) {
+    connectOpts = {
+      command: options.proxyCommand[0],
+      args: options.proxyCommand.slice(1),
+      version,
+    };
+  } else if (target.startsWith('stdio:')) {
+    connectOpts = resolveProxyStdio(target, version);
+  } else if (isUrl) {
+    connectOpts = resolveProxyUrl(target, connectHeaders, version);
+  } else {
+    const result = await resolveProxyConfig(
+      platform,
+      target,
+      connectHeaders,
+      hiddenValues,
+      version
+    );
+    if (typeof result === 'string') return { error: result };
+    connectOpts = result;
+  }
+
+  if (connectOpts.headers) {
+    for (const v of Object.values(connectOpts.headers)) {
+      if (v) hiddenValues.add(v);
+    }
+  }
+
+  return { connectOpts, hiddenValues };
+}
+
+async function runProxyServe(
+  platform: Platform,
+  options: ServeOptions,
+  version: string,
+  resolvedBearer: string | undefined
+): Promise<number> {
+  const built = await buildProxyConnectOpts(platform, options, version);
+  if ('error' in built) {
+    await platform.write(2, `mcpcat serve --proxy: ${built.error}\n`);
+    return 2;
+  }
+
+  const { connectOpts, hiddenValues } = built;
+  if (resolvedBearer) hiddenValues.add(resolvedBearer);
+
+  const proxy = createProxyHandler({
+    target: options.proxy!,
+    connectOpts,
+    platform,
+    hiddenHeaders: hiddenValues,
+  });
+
+  if (options.transport === 'stdio') {
+    return runProxyStdio(platform, proxy);
+  }
+
+  return runProxyHttp(platform, options, proxy, resolvedBearer);
+}
+
+async function runProxyStdio(platform: Platform, proxy: ProxyHandle): Promise<number> {
+  const reader = platform.stdin.getReader();
+  let buffer = '';
+  const dec = new TextDecoder();
+  const enc = new TextEncoder();
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += dec.decode(value, { stream: true });
+
+      let nlIdx: number;
+      while ((nlIdx = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, nlIdx).trim();
+        buffer = buffer.slice(nlIdx + 1);
+        if (!line) continue;
+
+        const outcome = await proxy.handle(line);
+        if (outcome.status === 202) continue;
+        const writer = platform.stdout.getWriter();
+        await writer.write(enc.encode(`${outcome.body}\n`));
+        writer.releaseLock();
+      }
+    }
+  } finally {
+    reader.releaseLock();
+    await proxy.shutdown();
+  }
+
+  return 0;
+}
+
+async function runProxyHttp(
+  platform: Platform,
+  options: ServeOptions,
+  proxy: ProxyHandle,
+  resolvedBearer: string | undefined
+): Promise<number> {
+  if (!platform.listen) {
+    await platform.write(2, 'mcpcat serve --proxy: HTTP transport requires platform.listen\n');
+    return 3;
+  }
+
+  const boundLoopback =
+    options.host === '127.0.0.1' || options.host === 'localhost' || options.host === '::1';
+  if (!boundLoopback && !resolvedBearer) {
+    await platform.write(
+      2,
+      'mcpcat serve --proxy: --bearer is required when binding off loopback\n'
+    );
+    return 2;
+  }
+
+  const allowedOrigins = new Set(options.allowOrigins);
+  const listener = await platform.listen({
+    host: options.host,
+    port: options.port,
+  });
+  const actualPort = listener.port;
+
+  const listenUrl = `http://${options.host}:${actualPort}/mcp`;
+  if (options.json) {
+    await platform.write(1, `${JSON.stringify({ url: listenUrl })}\n`);
+  }
+  await platform.write(2, `mcpcat serve --proxy: listening on ${listenUrl}\n`);
+
+  if (options.onListening) {
+    await options.onListening(actualPort);
+  }
+
+  let shutdownRequested = false;
+
+  const shutdown = () => {
+    if (shutdownRequested) return;
+    shutdownRequested = true;
+    listener.close();
+    void proxy.shutdown();
+  };
+
+  if (platform.onSignal) {
+    platform.onSignal('SIGINT', shutdown);
+    platform.onSignal('SIGTERM', shutdown);
+  }
+
+  const handler = (request: HttpRequest): Promise<HttpResponse> =>
+    handleProxyMcpRequest(request, proxy, allowedOrigins, boundLoopback, resolvedBearer);
+
+  try {
+    for await (const connection of listener) {
+      if (shutdownRequested) break;
+      const conn = connection as {
+        readonly readable: ReadableStream<Uint8Array>;
+        readonly writable: WritableStream<Uint8Array>;
+        close(): void;
+      };
+      handleConnection(conn.readable, conn.writable, handler)
+        .catch(() => {})
+        .finally(() => {
+          try {
+            conn.close();
+          } catch {}
+        });
+    }
+  } catch {
+    if (!shutdownRequested) throw new Error('listener closed unexpectedly');
+  }
+
+  return 0;
+}
+
+async function handleProxyMcpRequest(
+  request: HttpRequest,
+  proxy: ProxyHandle,
+  allowedOrigins: Set<string>,
+  boundLoopback: boolean,
+  resolvedBearer: string | undefined
+): Promise<HttpResponse> {
+  if (resolvedBearer) {
+    const authHeader = request.headers.authorization;
+    const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    if (!provided || !constantTimeEqual(provided, resolvedBearer)) {
+      return {
+        status: 401,
+        reason: 'Unauthorized',
+        headers: { 'content-type': 'text/plain' },
+        body: 'Unauthorized',
+      };
+    }
+  }
+
+  const originCheck = checkOrigin(request.headers.origin, allowedOrigins, boundLoopback);
+  if (!originCheck.ok) {
+    return {
+      status: 403,
+      reason: 'Forbidden',
+      headers: { 'content-type': 'text/plain' },
+      body: originCheck.reason ?? 'Forbidden',
+    };
+  }
+
+  const hostCheck = checkHost(request.headers.host, boundLoopback);
+  if (!hostCheck.ok) {
+    return {
+      status: 403,
+      reason: 'Forbidden',
+      headers: { 'content-type': 'text/plain' },
+      body: hostCheck.reason ?? 'Forbidden',
+    };
+  }
+
+  if (request.target !== '/mcp') {
+    return {
+      status: 404,
+      reason: 'Not Found',
+      headers: { 'content-type': 'text/plain' },
+      body: 'Not Found',
+    };
+  }
+
+  if (request.method !== 'POST') {
+    return {
+      status: 405,
+      reason: 'Method Not Allowed',
+      headers: { 'content-type': 'text/plain', allow: 'POST' },
+      body: 'Method Not Allowed',
+    };
+  }
+
+  const outcome = await proxy.handle(request.body);
+  return {
+    status: outcome.status,
+    reason: outcome.status === 200 ? 'OK' : 'Accepted',
+    headers: { 'content-type': outcome.contentType },
+    body: outcome.body,
+  };
 }
 
 async function runStdioServer(
