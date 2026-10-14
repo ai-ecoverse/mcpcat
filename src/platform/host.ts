@@ -30,10 +30,11 @@ const USE_PROCESS_GROUPS = process.platform !== 'win32';
 function nodeSpawn(options: SpawnOptions): Promise<SpawnResult> {
   return new Promise((resolve, reject) => {
     let rejected = false;
+    const ignoreStdin = options.stdin === 'ignore';
     const child = cpSpawn(options.argv[0], options.argv.slice(1), {
       env: options.env ?? (process.env as Record<string, string>),
       cwd: options.cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: [ignoreStdin ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       detached: USE_PROCESS_GROUPS,
     });
 
@@ -46,7 +47,9 @@ function nodeSpawn(options: SpawnOptions): Promise<SpawnResult> {
 
     const stdout = Readable.toWeb(child.stdout!) as ReadableStream<Uint8Array>;
     const stderr = Readable.toWeb(child.stderr!) as ReadableStream<Uint8Array>;
-    const stdin = Writable.toWeb(child.stdin!) as WritableStream<Uint8Array>;
+    const stdin = ignoreStdin
+      ? new WritableStream<Uint8Array>()
+      : (Writable.toWeb(child.stdin!) as WritableStream<Uint8Array>);
 
     const closePromise = new Promise<{ status: number; signal?: string }>((res) => {
       child.on('close', (code, signal) => {

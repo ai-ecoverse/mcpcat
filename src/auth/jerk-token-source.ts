@@ -4,6 +4,7 @@ import type { TokenResult, TokenSource } from './token-source.ts';
 
 const MIN_VERSION = [0, 14, 1];
 const VERSION_TIMEOUT_MS = 2_000;
+export const JERK_TIMEOUT_MS = 15_000;
 
 let cachedAvailable: boolean | undefined;
 
@@ -60,21 +61,50 @@ export async function jerkAvailable(platform: Platform): Promise<boolean> {
     return false;
   }
   try {
-    const proc = await platform.spawn({ argv: ['jerk', '--version'] });
-    const timeout = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('timeout')), VERSION_TIMEOUT_MS);
-    });
-    const work = Promise.all([readAll(proc.stdout), proc.wait()]).then(([out, result]) => {
-      proc.stderr.cancel().catch(() => {});
-      if (result.status !== 0) return false;
-      const ver = parseVersion(out);
-      return ver !== undefined && versionSatisfied(ver);
-    });
-    cachedAvailable = await Promise.race([work, timeout]);
+    const result = await runJerk(platform, ['jerk', '--version'], VERSION_TIMEOUT_MS);
+    const ver = result.status === 0 ? parseVersion(result.stdout) : undefined;
+    cachedAvailable = ver !== undefined && versionSatisfied(ver);
   } catch {
     cachedAvailable = false;
   }
   return cachedAvailable;
+}
+
+export interface JerkRun {
+  status: number;
+  stdout: string;
+  stderr: string;
+}
+
+export class JerkTimeoutError extends Error {
+  readonly command: string;
+  constructor(argv: string[]) {
+    const command = argv.slice(0, 3).join(' ');
+    super(`jerk did not answer; run \`${command}\` yourself`);
+    this.name = 'JerkTimeoutError';
+    this.command = command;
+  }
+}
+
+export async function runJerk(
+  platform: Platform,
+  argv: string[],
+  timeoutMs: number
+): Promise<JerkRun> {
+  const proc = await platform.spawn({ argv, stdin: 'ignore' });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), timeoutMs);
+  });
+  const work = Promise.all([readAll(proc.stdout), readAll(proc.stderr), proc.wait()]);
+  const outcome = await Promise.race([work, expired]);
+  clearTimeout(timer);
+  if (outcome === 'timeout') {
+    await proc.kill('SIGKILL');
+    throw new JerkTimeoutError(argv);
+  }
+  const [stdout, stderr, result] = outcome;
+  return { status: result.status, stdout, stderr };
 }
 
 function jerkId(name: string): string {
@@ -100,9 +130,11 @@ export class JerkSignInRequiredError extends Error {
 
 export class JerkTokenSource implements TokenSource {
   private readonly platform: Platform;
+  readonly timeoutMs: number;
 
-  constructor(platform: Platform) {
+  constructor(platform: Platform, timeoutMs: number = JERK_TIMEOUT_MS) {
     this.platform = platform;
+    this.timeoutMs = timeoutMs;
   }
 
   async getToken(
@@ -115,12 +147,7 @@ export class JerkTokenSource implements TokenSource {
     if (scope) {
       argv.push('--scope', scope);
     }
-    const proc = await this.platform.spawn({ argv });
-    const [outRaw, , result] = await Promise.all([
-      readAll(proc.stdout),
-      readAll(proc.stderr),
-      proc.wait(),
-    ]);
+    const result = await runJerk(this.platform, argv, this.timeoutMs);
 
     if (result.status === JERK_EXIT_SIGN_IN) {
       throw new JerkSignInRequiredError(id, scope);
@@ -134,7 +161,7 @@ export class JerkTokenSource implements TokenSource {
       return undefined;
     }
 
-    const parsed = JSON.parse(outRaw.trim()) as {
+    const parsed = JSON.parse(result.stdout.trim()) as {
       token?: string;
       expires_at?: number;
       scope?: string;

@@ -1,7 +1,7 @@
 import type { Tool } from '@earendil-works/pi-mcp';
 import { coerceArgsBySchema, mergeArgs } from '../args/coerce.ts';
 import { AuthStepUpError, createMcpAuthProvider } from '../auth/auth-provider.ts';
-import { JerkSignInRequiredError } from '../auth/jerk-token-source.ts';
+import { JerkSignInRequiredError, JerkTimeoutError } from '../auth/jerk-token-source.ts';
 import { PiFileTokenSource } from '../auth/pi-store.ts';
 import { connect } from '../client/connect.ts';
 import type { McpConnection } from '../client/connection.ts';
@@ -212,6 +212,11 @@ const VERBS_WITH_TARGET = new Set([
   'prompts',
   'prompt',
 ]);
+
+function withoutVerb(args: string[], verb: string): string[] {
+  const at = args.indexOf(verb);
+  return [...args.slice(0, at), ...args.slice(at + 1)];
+}
 
 function resolveMaxPositional(positional: string[]): number {
   if (positional.length === 0) return 3;
@@ -1186,13 +1191,13 @@ async function runInner(platform: Platform, version: string, args: string[]): Pr
   if (discResult !== undefined) return discResult;
 
   if (parsed.verb === 'login') {
-    const source = await createTokenSource(platform);
-    return runLogin(platform, args.slice(1), source);
+    const source = await createTokenSource(platform, parsed.timeoutMs);
+    return runLogin(platform, withoutVerb(args, 'login'), source);
   }
 
   if (parsed.verb === 'logout') {
-    const source = await createTokenSource(platform);
-    return runLogout(platform, args.slice(1), source);
+    const source = await createTokenSource(platform, parsed.timeoutMs);
+    return runLogout(platform, withoutVerb(args, 'logout'), source);
   }
 
   if (UNIMPLEMENTED_VERBS.has(parsed.verb)) {
@@ -1273,7 +1278,7 @@ function classifyError(err: unknown): { code: number; kind: string; msg: string 
   if (err instanceof McpAuthError) {
     return { code: EXIT_AUTH, kind: 'auth', msg: err.message };
   }
-  if (err instanceof JerkSignInRequiredError) {
+  if (err instanceof JerkSignInRequiredError || err instanceof JerkTimeoutError) {
     return { code: EXIT_AUTH, kind: 'auth', msg: err.message };
   }
   if (err instanceof AuthStepUpError) {
@@ -1312,12 +1317,13 @@ async function resolveAuthProvider(
   url: string | undefined,
   target: string,
   config: MergedConfigSource,
+  timeoutMs: number | undefined,
   onCredentialObtained?: (secret: string) => void
 ): Promise<
   { provider: ReturnType<typeof createMcpAuthProvider>; credentialSecrets: string[] } | undefined
 > {
   if (hasAuthHeader || !url) return undefined;
-  const source = await createTokenSource(platform);
+  const source = await createTokenSource(platform, timeoutMs);
   const entry = config.entry(target);
   const oauth =
     entry && 'url' in entry.config ? (entry.config as { oauth?: McpOAuthConfig }).oauth : undefined;
@@ -1363,7 +1369,8 @@ function classifyConnectionError(
   if (
     err instanceof McpAuthError ||
     err instanceof AuthStepUpError ||
-    err instanceof JerkSignInRequiredError
+    err instanceof JerkSignInRequiredError ||
+    err instanceof JerkTimeoutError
   ) {
     return classifyError(err);
   }
@@ -1536,6 +1543,7 @@ async function runClientVerb(
     resolved.url,
     target,
     config,
+    timeoutMs,
     (secret) => {
       allSecrets.add(secret);
       verbose.secrets.add(secret);

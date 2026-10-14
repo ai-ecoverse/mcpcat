@@ -1,3 +1,4 @@
+import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -11,7 +12,7 @@ const hostBin = join(root, 'dist/host/mcpcat.mjs');
 
 function runHost(args, opts = {}) {
   try {
-    const result = execFileSync('node', [hostBin, ...args], {
+    const result = execFileSync(process.execPath, [hostBin, ...args], {
       encoding: 'utf8',
       timeout: 15_000,
       env: { ...process.env, NODE_NO_WARNINGS: '1', ...opts.env },

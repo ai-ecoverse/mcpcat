@@ -10,6 +10,7 @@ export interface SpawnOptions {
   argv: string[];
   env?: Record<string, string>;
   cwd?: string;
+  stdin?: 'pipe' | 'ignore';
   dieWithParent?: boolean;
 }
 

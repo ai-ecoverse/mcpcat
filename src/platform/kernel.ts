@@ -152,7 +152,7 @@ async function kernelSpawn(ctx: KernelContext, options: SpawnOptions): Promise<S
     argv: options.argv,
     env: options.env as Record<string, string> | undefined,
     cwd: options.cwd,
-    stdin: 'pipe' as const,
+    stdin: options.stdin === 'ignore' ? ('null' as const) : ('pipe' as const),
     stdout: 'pipe' as const,
     stderr: 'pipe' as const,
     ...(tryGroup ? { pgid: 0 } : {}),
@@ -183,7 +183,7 @@ async function kernelSpawn(ctx: KernelContext, options: SpawnOptions): Promise<S
 
   const useGroupKill = groupSpawnSupported;
   return {
-    stdin: result.stdin!,
+    stdin: result.stdin ?? new WritableStream<Uint8Array>(),
     stdout: result.stdout!,
     stderr: result.stderr!,
     wait: () => result.wait(),

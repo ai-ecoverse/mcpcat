@@ -1,3 +1,4 @@
+import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
