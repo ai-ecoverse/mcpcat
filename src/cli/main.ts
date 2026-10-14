@@ -1080,6 +1080,7 @@ async function dispatchMultiTarget(
       return 5;
     } finally {
       await cleanup();
+      await killAllStdio().catch(() => {});
     }
   }
 
@@ -1111,6 +1112,7 @@ async function dispatchMultiTarget(
       });
     } finally {
       await cleanup();
+      await killAllStdio().catch(() => {});
     }
   }
 
@@ -1128,6 +1130,7 @@ async function dispatchMultiTarget(
       return await runDescribeTs(platform, targets, parsed.tsBudget);
     } finally {
       await cleanup();
+      await killAllStdio().catch(() => {});
     }
   }
 
@@ -1583,10 +1586,17 @@ async function runClientVerb(
     await writeErrRedacted(platform, parsed.jsonOutput, e.kind, e.msg, redact);
     return e.code;
   } finally {
-    try {
-      await conn.close();
-    } catch {}
+    await closeAndKillStdio(conn);
   }
+}
+
+async function closeAndKillStdio(conn: McpConnection): Promise<void> {
+  try {
+    await conn.close();
+  } catch {}
+  try {
+    await killAllStdio();
+  } catch {}
 }
 
 async function writeErr(p: Platform, json: boolean, kind: string, msg: string): Promise<void> {
