@@ -823,3 +823,68 @@ describe('B5-1: kernel lock atomicity — 10 parallel add', () => {
     }
   });
 });
+
+describe('kernel: chmod feature-detection for token store', () => {
+  let kernel;
+
+  before(async () => {
+    kernel = await createNodeKernel({});
+    await installMcpcat(kernel);
+  });
+
+  after(() => {
+    kernel?.terminate();
+  });
+
+  it('detects ctx.fs.chmod and applies 0600 when available (skipped if missing)', async () => {
+    const probeCode = [
+      'export default async function main(ctx) {',
+      '  const enc = new TextEncoder();',
+      '  const has = typeof ctx.fs.chmod === "function";',
+      '  await ctx.write(1, enc.encode(has ? "yes" : "no"));',
+      '  return 0;',
+      '}',
+    ].join('\n');
+    await kernel.writeFile('/node_modules/chprobe/index.mjs', probeCode);
+    await kernel.writeFile(
+      '/node_modules/chprobe/package.json',
+      JSON.stringify({
+        name: 'chprobe',
+        type: 'module',
+        slicc: { commands: { chprobe: { abi: 'js', module: 'index.mjs' } } },
+      })
+    );
+    const { status, stdout } = await kernel.run(['chprobe'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.equal(status, 0);
+    const hasChmod = stdout.trim() === 'yes';
+    if (!hasChmod) {
+      return;
+    }
+    await kernel.writeFile('/test-mode.txt', 'hello');
+    const chmodCode = [
+      'export default async function main(ctx) {',
+      '  await ctx.fs.chmod("/test-mode.txt", 384);',
+      '  const s = await ctx.fs.stat("/test-mode.txt");',
+      '  const enc = new TextEncoder();',
+      '  await ctx.write(1, enc.encode(String(s.mode)));',
+      '  return 0;',
+      '}',
+    ].join('\n');
+    await kernel.writeFile('/node_modules/chset/index.mjs', chmodCode);
+    await kernel.writeFile(
+      '/node_modules/chset/package.json',
+      JSON.stringify({
+        name: 'chset',
+        type: 'module',
+        slicc: { commands: { chset: { abi: 'js', module: 'index.mjs' } } },
+      })
+    );
+    const r = await kernel.run(['chset'], { stdout: 'pipe', stderr: 'pipe' });
+    assert.equal(r.status, 0, `chmod program failed: ${r.stderr}`);
+    const mode = Number(r.stdout.trim());
+    assert.equal(mode & 0o777, 0o600, `expected 0600, got ${(mode & 0o777).toString(8)}`);
+  });
+});

@@ -8,6 +8,7 @@ let issuerPort;
 let sendIss = true;
 let cimdSupported = true;
 let refreshDelayMs = 0;
+let tokenTtlSeconds = 3600;
 const tokens = new Map();
 const refreshTokens = new Map();
 const clients = new Map();
@@ -169,7 +170,7 @@ const server = createServer(async (req, res) => {
         JSON.stringify({
           access_token: accessToken,
           token_type: 'Bearer',
-          expires_in: 3600,
+          expires_in: tokenTtlSeconds,
           refresh_token: refreshToken,
           scope: stored.scope,
         })
@@ -203,7 +204,7 @@ const server = createServer(async (req, res) => {
         JSON.stringify({
           access_token: accessToken,
           token_type: 'Bearer',
-          expires_in: 3600,
+          expires_in: tokenTtlSeconds,
           refresh_token: newRefreshToken,
           scope: stored.scope,
         })
@@ -283,6 +284,13 @@ const server = createServer(async (req, res) => {
     const body = JSON.parse(await readBody(req));
     refreshDelayMs = body.ms ?? 0;
     res.end(JSON.stringify({ refreshDelayMs }));
+    return;
+  }
+
+  if (path === '/_control/ttl' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req));
+    tokenTtlSeconds = body.seconds ?? 3600;
+    res.end(JSON.stringify({ tokenTtlSeconds }));
     return;
   }
 

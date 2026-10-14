@@ -19,7 +19,14 @@ const CLIENT_NAME = 'mcpcat';
 const CALLBACK_HOST = '127.0.0.1';
 const CALLBACK_PATH = '/callback';
 const REQUEST_TIMEOUT_MS = 15_000;
-const REFRESH_SKEW_MS = 30_000;
+const MAX_REFRESH_SKEW_MS = 30_000;
+
+function computeSkew(state: McpOAuthState | undefined): number {
+  const expiresIn = state?.tokens?.expires_in;
+  if (typeof expiresIn !== 'number' || expiresIn <= 0) return MAX_REFRESH_SKEW_MS;
+  const ttlMs = expiresIn * 1000;
+  return Math.min(MAX_REFRESH_SKEW_MS, Math.floor(ttlMs / 2));
+}
 const FALLBACK_REDIRECT_URL = `http://${CALLBACK_HOST}${CALLBACK_PATH}`;
 
 function timedFetch(fetchImpl: typeof globalThis.fetch): typeof globalThis.fetch {
@@ -219,8 +226,9 @@ function createPiAuthProvider(options: {
       cachedToken = state?.tokens?.access_token;
       registerCredential(cachedToken);
       if (state?.tokens?.refresh_token) registerCredential(state.tokens.refresh_token);
+      const skew = computeSkew(state);
       const expired =
-        state?.tokensExpireAt !== undefined && state.tokensExpireAt - REFRESH_SKEW_MS <= Date.now();
+        state?.tokensExpireAt !== undefined && state.tokensExpireAt - skew <= Date.now();
       if (expired && state?.tokens?.refresh_token) {
         await refresh(cachedToken).catch(() => undefined);
         const refreshedState = await store.load();
