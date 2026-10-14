@@ -283,6 +283,20 @@ describe('kernel: HTTP client via transport', () => {
     assert.ok(stdout.includes('echo'));
     assert.ok(stdout.includes('message'));
   });
+
+  it('input_required exits 6 without prompting in kernel', async () => {
+    const url = `http://127.0.0.1:${server.port}`;
+    const { status, stdout, stderr } = await kernel.run(
+      ['mcpcat', 'call', url, 'needs-input', '-d', '{}'],
+      { stdout: 'pipe', stderr: 'pipe' }
+    );
+    assert.equal(status, 6, `expected exit 6, got ${status}; stderr: ${stderr}`);
+    assert.ok(!stderr.includes('answer:'), 'stderr must not contain interactive prompt');
+    assert.ok(
+      stderr.includes('input_required') || stderr.includes('needs-input'),
+      'stderr should contain request JSON'
+    );
+  });
 });
 
 describe('kernel: legacy HTTP via transport', () => {
