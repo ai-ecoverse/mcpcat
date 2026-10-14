@@ -173,7 +173,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: shellcheck -s sh install.sh
 
-  attach:
+  create-release:
     needs: [package, test-installer, test-installer-alpine, shellcheck]
     runs-on: ubuntu-latest
     steps:
@@ -189,12 +189,17 @@ jobs:
           cp install.sh release/
           cd release && sha256sum mcpcat-*.tgz > SHA256SUMS
 
-      - name: Attach to release
+      - name: Create GitHub release with assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ inputs.tag }}"
-          gh release upload "$TAG" release/* --clobber
+          gh release create "$TAG" release/* \
+            --repo "${{ github.repository }}" \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag \
+            --prerelease
 
       - name: Promote to latest if highest semver with assets
         env:
@@ -216,13 +221,23 @@ jobs:
 
   mark-failed:
     if: failure()
-    needs: [attach]
+    needs: [create-release]
     runs-on: ubuntu-latest
     steps:
-      - name: Mark release as prerelease
+      - name: Create prerelease on failure
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release edit "${{ inputs.tag }}" \
-            --repo "${{ github.repository }}" \
-            --prerelease
+          TAG="${{ inputs.tag }}"
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $TAG exists, ensuring it stays as prerelease"
+            gh release edit "$TAG" --repo "${{ github.repository }}" --prerelease
+          else
+            echo "Creating $TAG as prerelease (asset build failed)"
+            gh release create "$TAG" \
+              --repo "${{ github.repository }}" \
+              --title "$TAG" \
+              --notes "Installer assets failed to build. See workflow run for details." \
+              --verify-tag \
+              --prerelease
+          fi
