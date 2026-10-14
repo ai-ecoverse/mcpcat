@@ -1,13 +1,13 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const certKernelDir = process.env.MCPCAT_CERT_KERNEL_DIR;
 const kernelImportBase = certKernelDir ? pathToFileURL(`${certKernelDir}/`).href : undefined;
 
 if (certKernelDir) {
-  try {
-    const kpkg = JSON.parse(readFileSync(join(certKernelDir, 'package.json'), 'utf8'));
-    console.log(`cert: using kernel ${kpkg.version} from ${certKernelDir}`);
-  } catch {}
+  const kpkg = JSON.parse(readFileSync(join(certKernelDir, 'package.json'), 'utf8'));
+  console.log(`cert: using kernel ${kpkg.version} from ${certKernelDir}`);
 }
 
 const kernelMod = certKernelDir
