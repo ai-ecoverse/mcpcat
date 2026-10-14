@@ -239,6 +239,7 @@ export async function probeStdioStateless(
     argv: [options.command, ...(options.args ?? [])],
     env: inheritedEnv,
     cwd: options.cwd,
+    dieWithParent: true,
   });
   trackStdio(proc);
 

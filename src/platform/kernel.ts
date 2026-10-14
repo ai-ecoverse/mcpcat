@@ -66,6 +66,7 @@ interface KernelContext {
     stdout?: 'inherit' | 'pipe' | 'null';
     stderr?: 'inherit' | 'pipe' | 'null';
     pgid?: number;
+    parentDeathSignal?: string;
   }): Promise<{
     pid: number;
     stdin?: WritableStream<Uint8Array>;
@@ -137,18 +138,38 @@ function kernelFs(ctx: KernelContext): FsApi {
 }
 
 let groupSpawnSupported: boolean | undefined;
+let deathSignalSupported: boolean | undefined;
+
+const PARENT_DEATH_SIGNAL = 'SIGKILL';
+
+function isInvalid(err: unknown): boolean {
+  return (err as { code?: unknown } | null)?.code === 'EINVAL';
+}
 
 async function kernelSpawn(ctx: KernelContext, options: SpawnOptions): Promise<SpawnResult> {
   const tryGroup = groupSpawnSupported !== false;
-  const result = await ctx.spawn({
+  const base = {
     argv: options.argv,
     env: options.env as Record<string, string> | undefined,
     cwd: options.cwd,
-    stdin: 'pipe',
-    stdout: 'pipe',
-    stderr: 'pipe',
+    stdin: 'pipe' as const,
+    stdout: 'pipe' as const,
+    stderr: 'pipe' as const,
     ...(tryGroup ? { pgid: 0 } : {}),
-  });
+  };
+  const tryDeath = options.dieWithParent === true && deathSignalSupported !== false;
+  let result: Awaited<ReturnType<KernelContext['spawn']>>;
+  if (tryDeath) {
+    try {
+      result = await ctx.spawn({ ...base, parentDeathSignal: PARENT_DEATH_SIGNAL });
+    } catch (err) {
+      if (!isInvalid(err)) throw err;
+      deathSignalSupported = false;
+      result = await ctx.spawn(base);
+    }
+  } else {
+    result = await ctx.spawn(base);
+  }
   const childPid = result.pid;
 
   if (groupSpawnSupported === undefined) {

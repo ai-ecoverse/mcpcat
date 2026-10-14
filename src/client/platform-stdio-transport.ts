@@ -102,6 +102,7 @@ export class PlatformStdioTransport {
         argv: [this.options.command, ...(this.options.args ?? [])],
         env,
         cwd: this.options.cwd,
+        dieWithParent: true,
       });
       trackStdio(this.process);
     }
