@@ -194,7 +194,7 @@ describe('kernel: SIGINT cancels 2026 HTTP call and exits 130', () => {
     server = await startFixtureServer('server-2026-http-cancel.mjs');
     url = `http://127.0.0.1:${server.port}`;
     kernel = await createNodeKernel({
-      network: { transport: nodeTransport() },
+      network: { transport: nodeTransport({ hostLoopback: true }) },
     });
     await installMcpcat(kernel);
     const port = await kernel.connect();

@@ -221,7 +221,7 @@ describe('kernel: HTTP client via transport', () => {
   before(async () => {
     server = await startFixtureServer('server-2026-http.mjs');
     kernel = await createNodeKernel({
-      network: { transport: nodeTransport() },
+      network: { transport: nodeTransport({ hostLoopback: true }) },
     });
     await installMcpcat(kernel);
   });
@@ -306,7 +306,7 @@ describe('kernel: legacy HTTP via transport', () => {
   before(async () => {
     server = await startFixtureServer('server-legacy-http.mjs');
     kernel = await createNodeKernel({
-      network: { transport: nodeTransport() },
+      network: { transport: nodeTransport({ hostLoopback: true }) },
     });
     await installMcpcat(kernel);
   });
@@ -356,7 +356,7 @@ describe('kernel: legacy HTTP SSE via transport', () => {
   before(async () => {
     server = await startFixtureServer('server-legacy-http.mjs', ['--sse']);
     kernel = await createNodeKernel({
-      network: { transport: nodeTransport() },
+      network: { transport: nodeTransport({ hostLoopback: true }) },
     });
     await installMcpcat(kernel);
   });
@@ -640,7 +640,7 @@ describe('kernel: discover', () => {
   before(async () => {
     server = await startFixtureServer('server-2026-http.mjs');
     kernel = await createNodeKernel({
-      network: { transport: nodeTransport() },
+      network: { transport: nodeTransport({ hostLoopback: true }) },
     });
     await installMcpcat(kernel);
   });

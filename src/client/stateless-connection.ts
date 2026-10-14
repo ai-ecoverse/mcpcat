@@ -73,6 +73,17 @@ export class McpAuthError extends Error {
   }
 }
 
+export class TransportRefusalError extends Error {
+  readonly status: number;
+  readonly reason: string;
+  constructor(status: number, reason: string) {
+    super(reason);
+    this.name = 'TransportRefusalError';
+    this.status = status;
+    this.reason = reason;
+  }
+}
+
 class AuthRetryableError extends Error {
   readonly response: Response;
   constructor(response: Response) {
@@ -283,6 +294,15 @@ export async function createStatelessConnection(
   }
 
   async function handleErrorStatus(res: Response, method: string): Promise<never> {
+    if (res.status === 403) {
+      const wwwAuth = res.headers.get('www-authenticate') ?? '';
+      if (!wwwAuth) {
+        const body = await res.text();
+        if (body && !body.includes('insufficient_scope')) {
+          throw new TransportRefusalError(403, body.split('\n')[0].slice(0, 200));
+        }
+      }
+    }
     if ((res.status === 401 || res.status === 403) && authProvider)
       throw new AuthRetryableError(res);
     if (res.status === 401 || res.status === 403) throw new McpAuthError(res.status, url);

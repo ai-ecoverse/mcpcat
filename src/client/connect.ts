@@ -9,6 +9,7 @@ import {
   McpAuthError,
   StatelessHttpError,
   StatelessRpcError,
+  TransportRefusalError,
 } from './stateless-connection.ts';
 import { probeStdioStateless } from './stdio-stateless.ts';
 
@@ -112,6 +113,7 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
       (err instanceof StatelessHttpError && err.status >= 400 && err.status < 500);
     if (options.protocolVersion?.startsWith('2026')) throw err;
     if (err instanceof McpAuthError || err instanceof AuthStepUpError) throw err;
+    if (err instanceof TransportRefusalError) throw err;
     if ((err as Error).name === 'McpOAuthAuthorizationRequiredError') throw err;
     if (isMethodNotFound) {
       return createPiConnection({

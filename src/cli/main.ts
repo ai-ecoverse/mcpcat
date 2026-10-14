@@ -10,6 +10,7 @@ import {
   InputRequiredError,
   McpAuthError,
   McpTimeoutError,
+  TransportRefusalError,
 } from '../client/stateless-connection.ts';
 import { killAllStdio } from '../client/stdio-registry.ts';
 import { resolveTarget } from '../client/targets.ts';
@@ -1263,6 +1264,9 @@ function classifyError(err: unknown): { code: number; kind: string; msg: string 
   if (err instanceof InputRequiredError) {
     return { code: EXIT_INPUT_REQUIRED, kind: 'input_required', msg: err.requestJson };
   }
+  if (err instanceof TransportRefusalError) {
+    return { code: EXIT_CONNECTION, kind: 'connection', msg: err.reason };
+  }
   if (err instanceof McpTimeoutError) {
     return { code: EXIT_TIMEOUT, kind: 'timeout', msg: err.message };
   }
@@ -1347,6 +1351,15 @@ function classifyConnectionError(
   target: string,
   interrupted: boolean
 ): { code: number; kind: string; msg: string } {
+  if (err instanceof TransportRefusalError) {
+    const hint =
+      "in seven, reach the host via http://host.slicc.internal:<port>; in tests, enable the transport's hostLoopback";
+    return {
+      code: EXIT_CONNECTION,
+      kind: 'connection',
+      msg: `${err.reason} (${hint})`,
+    };
+  }
   if (
     err instanceof McpAuthError ||
     err instanceof AuthStepUpError ||
