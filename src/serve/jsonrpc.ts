@@ -4,12 +4,14 @@ export interface RpcTool {
   name: string;
   description: string;
   inputSchema: JsonObjectSchema;
+  annotations?: Record<string, boolean>;
 }
 
 export interface ToolRunResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  meta?: Record<string, unknown>;
 }
 
 export interface RpcOutcome {
@@ -80,6 +82,7 @@ function toolResult(result: ToolRunResult): {
   content: { type: 'text'; text: string }[];
   isError: boolean;
   structuredContent: { stdout: string; stderr: string; exitCode: number };
+  _meta?: Record<string, unknown>;
 } {
   const stdout = cap(result.stdout);
   const stderr = cap(result.stderr);
@@ -88,6 +91,7 @@ function toolResult(result: ToolRunResult): {
     content: [{ type: 'text', text }],
     isError: result.exitCode !== 0,
     structuredContent: { stdout, stderr, exitCode: result.exitCode },
+    ...(result.meta ? { _meta: result.meta } : {}),
   };
 }
 

@@ -108,6 +108,8 @@ async function rpcCall(port, method, params) {
   return resp.json();
 }
 
+const NONCE_PATTERN = /<<untrusted-page-content id=([0-9a-f]{16})>>/;
+
 describe('serve --webmcp', () => {
   it('exits 3 when playwright-cli is missing', () => {
     const result = runHost(['serve', '--webmcp', '--playwright-cli', '/nonexistent-binary-path']);
@@ -214,7 +216,7 @@ describe('serve --webmcp', () => {
       }
     });
 
-    it('wraps untrusted content', () => {
+    it('wraps every result with a nonce-based delimiter', () => {
       const input =
         [
           rpc('initialize', {
@@ -222,7 +224,7 @@ describe('serve --webmcp', () => {
             capabilities: {},
             clientInfo: { name: 'test' },
           }),
-          rpc('tools/call', { name: 'search', arguments: { query: 'test' } }, 2),
+          rpc('tools/call', { name: 'get_price', arguments: { productId: 'x' } }, 2),
         ].join('\n') + '\n';
 
       const result = runHost(['serve', '--webmcp', '--playwright-cli', fakePwCli], {
@@ -234,8 +236,148 @@ describe('serve --webmcp', () => {
       const lines = result.stdout.trim().split('\n');
       const callResp = JSON.parse(lines[1]);
       const text = callResp.result.content[0].text;
-      assert.ok(text.includes('[untrusted page content]'));
-      assert.ok(text.includes('[end untrusted page content]'));
+      const match = text.match(NONCE_PATTERN);
+      assert.ok(match, `expected nonce-based open tag, got: ${text.slice(0, 120)}`);
+      const nonce = match[1];
+      assert.ok(text.includes(`<<end id=${nonce}>>`), 'expected matching close tag');
+    });
+
+    it('tool without untrustedContentHint still gets wrapped', () => {
+      const input =
+        [
+          rpc('initialize', {
+            protocolVersion: '2025-11-25',
+            capabilities: {},
+            clientInfo: { name: 'test' },
+          }),
+          rpc('tools/call', { name: 'get_price', arguments: { productId: 'y' } }, 2),
+        ].join('\n') + '\n';
+
+      const result = runHost(['serve', '--webmcp', '--playwright-cli', fakePwCli], {
+        input,
+        env: { FAKE_PWCLI_FIXTURE: singleOriginFixture },
+      });
+
+      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+      const lines = result.stdout.trim().split('\n');
+      const callResp = JSON.parse(lines[1]);
+      const text = callResp.result.content[0].text;
+      assert.ok(
+        NONCE_PATTERN.test(text),
+        'get_price (no untrustedContentHint) must still be wrapped'
+      );
+    });
+
+    it('result containing old end marker cannot escape the wrapper', () => {
+      const input =
+        [
+          rpc('initialize', {
+            protocolVersion: '2025-11-25',
+            capabilities: {},
+            clientInfo: { name: 'test' },
+          }),
+          rpc('tools/call', { name: 'get_price', arguments: { productId: 'z' } }, 2),
+        ].join('\n') + '\n';
+
+      const result = runHost(['serve', '--webmcp', '--playwright-cli', fakePwCli], {
+        input,
+        env: { FAKE_PWCLI_FIXTURE: singleOriginFixture },
+      });
+
+      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+      const lines = result.stdout.trim().split('\n');
+      const callResp = JSON.parse(lines[1]);
+      const text = callResp.result.content[0].text;
+
+      const match = text.match(NONCE_PATTERN);
+      assert.ok(match);
+      const nonce = match[1];
+      const closeTag = `<<end id=${nonce}>>`;
+      const parts = text.split(closeTag);
+      assert.equal(parts.length, 2, 'close tag must appear exactly once');
+    });
+
+    it('neutralises delimiter prefix inside content', () => {
+      const input =
+        [
+          rpc('initialize', {
+            protocolVersion: '2025-11-25',
+            capabilities: {},
+            clientInfo: { name: 'test' },
+          }),
+          rpc('tools/call', { name: 'get_price', arguments: { productId: 'trick' } }, 2),
+        ].join('\n') + '\n';
+
+      const result = runHost(['serve', '--webmcp', '--playwright-cli', fakePwCli], {
+        input,
+        env: { FAKE_PWCLI_FIXTURE: singleOriginFixture },
+      });
+
+      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+      const lines = result.stdout.trim().split('\n');
+      const callResp = JSON.parse(lines[1]);
+      const text = callResp.result.content[0].text;
+      const match = text.match(NONCE_PATTERN);
+      assert.ok(match);
+      const nonce = match[1];
+      const openTag = `<<untrusted-page-content id=${nonce}>>`;
+      const afterOpen = text.slice(text.indexOf(openTag) + openTag.length);
+      const beforeClose = afterOpen.slice(0, afterOpen.indexOf(`<<end id=${nonce}>>`));
+      assert.ok(
+        !beforeClose.includes('<<untrusted-page-content'),
+        'delimiter prefix must be neutralised inside content'
+      );
+    });
+
+    it('_meta is present on every call result', () => {
+      const input =
+        [
+          rpc('initialize', {
+            protocolVersion: '2025-11-25',
+            capabilities: {},
+            clientInfo: { name: 'test' },
+          }),
+          rpc('tools/call', { name: 'get_price', arguments: { productId: 'meta-test' } }, 2),
+        ].join('\n') + '\n';
+
+      const result = runHost(['serve', '--webmcp', '--playwright-cli', fakePwCli], {
+        input,
+        env: { FAKE_PWCLI_FIXTURE: singleOriginFixture },
+      });
+
+      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+      const lines = result.stdout.trim().split('\n');
+      const callResp = JSON.parse(lines[1]);
+      assert.ok(callResp.result._meta, '_meta must be present');
+      assert.equal(callResp.result._meta['io.mcpcat/untrusted'], true);
+      assert.equal(callResp.result._meta.origin, 'https://shop.example.com');
+    });
+
+    it('openWorldHint is set on every bridged tool', () => {
+      const input =
+        [
+          rpc('initialize', {
+            protocolVersion: '2025-11-25',
+            capabilities: {},
+            clientInfo: { name: 'test' },
+          }),
+          rpc('tools/list', {}, 2),
+        ].join('\n') + '\n';
+
+      const result = runHost(['serve', '--webmcp', '--playwright-cli', fakePwCli], {
+        input,
+        env: { FAKE_PWCLI_FIXTURE: singleOriginFixture },
+      });
+
+      const lines = result.stdout.trim().split('\n');
+      const listResp = JSON.parse(lines[1]);
+      for (const tool of listResp.result.tools) {
+        assert.equal(
+          tool.annotations?.openWorldHint,
+          true,
+          `${tool.name} must have openWorldHint: true`
+        );
+      }
     });
 
     it('maps exit code 1 to isError result', () => {
@@ -416,7 +558,7 @@ describe('serve --webmcp', () => {
       assert.ok(listResult.result.tools.length > 0);
     });
 
-    it('calls tools over HTTP', async () => {
+    it('calls tools over HTTP with _meta', async () => {
       if (!server) server = await startWebMcpHttp();
       const callResult = await rpcCall(server.port, 'tools/call', {
         name: 'get_price',
@@ -425,6 +567,8 @@ describe('serve --webmcp', () => {
       assert.ok(callResult.result);
       assert.equal(callResult.result.isError, false);
       assert.ok(callResult.result.content[0].text.includes('http-test'));
+      assert.ok(callResult.result._meta, '_meta must be present over HTTP');
+      assert.equal(callResult.result._meta['io.mcpcat/untrusted'], true);
     });
   });
 });

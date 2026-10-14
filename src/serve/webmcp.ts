@@ -43,6 +43,20 @@ function buildBaseArgs(options: WebMcpOptions): string[] {
   return args;
 }
 
+function generateNonce(): string {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function wrapUntrusted(content: string): string {
+  const nonce = generateNonce();
+  const openTag = `<<untrusted-page-content id=${nonce}>>`;
+  const closeTag = `<<end id=${nonce}>>`;
+  const neutralised = content.replaceAll('<<untrusted-page-content', '< <untrusted-page-content');
+  return `${openTag}\n${neutralised}\n${closeTag}`;
+}
+
 async function runProcess(
   platform: Platform,
   argv: string[],
@@ -159,13 +173,11 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
     return { tools };
   }
 
-  function mapAnnotations(ann?: WebMcpAnnotations): Record<string, boolean> | undefined {
-    if (!ann) return undefined;
-    const mapped: Record<string, boolean> = {};
+  function mapDescriptionAnnotations(ann?: WebMcpAnnotations): Record<string, boolean> {
+    const mapped: Record<string, boolean> = { openWorldHint: true };
+    if (!ann) return mapped;
     if (ann.readOnlyHint !== undefined) mapped.readOnlyHint = ann.readOnlyHint;
     if (ann.consequentialHint) mapped.destructiveHint = true;
-    if (ann.untrustedContentHint) mapped.openWorldHint = true;
-    if (Object.keys(mapped).length === 0) return undefined;
     return mapped;
   }
 
@@ -208,12 +220,12 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
       if (tool.annotations?.consequentialHint && !options.allowConsequential) {
         continue;
       }
-      const mapped = mapAnnotations(tool.annotations);
+      const mapped = mapDescriptionAnnotations(tool.annotations);
       rpcTools.push({
         name: buildToolName(tool, needPrefix),
         description: buildDescription(tool),
         inputSchema: tool.inputSchema as unknown as JsonObjectSchema,
-        ...(mapped ? { annotations: mapped } : {}),
+        annotations: mapped,
       });
     }
 
@@ -248,16 +260,22 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
       throw new Error(result.stderr || 'webmcp-call error');
     }
 
+    const meta: Record<string, unknown> = {
+      'io.mcpcat/untrusted': true,
+      origin: tool.origin,
+    };
+
     if (result.exitCode === 1) {
-      return { stdout: '', stderr: result.stderr || result.stdout, exitCode: 1 };
+      return {
+        stdout: '',
+        stderr: wrapUntrusted(result.stderr || result.stdout),
+        exitCode: 1,
+        meta,
+      };
     }
 
-    let text = result.stdout;
-    if (tool.annotations?.untrustedContentHint) {
-      text = `[untrusted page content]\n${text}\n[end untrusted page content]`;
-    }
-
-    return { stdout: text, stderr: result.stderr, exitCode: 0 };
+    const text = wrapUntrusted(result.stdout);
+    return { stdout: text, stderr: result.stderr, exitCode: 0, meta };
   }
 
   function invalidateCache(): void {
