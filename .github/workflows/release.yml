@@ -46,21 +46,8 @@ jobs:
             echo "No release tag on HEAD"
           fi
 
-  hold-latest:
-    needs: detect-tag
-    if: needs.detect-tag.outputs.tag != ''
-    runs-on: ubuntu-latest
-    steps:
-      - name: Mark new release as prerelease
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.detect-tag.outputs.tag }}
-        run: |
-          echo "Marking $TAG as prerelease so releases/latest keeps pointing at the previous release with assets"
-          gh release edit "$TAG" --repo "${{ github.repository }}" --prerelease
-
   binaries:
-    needs: [detect-tag, hold-latest]
+    needs: detect-tag
     if: needs.detect-tag.outputs.tag != ''
     uses: ./.github/workflows/binaries.yml
     with:
