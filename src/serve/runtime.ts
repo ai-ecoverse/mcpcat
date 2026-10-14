@@ -27,6 +27,7 @@ import {
   isLoopbackBind,
 } from './origin.ts';
 import { createProxyHandler } from './proxy.ts';
+import { createWebMcpHandler } from './webmcp.ts';
 
 const CALL_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_DEFAULT = 1_048_576;
@@ -53,6 +54,12 @@ export interface ServeOptions {
   json: boolean;
   proxyHeaders: Array<[string, string]>;
   _resolvedBearer?: string;
+  webmcp: boolean;
+  webmcpTab?: string;
+  webmcpTtl: number;
+  webmcpAllowConsequential: boolean;
+  webmcpPlaywrightCli?: string;
+  webmcpCdp?: string;
 }
 
 function parseHttpFlag(args: string[], i: number): { host: string; port: number; next: number } {
@@ -94,6 +101,12 @@ function parseSingleFlag(
     commands: { path: string; name?: string }[];
     proxy?: string;
     proxyHeaders: Array<[string, string]>;
+    webmcp: boolean;
+    webmcpAllowConsequential: boolean;
+    webmcpTab?: string;
+    webmcpTtl: number;
+    webmcpPlaywrightCli?: string;
+    webmcpCdp?: string;
   }
 ): number {
   const arg = args[i];
@@ -109,6 +122,10 @@ function parseSingleFlag(
     opts.json = true;
   } else if (arg === '--no-auth') {
     opts.noAuth = true;
+  } else if (arg === '--webmcp') {
+    opts.webmcp = true;
+  } else if (arg === '--allow-consequential') {
+    opts.webmcpAllowConsequential = true;
   } else if (!arg.startsWith('-')) {
     opts.commands.push(parseCommandTarget(arg));
   } else {
@@ -132,6 +149,10 @@ function parseValueFlag(
     cwd?: string;
     proxy?: string;
     proxyHeaders: Array<[string, string]>;
+    webmcpTab?: string;
+    webmcpTtl: number;
+    webmcpPlaywrightCli?: string;
+    webmcpCdp?: string;
   }
 ): number {
   const arg = args[i];
@@ -167,6 +188,18 @@ function parseValueFlag(
     case '--cwd':
       opts.cwd = args[++i];
       break;
+    case '--tab':
+      opts.webmcpTab = args[++i];
+      break;
+    case '--webmcp-ttl':
+      opts.webmcpTtl = Number(args[++i]) * 1000;
+      break;
+    case '--playwright-cli':
+      opts.webmcpPlaywrightCli = args[++i];
+      break;
+    case '--cdp':
+      opts.webmcpCdp = args[++i];
+      break;
     case '-H':
     case '--header': {
       const hdr = args[++i];
@@ -201,6 +234,12 @@ export function parseServeFlags(args: string[]): ServeOptions {
     commands: [] as { path: string; name?: string }[],
     proxy: undefined as string | undefined,
     proxyHeaders: [] as Array<[string, string]>,
+    webmcp: false,
+    webmcpTab: undefined as string | undefined,
+    webmcpTtl: 5000,
+    webmcpAllowConsequential: false,
+    webmcpPlaywrightCli: undefined as string | undefined,
+    webmcpCdp: undefined as string | undefined,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -686,17 +725,14 @@ async function discoverWithSignal(
   return { clis };
 }
 
-export async function runServe(
+async function resolveBearer(
   platform: Platform,
-  options: ServeOptions,
-  version: string
-): Promise<number> {
-  let resolvedBearer: string | undefined;
-  let generatedBearer = false;
-
+  options: ServeOptions
+): Promise<{ resolved: string | undefined; generated: boolean } | { exitCode: number }> {
   if (options._resolvedBearer) {
-    resolvedBearer = options._resolvedBearer;
-  } else if (options.bearer) {
+    return { resolved: options._resolvedBearer, generated: false };
+  }
+  if (options.bearer) {
     const expanded = expandBearerToken(options.bearer, platform.env);
     if (!expanded) {
       await platform.write(
@@ -704,13 +740,14 @@ export async function runServe(
         'mcpcat serve: --bearer requires a ${NAME} variable reference, not a literal token. ' +
           "Use --bearer '${MY_TOKEN}' and set MY_TOKEN in the environment.\n"
       );
-      return 2;
+      return { exitCode: 2 };
     }
-    resolvedBearer = expanded;
-  } else if (options.noAuth) {
+    return { resolved: expanded, generated: false };
+  }
+  if (options.noAuth) {
     if (options.transport === 'http' && !isLoopbackBind(options.host)) {
       await platform.write(2, 'mcpcat serve: --no-auth is only allowed on loopback\n');
-      return 2;
+      return { exitCode: 2 };
     }
     if (options.transport === 'http') {
       await platform.write(
@@ -718,21 +755,36 @@ export async function runServe(
         'mcpcat serve: warning: running without authentication on loopback\n'
       );
     }
-    resolvedBearer = undefined;
-  } else if (options.transport === 'http') {
+    return { resolved: undefined, generated: false };
+  }
+  if (options.transport === 'http') {
     if (platform.kind === 'kernel') {
       await platform.write(
         2,
         "mcpcat serve: kernel HTTP serve requires --bearer '${VAR}' or --no-auth\n"
       );
-      return 2;
+      return { exitCode: 2 };
     }
-    resolvedBearer = generateToken();
-    generatedBearer = true;
+    return { resolved: generateToken(), generated: true };
   }
+  return { resolved: undefined, generated: false };
+}
+
+export async function runServe(
+  platform: Platform,
+  options: ServeOptions,
+  version: string
+): Promise<number> {
+  const bearerResult = await resolveBearer(platform, options);
+  if ('exitCode' in bearerResult) return bearerResult.exitCode;
+  const { resolved: resolvedBearer, generated: generatedBearer } = bearerResult;
 
   if (options.proxy) {
     return runProxyServe(platform, options, version, resolvedBearer, generatedBearer);
+  }
+
+  if (options.webmcp) {
+    return runWebMcpServe(platform, options, version, resolvedBearer, generatedBearer);
   }
 
   const serveCwd = options.cwd ?? platform.cwd;
@@ -907,6 +959,288 @@ async function buildProxyConnectOpts(
   }
 
   return { connectOpts, hiddenValues };
+}
+
+function resolvePlaywrightCli(platform: Platform, explicit?: string): string | undefined {
+  if (explicit) return explicit;
+  if (platform.kind === 'kernel') return 'playwright-cli';
+  const pathEnv = platform.env.PATH ?? '';
+  const sep = pathEnv.includes(';') ? ';' : ':';
+  for (const dir of pathEnv.split(sep)) {
+    if (!dir) continue;
+    return 'playwright-cli';
+  }
+  return undefined;
+}
+
+async function runWebMcpServe(
+  platform: Platform,
+  options: ServeOptions,
+  version: string,
+  resolvedBearer: string | undefined,
+  generatedBearer: boolean
+): Promise<number> {
+  const cliPath = resolvePlaywrightCli(platform, options.webmcpPlaywrightCli);
+  if (!cliPath) {
+    await platform.write(
+      2,
+      'mcpcat serve --webmcp: playwright-cli not found. Install it with: curl -fsSL https://get.sliccy.ai/playwright-cli | sh\n'
+    );
+    return 3;
+  }
+
+  const cdp = options.webmcpCdp ?? platform.env.SLICC_CDP_URL;
+
+  const handler = createWebMcpHandler(platform, {
+    playwrightCli: cliPath,
+    tab: options.webmcpTab,
+    cdp,
+    allowConsequential: options.webmcpAllowConsequential,
+    ttlMs: options.webmcpTtl,
+    callTimeoutMs: options.callTimeout,
+    maxOutput: options.maxOutput,
+  });
+
+  const probe = await handler.getRpcTools();
+  if (probe === null) {
+    await platform.write(
+      2,
+      'mcpcat serve --webmcp: playwright-cli not found. Install it with: curl -fsSL https://get.sliccy.ai/playwright-cli | sh\n'
+    );
+    return 3;
+  }
+
+  const serverName = 'mcpcat-webmcp';
+
+  const getTools = async () => (await handler.getRpcTools()) ?? [];
+  const callTool = (name: string, args: unknown) => handler.callTool(name, args);
+
+  if (options.transport === 'stdio') {
+    return runWebMcpStdio(platform, getTools, callTool, serverName, version);
+  }
+
+  return runWebMcpHttp(
+    platform,
+    options,
+    getTools,
+    callTool,
+    serverName,
+    version,
+    resolvedBearer,
+    generatedBearer
+  );
+}
+
+async function runWebMcpStdio(
+  platform: Platform,
+  getTools: () => Promise<RpcTool[]>,
+  callTool: (name: string, args: unknown) => Promise<ToolRunResult>,
+  serverName: string,
+  version: string
+): Promise<number> {
+  const reader = platform.stdin.getReader();
+  let buffer = '';
+  const dec = new TextDecoder();
+  const enc = new TextEncoder();
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += dec.decode(value, { stream: true });
+
+      let nlIdx: number;
+      while ((nlIdx = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, nlIdx).trim();
+        buffer = buffer.slice(nlIdx + 1);
+        if (!line) continue;
+
+        const tools = await getTools();
+        const outcome = await handleJsonRpc(line, tools, callTool, serverName, version);
+        if (outcome.status === 202) continue;
+        const writer = platform.stdout.getWriter();
+        await writer.write(enc.encode(`${outcome.body}\n`));
+        writer.releaseLock();
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return 0;
+}
+
+async function runWebMcpHttp(
+  platform: Platform,
+  options: ServeOptions,
+  getTools: () => Promise<RpcTool[]>,
+  callTool: (name: string, args: unknown) => Promise<ToolRunResult>,
+  serverName: string,
+  version: string,
+  resolvedBearer: string | undefined,
+  generatedBearer: boolean
+): Promise<number> {
+  if (!platform.listen) {
+    await platform.write(2, 'mcpcat serve --webmcp: HTTP transport requires platform.listen\n');
+    return 3;
+  }
+
+  const boundLoopback = isLoopbackBind(options.host);
+  if (!boundLoopback && !resolvedBearer) {
+    await platform.write(
+      2,
+      'mcpcat serve --webmcp: --bearer is required when binding off loopback\n'
+    );
+    return 2;
+  }
+
+  const allowedOrigins = new Set(options.allowOrigins);
+  const listener = await platform.listen({ host: options.host, port: options.port });
+  const actualPort = listener.port;
+
+  const serverOrigins = buildServerOrigins(options.host, actualPort);
+  const allowedHosts = buildAllowedHosts(options.host, actualPort, options.allowHosts);
+
+  const listenUrl = `http://${options.host}:${actualPort}/mcp`;
+  let tokenFilePath: string | undefined;
+
+  if (generatedBearer && resolvedBearer) {
+    tokenFilePath = await publishBearer(
+      platform,
+      resolvedBearer,
+      actualPort,
+      listenUrl,
+      options.json
+    );
+  } else {
+    if (options.json) {
+      await platform.write(1, `${JSON.stringify({ url: listenUrl })}\n`);
+    }
+  }
+  await platform.write(2, `mcpcat serve --webmcp: listening on ${listenUrl}\n`);
+
+  if (options.onListening) {
+    await options.onListening(actualPort);
+  }
+
+  let shutdownRequested = false;
+
+  const shutdown = () => {
+    if (shutdownRequested) return;
+    shutdownRequested = true;
+    listener.close();
+    if (tokenFilePath) {
+      platform.fs.unlink?.(tokenFilePath).catch(() => {});
+    }
+  };
+
+  if (platform.onSignal) {
+    platform.onSignal('SIGINT', shutdown);
+    platform.onSignal('SIGTERM', shutdown);
+    platform.onSignal('SIGHUP', shutdown);
+  }
+
+  const handler = async (request: HttpRequest): Promise<HttpResponse> => {
+    if (request.target !== '/mcp') {
+      return {
+        status: 404,
+        reason: 'Not Found',
+        headers: { 'content-type': 'text/plain' },
+        body: 'Not Found',
+      };
+    }
+
+    if (request.method !== 'POST') {
+      return {
+        status: 405,
+        reason: 'Method Not Allowed',
+        headers: { 'content-type': 'text/plain', allow: 'POST' },
+        body: 'Method Not Allowed',
+      };
+    }
+
+    if (!checkContentType(request.headers['content-type'])) {
+      return {
+        status: 415,
+        reason: 'Unsupported Media Type',
+        headers: { 'content-type': 'text/plain' },
+        body: 'Content-Type must be application/json',
+      };
+    }
+
+    if (!checkAcceptHeader(request.headers.accept)) {
+      return {
+        status: 406,
+        reason: 'Not Acceptable',
+        headers: { 'content-type': 'text/plain' },
+        body: 'Accept must include application/json or text/event-stream',
+      };
+    }
+
+    const originCheck = checkOrigin(request.headers.origin, serverOrigins, allowedOrigins);
+    if (!originCheck.ok) {
+      return {
+        status: 403,
+        reason: 'Forbidden',
+        headers: { 'content-type': 'text/plain' },
+        body: originCheck.reason ?? 'Forbidden',
+      };
+    }
+
+    const hostCheck = checkHost(request.headers.host, allowedHosts);
+    if (!hostCheck.ok) {
+      return {
+        status: 403,
+        reason: 'Forbidden',
+        headers: { 'content-type': 'text/plain' },
+        body: hostCheck.reason ?? 'Forbidden',
+      };
+    }
+
+    if (resolvedBearer) {
+      const authHeader = request.headers.authorization;
+      const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
+      if (!provided || !constantTimeEqual(provided, resolvedBearer)) {
+        return {
+          status: 401,
+          reason: 'Unauthorized',
+          headers: { 'content-type': 'text/plain' },
+          body: 'Unauthorized',
+        };
+      }
+    }
+
+    const tools = await getTools();
+    const outcome = await handleJsonRpc(request.body, tools, callTool, serverName, version);
+    return {
+      status: outcome.status,
+      reason: outcome.status === 200 ? 'OK' : 'Accepted',
+      headers: { 'content-type': outcome.contentType },
+      body: outcome.body,
+    };
+  };
+
+  try {
+    for await (const connection of listener) {
+      if (shutdownRequested) break;
+      const conn = connection as {
+        readonly readable: ReadableStream<Uint8Array>;
+        readonly writable: WritableStream<Uint8Array>;
+        close(): void;
+      };
+      handleConnection(conn.readable, conn.writable, handler)
+        .catch(() => {})
+        .finally(() => {
+          try {
+            conn.close();
+          } catch {}
+        });
+    }
+  } catch {
+    if (!shutdownRequested) throw new Error('listener closed unexpectedly');
+  }
+
+  return 0;
 }
 
 async function runProxyServe(
