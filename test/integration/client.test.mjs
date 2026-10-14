@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -465,3 +465,213 @@ function isAlive(pid) {
     return false;
   }
 }
+
+describe('client: parallel calls sharing one HOME', () => {
+  let server;
+  let testHome;
+
+  before(async () => {
+    testHome = createTestHome();
+    server = await startFixtureServer('server-legacy-http.mjs');
+  });
+
+  after(() => {
+    server?.child.kill('SIGTERM');
+    rmSync(testHome, { recursive: true, force: true });
+  });
+
+  function spawnCall(i) {
+    const { cmd, args } = mcpcatArgs([
+      'call',
+      `http://127.0.0.1:${server.port}`,
+      'echo',
+      '-d',
+      JSON.stringify({ message: `parallel-${i}` }),
+    ]);
+    return new Promise((resolve) => {
+      const child = spawn(cmd, args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          NODE_NO_WARNINGS: '1',
+          HOME: testHome,
+          PI_CODING_AGENT_DIR: join(testHome, '.pi', 'agent'),
+        },
+      });
+      let out = '';
+      let err = '';
+      child.stdout.on('data', (c) => (out += c));
+      child.stderr.on('data', (c) => (err += c));
+      child.on('exit', (code) => resolve({ i, status: code, stdout: out, stderr: err }));
+    });
+  }
+
+  it('10 parallel calls all succeed with no leftover locks', async () => {
+    const results = await Promise.all(Array.from({ length: 10 }, (_, i) => spawnCall(i)));
+    for (const r of results) {
+      assert.equal(r.status, 0, `call #${r.i} failed (exit ${r.status}): ${r.stderr.trim()}`);
+      assert.ok(r.stdout.includes(`parallel-${r.i}`), `call #${r.i} missing expected output`);
+    }
+    const agentDir = join(testHome, '.pi', 'agent');
+    const locks = readdirSync(agentDir).filter((f) => f.endsWith('.lock'));
+    assert.equal(locks.length, 0, `leftover locks: ${locks.join(', ')}`);
+  });
+});
+
+describe('client: parallel calls with auth refresh contention', () => {
+  let as;
+  let mcp;
+  let testHome;
+
+  before(async () => {
+    testHome = createTestHome();
+    as = await startFixtureServer('oauth-as.mjs');
+    mcp = await startFixtureServer('server-oauth-accept-any.mjs', [as.issuer]);
+    const agentDir = join(testHome, '.pi', 'agent');
+    const config = {
+      mcpServers: {
+        'par-refresh': { url: `http://127.0.0.1:${mcp.port}/mcp` },
+      },
+    };
+    writeFileSync(join(agentDir, 'mcp.json'), JSON.stringify(config, null, 2));
+    await clearAsLog(as.port);
+    await doLogin('par-refresh', testHome, as.port);
+    const log = await asLog(as.port);
+    const tokenEntry = log.find(
+      (e) => e.type === 'token_issued' && e.grant === 'authorization_code'
+    );
+    assert.ok(tokenEntry, 'initial login must issue a token');
+    await registerToken(mcp.port, tokenEntry.accessToken);
+    await fetch(`http://127.0.0.1:${mcp.port}/_control/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ acceptAny: true }),
+    });
+  });
+
+  after(() => {
+    as?.child.kill('SIGTERM');
+    mcp?.child.kill('SIGTERM');
+    rmSync(testHome, { recursive: true, force: true });
+  });
+
+  async function asLog(port) {
+    const res = await fetch(`http://127.0.0.1:${port}/_control/log`);
+    return res.json();
+  }
+
+  async function clearAsLog(port) {
+    await fetch(`http://127.0.0.1:${port}/_control/log`, { method: 'DELETE' });
+  }
+
+  async function registerToken(port, token) {
+    await fetch(`http://127.0.0.1:${port}/_control/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ add: token }),
+    });
+  }
+
+  async function doLogin(serverName, tempDir, asPort) {
+    const env = {
+      PI_CODING_AGENT_DIR: join(tempDir, '.pi', 'agent'),
+      HOME: tempDir,
+    };
+    const { cmd, args } = mcpcatArgs(['login', serverName, '--no-browser']);
+    const loginProc = spawn(cmd, args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, NODE_NO_WARNINGS: '1', ...env },
+    });
+    let stderrData = '';
+    loginProc.stderr.on('data', (chunk) => {
+      stderrData += chunk.toString();
+    });
+    const authorizeUrl = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error(`No authorize URL: ${stderrData}`)),
+        10_000
+      );
+      const check = () => {
+        const match = stderrData.match(/(http:\/\/127\.0\.0\.1:\d+\/authorize\S+)/);
+        if (match) {
+          clearTimeout(timeout);
+          resolve(match[1]);
+        } else setTimeout(check, 100);
+      };
+      check();
+    });
+    const authRes = await fetch(authorizeUrl, { redirect: 'manual' });
+    const redirectUrl = authRes.headers.get('location');
+    loginProc.stdin.write(redirectUrl + '\n');
+    loginProc.stdin.end();
+    await new Promise((resolve) => loginProc.on('exit', resolve));
+  }
+
+  function spawnCall(i) {
+    const { cmd, args } = mcpcatArgs([
+      'call',
+      'par-refresh',
+      'echo',
+      '-d',
+      JSON.stringify({ text: `refresh-${i}` }),
+    ]);
+    return new Promise((resolve) => {
+      const child = spawn(cmd, args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          NODE_NO_WARNINGS: '1',
+          HOME: testHome,
+          PI_CODING_AGENT_DIR: join(testHome, '.pi', 'agent'),
+        },
+      });
+      let out = '';
+      let err = '';
+      child.stdout.on('data', (c) => (out += c));
+      child.stderr.on('data', (c) => (err += c));
+      child.on('exit', (code) => resolve({ i, status: code, stdout: out, stderr: err }));
+    });
+  }
+
+  it('10 parallel calls with stored valid token all succeed', async () => {
+    const results = await Promise.all(Array.from({ length: 10 }, (_, i) => spawnCall(i)));
+    for (const r of results) {
+      assert.equal(r.status, 0, `call #${r.i} failed (exit ${r.status}): ${r.stderr.trim()}`);
+    }
+    const agentDir = join(testHome, '.pi', 'agent');
+    const locks = readdirSync(agentDir).filter((f) => f.endsWith('.lock'));
+    assert.equal(locks.length, 0, `leftover locks: ${locks.join(', ')}`);
+  });
+
+  it('10 parallel calls after token expiry all succeed via refresh', async () => {
+    const agentDir = join(testHome, '.pi', 'agent');
+    const authPath = join(agentDir, 'mcp-auth.json');
+    const store = JSON.parse(readFileSync(authPath, 'utf8'));
+    for (const key of Object.keys(store)) {
+      store[key].tokensExpireAt = Date.now() - 60_000;
+    }
+    writeFileSync(authPath, JSON.stringify(store, null, 2));
+    await clearAsLog(as.port);
+
+    const results = await Promise.all(Array.from({ length: 10 }, (_, i) => spawnCall(i)));
+    for (const r of results) {
+      assert.equal(r.status, 0, `call #${r.i} failed (exit ${r.status}): ${r.stderr.trim()}`);
+    }
+
+    const log = await asLog(as.port);
+    const refreshes = log.filter((e) => e.type === 'token_issued' && e.grant === 'refresh_token');
+    assert.ok(refreshes.length >= 1, 'at least one refresh should have occurred');
+
+    const agentDir2 = join(testHome, '.pi', 'agent');
+    const locks = readdirSync(agentDir2).filter((f) => f.endsWith('.lock'));
+    assert.equal(locks.length, 0, `leftover locks: ${locks.join(', ')}`);
+
+    const authPath2 = join(agentDir2, 'mcp-auth.json');
+    const store2 = JSON.parse(readFileSync(authPath2, 'utf8'));
+    const state = Object.values(store2)[0];
+    assert.ok(
+      state?.tokens?.access_token,
+      'store should have a valid token after parallel refresh'
+    );
+  });
+});
