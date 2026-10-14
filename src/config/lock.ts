@@ -37,6 +37,41 @@ async function removeStaleLockFile(fs: FsApi, lockPath: string): Promise<boolean
   return false;
 }
 
+interface HeldLock {
+  path: string;
+  useFile: boolean;
+  fs: FsApi;
+}
+
+const heldLocks = new Set<HeldLock>();
+
+export function releaseAllLocksSync(): void {
+  for (const lock of heldLocks) {
+    try {
+      if (lock.useFile && lock.fs.unlink) {
+        void lock.fs.unlink(lock.path).catch(() => {});
+      } else {
+        void lock.fs.rmdir(lock.path).catch(() => {});
+      }
+    } catch {}
+  }
+  heldLocks.clear();
+}
+
+export async function releaseAllLocks(): Promise<void> {
+  const locks = [...heldLocks];
+  heldLocks.clear();
+  for (const lock of locks) {
+    try {
+      if (lock.useFile && lock.fs.unlink) {
+        await lock.fs.unlink(lock.path);
+      } else {
+        await lock.fs.rmdir(lock.path);
+      }
+    } catch {}
+  }
+}
+
 export async function acquireLock(fs: FsApi, configPath: string): Promise<() => Promise<void>> {
   const useFile = typeof fs.createExclusive === 'function';
   const lockPath = `${configPath}.lock`;
@@ -71,10 +106,14 @@ export async function acquireLock(fs: FsApi, configPath: string): Promise<() => 
     await new Promise((r) => setTimeout(r, LOCK_POLL_MS));
   }
 
+  const entry: HeldLock = { path: lockPath, useFile, fs };
+  heldLocks.add(entry);
+
   let released = false;
   return async () => {
     if (released) return;
     released = true;
+    heldLocks.delete(entry);
     try {
       if (useFile && fs.unlink) {
         await fs.unlink(lockPath);

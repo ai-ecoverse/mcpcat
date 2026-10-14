@@ -17,6 +17,7 @@ import { runDescribeTs, runGrep } from '../codemode/describe.ts';
 import { runCode } from '../codemode/run.ts';
 import { expandHeaders, expandPlaceholders, missingPlaceholders } from '../config/expand.ts';
 import { MergedConfigSource } from '../config/index.ts';
+import { releaseAllLocks } from '../config/lock.ts';
 import type { McpOAuthConfig, McpServerConfig } from '../config/types.ts';
 import { runAddCandidate, runDiscover, runFromDiscovery, runInbox } from '../discovery/verbs.ts';
 import type { Platform } from '../platform/types.ts';
@@ -1025,6 +1026,7 @@ async function dispatchMultiTarget(
     try {
       await Promise.race([killAllStdio(), new Promise((r) => setTimeout(r, 3000))]);
     } catch {}
+    await releaseAllLocks().catch(() => {});
     platform.exit(exitCode);
   }
 
@@ -1304,12 +1306,13 @@ async function resolveAuthProvider(
   hasAuthHeader: boolean,
   url: string | undefined,
   target: string,
-  config: MergedConfigSource
+  config: MergedConfigSource,
+  onCredentialObtained?: (secret: string) => void
 ): Promise<
   { provider: ReturnType<typeof createMcpAuthProvider>; credentialSecrets: string[] } | undefined
 > {
   if (hasAuthHeader || !url) return undefined;
-  const piSource = new PiFileTokenSource(platform);
+  const source = await createTokenSource(platform);
   const entry = config.entry(target);
   const oauth =
     entry && 'url' in entry.config ? (entry.config as { oauth?: McpOAuthConfig }).oauth : undefined;
@@ -1317,20 +1320,23 @@ async function resolveAuthProvider(
   const provider = createMcpAuthProvider({
     name,
     serverUrl: url,
-    source: piSource,
+    source,
     oauth,
     platform,
+    onCredentialObtained,
   });
   const credentialSecrets: string[] = [];
-  const state = await piSource.loadWithoutLock(name, url);
-  if (state?.tokens?.access_token) credentialSecrets.push(state.tokens.access_token);
-  if (state?.tokens?.refresh_token) credentialSecrets.push(state.tokens.refresh_token);
-  if (
-    state?.clientInformation &&
-    'client_secret' in state.clientInformation &&
-    state.clientInformation.client_secret
-  ) {
-    credentialSecrets.push(state.clientInformation.client_secret as string);
+  if (source instanceof PiFileTokenSource) {
+    const state = await source.loadWithoutLock(name, url);
+    if (state?.tokens?.access_token) credentialSecrets.push(state.tokens.access_token);
+    if (state?.tokens?.refresh_token) credentialSecrets.push(state.tokens.refresh_token);
+    if (
+      state?.clientInformation &&
+      'client_secret' in state.clientInformation &&
+      state.clientInformation.client_secret
+    ) {
+      credentialSecrets.push(state.clientInformation.client_secret as string);
+    }
   }
   return { provider, credentialSecrets };
 }
@@ -1460,6 +1466,7 @@ async function runClientVerb(
     try {
       await Promise.race([killAllStdio(), new Promise((r) => setTimeout(r, 3000))]);
     } catch {}
+    await releaseAllLocks().catch(() => {});
     platform.exit(exitCode);
   }
 
@@ -1514,7 +1521,11 @@ async function runClientVerb(
     hasAuthHeader,
     resolved.url,
     target,
-    config
+    config,
+    (secret) => {
+      allSecrets.add(secret);
+      verbose.secrets.add(secret);
+    }
   );
   const authProvider = authResolved?.provider;
   if (authResolved?.credentialSecrets) {
@@ -1597,6 +1608,7 @@ async function closeAndKillStdio(conn: McpConnection): Promise<void> {
   try {
     await killAllStdio();
   } catch {}
+  await releaseAllLocks().catch(() => {});
 }
 
 async function writeErr(p: Platform, json: boolean, kind: string, msg: string): Promise<void> {
