@@ -1,0 +1,34 @@
+[
+  {
+    "name": "get_price",
+    "title": "Get Price",
+    "description": "Returns the current price",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "origin": "https://shop.example.com",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "get_price",
+    "title": "Get Price",
+    "description": "Returns the current price from warehouse",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sku": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "origin": "https://warehouse.example.org",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  }
+]

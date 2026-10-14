@@ -939,6 +939,7 @@ async function dispatchServeVerb(
   const serveOptions = parseServeFlags(serveArgs);
   if (
     !serveOptions.proxy &&
+    !serveOptions.webmcp &&
     serveOptions.commands.length === 0 &&
     serveOptions.toolTemplates.length === 0
   ) {
