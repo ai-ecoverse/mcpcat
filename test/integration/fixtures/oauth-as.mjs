@@ -7,6 +7,7 @@ let issuerPort;
 
 let sendIss = true;
 let cimdSupported = true;
+let refreshDelayMs = 0;
 const tokens = new Map();
 const refreshTokens = new Map();
 const clients = new Map();
@@ -177,6 +178,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (grantType === 'refresh_token') {
+      if (refreshDelayMs > 0) await new Promise((r) => setTimeout(r, refreshDelayMs));
       const rt = body.get('refresh_token');
       const stored = refreshTokens.get(rt);
       if (!stored) {
@@ -274,6 +276,13 @@ const server = createServer(async (req, res) => {
     const body = JSON.parse(await readBody(req));
     cimdSupported = body.enabled !== false;
     res.end(JSON.stringify({ cimdSupported }));
+    return;
+  }
+
+  if (path === '/_control/delay' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req));
+    refreshDelayMs = body.ms ?? 0;
+    res.end(JSON.stringify({ refreshDelayMs }));
     return;
   }
 

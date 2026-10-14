@@ -100,6 +100,7 @@ export function createMcpAuthProvider(options: {
   source: TokenSource;
   oauth: McpOAuthConfig | undefined;
   platform: Platform;
+  onCredentialObtained?: (secret: string) => void;
 }): AuthProvider {
   if (options.source instanceof JerkTokenSource) {
     return createJerkAuthProvider({ ...options, source: options.source });
@@ -113,10 +114,14 @@ function createJerkAuthProvider(options: {
   source: JerkTokenSource;
   oauth: McpOAuthConfig | undefined;
   platform: Platform;
+  onCredentialObtained?: (secret: string) => void;
 }): AuthProvider {
   const { name, serverUrl, source } = options;
   let currentToken: string | undefined;
-  const _fetched = false;
+
+  function registerCredential(token: string | undefined): void {
+    if (token && options.onCredentialObtained) options.onCredentialObtained(token);
+  }
 
   return {
     async token(): Promise<string | undefined> {
@@ -129,6 +134,7 @@ function createJerkAuthProvider(options: {
           const result = await source.getToken(name, serverUrl, challenge.scope);
           if (result) {
             currentToken = result.accessToken;
+            registerCredential(currentToken);
             return;
           }
         } catch (err) {
@@ -142,6 +148,7 @@ function createJerkAuthProvider(options: {
       const result = await source.getToken(name, serverUrl);
       if (result) {
         currentToken = result.accessToken;
+        registerCredential(currentToken);
         return;
       }
       throw new McpOAuthAuthorizationRequiredError();
@@ -155,10 +162,15 @@ function createPiAuthProvider(options: {
   source: TokenSource;
   oauth: McpOAuthConfig | undefined;
   platform: Platform;
+  onCredentialObtained?: (secret: string) => void;
 }): AuthProvider {
   const { name, serverUrl, source, oauth, platform } = options;
   const store = new SourceBackedStore(source, name, serverUrl, platform);
   let refreshing: Promise<void> | undefined;
+
+  function registerCredential(token: string | undefined): void {
+    if (token && options.onCredentialObtained) options.onCredentialObtained(token);
+  }
 
   const refresh = async (staleToken: string | undefined) => {
     refreshing ??= store
@@ -196,16 +208,29 @@ function createPiAuthProvider(options: {
     return refreshing;
   };
 
+  let cachedToken: string | undefined;
+  let tokenLoaded = false;
+
   return {
     async token(): Promise<string | undefined> {
       await refreshing?.catch(() => undefined);
+      if (tokenLoaded) return cachedToken;
       const state = await store.load();
-      const token = state?.tokens?.access_token;
+      cachedToken = state?.tokens?.access_token;
+      registerCredential(cachedToken);
+      if (state?.tokens?.refresh_token) registerCredential(state.tokens.refresh_token);
       const expired =
         state?.tokensExpireAt !== undefined && state.tokensExpireAt - REFRESH_SKEW_MS <= Date.now();
-      if (!expired || !state?.tokens?.refresh_token) return token;
-      await refresh(token).catch(() => undefined);
-      return (await store.load())?.tokens?.access_token;
+      if (expired && state?.tokens?.refresh_token) {
+        await refresh(cachedToken).catch(() => undefined);
+        const refreshedState = await store.load();
+        cachedToken = refreshedState?.tokens?.access_token;
+        registerCredential(cachedToken);
+        if (refreshedState?.tokens?.refresh_token)
+          registerCredential(refreshedState.tokens.refresh_token);
+      }
+      tokenLoaded = true;
+      return cachedToken;
     },
     async onUnauthorized(context: UnauthorizedContext): Promise<void> {
       const challenge = parseWwwAuthenticate(context.response.headers.get('www-authenticate'));
@@ -213,6 +238,11 @@ function createPiAuthProvider(options: {
         throw new AuthStepUpError(challenge.scope, options.name);
       }
       await refresh(context.token);
+      const state = await store.load();
+      cachedToken = state?.tokens?.access_token;
+      tokenLoaded = true;
+      registerCredential(cachedToken);
+      if (state?.tokens?.refresh_token) registerCredential(state.tokens.refresh_token);
     },
   };
 }
