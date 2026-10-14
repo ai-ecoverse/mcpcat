@@ -1,3 +1,4 @@
+import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
@@ -20,6 +21,7 @@ const kernelPkg = JSON.parse(
 );
 const kernelVersion = kernelPkg.version.split('.').map(Number);
 const hasPgid = kernelVersion[0] > 1 || (kernelVersion[0] === 1 && kernelVersion[1] >= 74);
+const hasDeathSignal = kernelVersion[0] > 1 || (kernelVersion[0] === 1 && kernelVersion[1] >= 88);
 
 const testHome = join(tmpdir(), `mcpcat-b5-${Date.now()}`);
 mkdirSync(join(testHome, '.pi', 'agent'), { recursive: true });
@@ -238,21 +240,35 @@ describe('B5: kernel stdio, SIGTERM/SIGHUP to group kills server tree', {
     });
   }
 
-  it('SIGKILL to group: known limitation (no handler), noted', async () => {
+  it('SIGKILL to group: nothing survives', {
+    skip: !hasDeathSignal && 'parentDeathSignal requires slicc-kernel >= 1.88.0',
+  }, async () => {
     const sp = await client.spawn(
       ['mcpcat', 'call', 'stdio:mcpcat-test-slow-legacy', 'slow', '-d', '{}'],
       { stdin: 'pipe', env: {}, onStdout() {}, onStderr() {} }
     );
-    await sleep(2000);
+    const isTest = (p) => p.state !== 'Z' && p.argv.some((a) => a.includes('mcpcat-test'));
+    const isServer = (p) => isTest(p) && p.argv[0] !== 'mcpcat';
+    let end = Date.now() + 10_000;
+    while (Date.now() < end && !(await client.ps()).some(isServer)) await sleep(100);
+    assert.ok((await client.ps()).some(isServer), 'server should be running before SIGKILL');
     sp.signal('SIGKILL');
     await sp.exited;
-    await sleep(500);
-    const ps = await client.ps();
-    const survivors = ps.filter((p) => p.argv.some((a) => a.includes('mcpcat-test')));
+    let survivors = [];
+    end = Date.now() + 5_000;
+    do {
+      survivors = (await client.ps()).filter(isTest);
+      if (survivors.length > 0) await sleep(100);
+    } while (survivors.length > 0 && Date.now() < end);
     for (const s of survivors) {
       try {
         await client.kill(s.pid, 'SIGKILL');
       } catch {}
     }
+    assert.deepEqual(
+      survivors.map((p) => p.argv),
+      [],
+      'SIGKILL: every mcpcat-test process should be dead'
+    );
   });
 });

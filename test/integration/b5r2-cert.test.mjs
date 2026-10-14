@@ -1,3 +1,4 @@
+import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -5,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { waitForAuthorizeUrl } from './helpers/authorize.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const hostBin = join(root, 'dist/host/mcpcat.mjs');
@@ -99,17 +101,7 @@ async function doLogin(serverName, tempDir, asPort) {
   loginProc.stderr.on('data', (chunk) => {
     stderrData += chunk.toString();
   });
-  const authorizeUrl = await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error(`No authorize URL: ${stderrData}`)), 10_000);
-    const check = () => {
-      const match = stderrData.match(/(http:\/\/127\.0\.0\.1:\d+\/authorize\S+)/);
-      if (match) {
-        clearTimeout(timeout);
-        resolve(match[1]);
-      } else setTimeout(check, 100);
-    };
-    check();
-  });
+  const authorizeUrl = await waitForAuthorizeUrl(loginProc, () => stderrData);
   const authRes = await fetch(authorizeUrl, { redirect: 'manual' });
   loginProc.stdin.write(authRes.headers.get('location') + '\n');
   loginProc.stdin.end();
