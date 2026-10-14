@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { attachKernel, createNodeKernel } from './helpers/kernel.mjs';
+import { attachKernel, createNodeKernel, nodeTransport } from './helpers/kernel.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const kernelBundle = join(root, 'dist/kernel/mcpcat.mjs');
@@ -413,5 +413,98 @@ describe('kernel: add --bridge on old kernel (< 1.85.0)', {
       { stdout: 'pipe', stderr: 'pipe' }
     );
     assert.equal(status, 4, `expected exit 4 on old kernel; stderr: ${stderr}`);
+  });
+});
+
+import { spawn } from 'node:child_process';
+
+async function startFixtureServer(script) {
+  const child = spawn('node', [join(fixturesDir, script)], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, NODE_NO_WARNINGS: '1' },
+  });
+
+  const info = await new Promise((resolve, reject) => {
+    let data = '';
+    child.stdout.on('data', (chunk) => {
+      data += chunk.toString();
+      if (data.includes('\n')) {
+        try {
+          resolve(JSON.parse(data.trim()));
+        } catch (e) {
+          reject(e);
+        }
+      }
+    });
+    child.on('error', reject);
+    child.on('exit', (code) => {
+      if (!data.includes('\n')) reject(new Error(`Server exited ${code}: ${data}`));
+    });
+  });
+
+  return { child, ...info };
+}
+
+describe('kernel: transport 403 (loopback refused) exits 3, not 4', {
+  skip: !hasSealed && 'requires slicc-kernel >= 1.85.0',
+}, () => {
+  let kernel;
+  let server;
+
+  before(async () => {
+    server = await startFixtureServer('server-2026-http.mjs');
+    kernel = await createNodeKernel({
+      network: { transport: nodeTransport() },
+    });
+    await installMcpcat(kernel);
+  });
+
+  after(() => {
+    server?.child.kill('SIGTERM');
+    kernel?.terminate();
+  });
+
+  it('exits 3 with transport reason, not exit 4 auth', async () => {
+    const url = `http://127.0.0.1:${server.port}`;
+    const { status, stderr } = await kernel.run(['mcpcat', 'info', url], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.equal(status, 3, `expected exit 3, got ${status}; stderr: ${stderr}`);
+    assert.ok(
+      stderr.includes('hostLoopback') || stderr.includes('loopback') || stderr.includes('refused'),
+      `stderr should mention hostLoopback; got: ${stderr}`
+    );
+    assert.ok(!stderr.includes('mcpcat login'), 'should not suggest login for transport refusal');
+  });
+});
+
+describe('kernel: transport 403 with hostLoopback enabled connects fine', {
+  skip: !hasSealed && 'requires slicc-kernel >= 1.85.0',
+}, () => {
+  let kernel;
+  let server;
+
+  before(async () => {
+    server = await startFixtureServer('server-2026-http.mjs');
+    kernel = await createNodeKernel({
+      network: { transport: nodeTransport({ hostLoopback: true }) },
+    });
+    await installMcpcat(kernel);
+  });
+
+  after(() => {
+    server?.child.kill('SIGTERM');
+    kernel?.terminate();
+  });
+
+  it('connects to loopback with hostLoopback enabled', async () => {
+    const url = `http://127.0.0.1:${server.port}`;
+    const { status, stdout, stderr } = await kernel.run(['mcpcat', 'info', url], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.equal(status, 0, `expected exit 0, got ${status}; stderr: ${stderr}`);
+    assert.ok(stdout.includes('test-2026'));
   });
 });

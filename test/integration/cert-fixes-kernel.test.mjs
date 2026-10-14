@@ -63,7 +63,11 @@ describe('kernel: group SIGINT exits 130, not 141 (cert item 5)', () => {
 
   before(async () => {
     kernel = await createNodeKernel({
-      network: { transport: (await import('@ai-ecoverse/slicc-kernel/node')).nodeTransport() },
+      network: {
+        transport: (await import('@ai-ecoverse/slicc-kernel/node')).nodeTransport({
+          hostLoopback: true,
+        }),
+      },
     });
     await installMcpcat(kernel);
     await installFixture(kernel, 'mcpcat-test-slow', 'mcpcat-test-slow', 'kernel-stdio-slow.mjs');
