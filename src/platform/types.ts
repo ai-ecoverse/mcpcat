@@ -10,6 +10,7 @@ export interface SpawnOptions {
   argv: string[];
   env?: Record<string, string>;
   cwd?: string;
+  dieWithParent?: boolean;
 }
 
 export interface ListenOptions {

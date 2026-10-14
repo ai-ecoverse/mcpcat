@@ -329,6 +329,7 @@ async function runCommand(
       argv: [cmdPath, ...argv],
       env: childEnv,
       cwd,
+      dieWithParent: true,
     });
   } catch (err) {
     return { stdout: '', stderr: `spawn failed: ${(err as Error).message}`, exitCode: 127 };
