@@ -362,6 +362,40 @@ describe('kernel: add --bridge errno mapping via sealed hook', {
     }
   });
 
+  it('a structured EEXIST from the vault exits 2 and says the secret exists', async () => {
+    const kernel = await createNodeKernel({
+      sealed: async () => ({
+        error: { code: 'EEXIST', message: 'a secret with that name exists' },
+      }),
+    });
+    try {
+      await installMcpcat(kernel);
+      await installStdioFixture(kernel);
+      await kernel.writeFile('/mcp.json', '{}');
+      const { status, stderr } = await kernel.run(
+        [
+          'mcpcat',
+          'add',
+          'takensrv',
+          '--bridge',
+          '--config',
+          '/mcp.json',
+          '--',
+          'mcpcat-test-stdio',
+        ],
+        { stdout: 'pipe', stderr: 'pipe' }
+      );
+      assert.equal(status, 2, `structured EEXIST should map to exit 2; stderr: ${stderr}`);
+      assert.match(stderr, /already exists/);
+      assert.equal(
+        await kernel.readFile('/mcp.json').then((b) => new TextDecoder().decode(b)),
+        '{}'
+      );
+    } finally {
+      kernel.terminate();
+    }
+  });
+
   it('ENOTCONN from vault (structured error) maps to exit 4', async () => {
     const kernel = await createNodeKernel({
       sealed: async (req) => {
@@ -387,6 +421,7 @@ describe('kernel: add --bridge errno mapping via sealed hook', {
         { stdout: 'pipe', stderr: 'pipe' }
       );
       assert.equal(status, 4, `ENOTCONN should map to exit 4; stderr: ${stderr}`);
+      assert.match(stderr, /no vault available/);
     } finally {
       kernel.terminate();
     }
