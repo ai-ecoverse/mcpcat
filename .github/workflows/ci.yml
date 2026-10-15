@@ -68,11 +68,6 @@ jobs:
   cert:
     runs-on: ${{ needs.runner.outputs.runner }}
     needs: [runner, ci]
-    strategy:
-      matrix:
-        kernel:
-          - '@ai-ecoverse/slicc-kernel@1.65.2'
-          - '@ai-ecoverse/slicc-kernel@1.76.0'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -80,8 +75,13 @@ jobs:
           node-version: '24'
       - run: npm ci
       - run: npm run build
-      - name: Run cert with kernel ${{ matrix.kernel }}
-        run: npm run cert -- '--kernel=${{ matrix.kernel }}'
+      - name: Run cert with the kernel slicc-bios ships
+        run: |
+          kernel=$(node -p "require('@ai-ecoverse/slicc-bios/src/packages/package.json').dependencies['@ai-ecoverse/slicc-kernel']")
+          agent=$(node -p "require('@ai-ecoverse/slicc-bios/src/packages/agent/package.json').peerDependencies?.['@ai-ecoverse/slicc-kernel'] ?? require('@ai-ecoverse/slicc-bios/src/packages/agent/package.json').dependencies?.['@ai-ecoverse/slicc-kernel'] ?? ''")
+          [ -z "$agent" ] || [ "$agent" = "$kernel" ]
+          echo "slicc-bios ships slicc-kernel $kernel"
+          npm run cert -- "--kernel=@ai-ecoverse/slicc-kernel@$kernel"
         env:
           NODE_NO_WARNINGS: '1'
 
