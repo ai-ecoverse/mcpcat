@@ -85,7 +85,6 @@ mcpcat code -e 'return (await tools.mcp__docs__search({q:"cimd"})).length'</code
 </ol>
 </nav>
 
-<!-- ============================================================ -->
 <h2 id="goals">1. Goals and non-goals</h2>
 
 <h3>Goals</h3>
@@ -107,7 +106,6 @@ mcpcat code -e 'return (await tools.mcp__docs__search({q:"cimd"})).length'</code
   <li>No public tunnel in v1 (six's <code>https://&lt;token&gt;.sliccy.now/mcp</code>); a follow-up issue after M6 (<a href="#q-publish">Q7</a>).</li>
 </ul>
 
-<!-- ============================================================ -->
 <h2 id="context">2. Context: what exists today</h2>
 
 <h3>2.1 SLICC six: the <code>mcp</code> supplemental command</h3>
@@ -164,7 +162,6 @@ mcpcat code -e 'return (await tools.mcp__docs__search({q:"cimd"})).length'</code
   <li><strong>Agent output is scrubbed</strong> over all vault values, so an echo is caught, but a transformed value is not. Programs must keep values out of argv and logs.</li>
 </ul>
 
-<!-- ============================================================ -->
 <h2 id="decisions">3. Key decisions</h2>
 <p>Each decision has an id so issues can cite it. All were accepted on 2026-10-12.</p>
 
@@ -200,7 +197,6 @@ mcpcat code -e 'return (await tools.mcp__docs__search({q:"cimd"})).length'</code
   <dd>Repo, package and command are <code>mcpcat</code> (the issue's working name was “slicc-mcp”). No <code>mcp</code> alias by default; six's <code>mcp</code> is mapped in <a href="#v6">§18</a> and a compat shim is <a href="#q-alias">Q3</a>.</dd>
 </dl>
 
-<!-- ============================================================ -->
 <h2 id="architecture">4. Architecture</h2>
 
 <figure class="diagram"><pre>
@@ -233,7 +229,6 @@ mcpcat code -e 'return (await tools.mcp__docs__search({q:"cimd"})).length'</code
   <li><strong>Known pi-mcp gaps, patched locally</strong> (mirroring slicc-agent's <code>patches.json</code>; no upstream work, <a href="#q-upstream">Q8</a>): <code>Buffer.byteLength</code> in the SSE parser (no <code>Buffer</code> in a kernel JS program); 2026-07-28 support; stdio split out of the index.</li>
 </ul>
 
-<!-- ============================================================ -->
 <h2 id="cli">5. Command-line interface</h2>
 
 <pre><code>mcpcat [options] &lt;target&gt; [&lt;tool&gt; [tool-args…]]     curl form: info, or call a tool
@@ -294,7 +289,6 @@ mcpcat [options] &lt;verb&gt; …                             everything else</c
   <tr><td><code>-V, --version</code>, <code>-h, --help</code></td><td>Version from <code>package.json</code>; help.</td></tr>
 </table>
 
-<!-- ============================================================ -->
 <h2 id="targets">6. Targets</h2>
 <table>
   <tr><th>Form</th><th>Example</th><th>Resolves to</th></tr>
@@ -305,7 +299,6 @@ mcpcat [options] &lt;verb&gt; …                             everything else</c
   <tr><td>File entry</td><td><code>.vscode/mcp.json:filesystem</code></td><td>An entry from any supported config file (<a href="#config">§10</a>). Naming the file explicitly is the trust step that permits <code>${VAR}</code> expansion.</td></tr>
 </table>
 
-<!-- ============================================================ -->
 <h2 id="args">7. Tool arguments</h2>
 <p>Two forms that combine. Flags win over <code>-d</code> for the same key.</p>
 
@@ -327,7 +320,6 @@ mcpcat call docs search -d @query.json
 jq -n '{q:"cimd"}' | mcpcat call docs search -d @-</code></pre>
 <p>When stdin is not a TTY and the tool has no arguments on the command line, stdin is <em>not</em> read implicitly (it may belong to a script); <code>-d @-</code> is explicit.</p>
 
-<!-- ============================================================ -->
 <h2 id="output">8. Output and exit codes</h2>
 
 <h3>8.1 Default (rendered)</h3>
@@ -356,7 +348,6 @@ jq -n '{q:"cimd"}' | mcpcat call docs search -d @-</code></pre>
   <tr><td>130</td><td>Interrupted; the in-flight request was cancelled on the server (<code>notifications/cancelled</code>).</td></tr>
 </table>
 
-<!-- ============================================================ -->
 <h2 id="protocol">9. Protocol support</h2>
 
 <table>
@@ -377,7 +368,6 @@ jq -n '{q:"cimd"}' | mcpcat call docs search -d @-</code></pre>
 <h4 id="mrtr">Elicitation and multi-round-trip requests</h4>
 <p>On a TTY, mcpcat renders the requested schema as a prompt, asks, and retries with <code>inputResponses</code> (2026-07-28) or answers <code>elicitation/create</code> (≤ 2025-11-25). Without a TTY it exits 6 and prints the request; <code>--respond @answers.json</code> on a rerun supplies the answers. URL-mode elicitation prints the URL and waits for Enter.</p>
 
-<!-- ============================================================ -->
 <h2 id="config">10. Configuration</h2>
 
 <h3>10.1 Files</h3>
@@ -413,7 +403,6 @@ jq -n '{q:"cimd"}' | mcpcat call docs search -d @-</code></pre>
   <tr><td>OAuth tokens</td><td colspan="2">See <a href="#auth">§11</a>.</td></tr>
 </table>
 
-<!-- ============================================================ -->
 <h2 id="auth">11. Authentication</h2>
 
 <h3>11.1 Static credentials</h3>
@@ -449,7 +438,6 @@ Port-less loopback redirects (RFC 8252 §7.3). <code>--no-browser</code> uses th
   <li><strong>Interim, until VAULT-1b ships §3.16.1:</strong> <code>fnox exec -- mcpcat call &lt;server&gt; …</code> with the exact argv in <code>[exec]</code>, output scrubbed at the source (S2). It is weaker, since the real token sits in mcpcat's process; drop it once the vault path is live.</li>
 </ul>
 
-<!-- ============================================================ -->
 <h2 id="serve">12. Serving: commands as MCP servers</h2>
 
 <pre><code>mcpcat serve ./jira.jsh                               # stdio (default when stdout is not a TTY)
@@ -481,7 +469,6 @@ mcpcat serve --tool 'disk_usage: du -sh {path}' --tool 'uptime: uptime' --http 8
   <li><strong>HTTP:</strong> <code>POST /mcp</code>, JSON responses. <code>Origin</code> is checked against loopback (<code>localhost</code>, <code>127.0.0.1</code>, <code>[::1]</code>, <code>*.localhost</code>) when present; a missing <code>Origin</code> is allowed, as from seven's agent, curl and Node. <code>--allow-origin</code> adds origins. <code>Host</code> must be <code>127.0.0.1:&lt;port&gt;</code>, <code>localhost:&lt;port&gt;</code> or <code>*.localhost</code> (DNS-rebinding defence) unless bound off loopback. <code>Connection: close</code> is honoured, and keep-alive otherwise. The server is stateless: no <code>Mcp-Session-Id</code> on <code>initialize</code>, <code>405</code> on <code>GET</code> and <code>DELETE /mcp</code>. <code>--bearer</code> is required off loopback. Prints the URL on stderr (and as JSON with <code>--json</code>) once listening. In seven it binds the kernel loopback (<a href="#seven">§17</a>) and prints <code>http://&lt;port&gt;.kernel.localhost/mcp</code>, the form kernel programs, the page and the agent can reach; <code>--json</code> adds <code>loopbackUrl</code> (<code>http://127.0.0.1:&lt;port&gt;/mcp</code>) for raw-socket clients. mcpcat's own client in the kernel dials <code>127.0.0.1</code>/<code>localhost</code> targets through <code>ctx.net</code> first and falls back to <code>ctx.fetch</code> when no kernel listener holds the port. Before slicc-kernel 1.91 that fallback reached the host's loopback through the transport; from 1.91 <code>ctx.fetch</code> sends loopback names to the kernel's own listeners and never to the transport, so a refused one exits 3 and names <code>http://host.slicc.internal:&lt;port&gt;</code>, the host's address for a kernel program.</li>
 </ul>
 
-<!-- ============================================================ -->
 <h2 id="proxy">13. Proxy and bridge</h2>
 <pre><code>mcpcat serve --proxy fs --http 8810                    # stdio server → HTTP
 mcpcat serve --proxy https://mcp.sentry.dev/mcp --http 8811 --bearer "$LOCAL"   # hide OAuth tokens
@@ -493,7 +480,6 @@ mcpcat serve --proxy docs --stdio                      # HTTP server → stdio, 
   <li><code>--allow-tool glob</code> / <code>--deny-tool glob</code> filter what is re-exposed; <code>--read-only</code> keeps only tools annotated <code>readOnlyHint</code>.</li>
 </ul>
 
-<!-- ============================================================ -->
 <h2 id="webmcp">14. WebMCP bridge</h2>
 <p>Requested by the slicc-cdp discovery work (the slicc-cdp discovery thread, <a href="https://github.com/ai-ecoverse/slicc-cdp/issues/93">slicc-cdp#93</a>). Pages register tools with <code>document.modelContext</code>; <code>playwright-cli webmcp-list</code> and <code>webmcp-call &lt;name&gt; &lt;json|-&gt;</code> reach them over CDP. mcpcat turns a tab into an MCP server so non-browser agents can call page tools:</p>
 <pre><code>mcpcat serve --webmcp --tab 3 --http 8812</code></pre>
@@ -507,7 +493,6 @@ mcpcat serve --proxy docs --stdio                      # HTTP server → stdio, 
   <li>Depends on slicc-cdp#93 shipping <code>--json</code> output for <code>webmcp-list</code>.</li>
 </ul>
 
-<!-- ============================================================ -->
 <h2 id="discovery">15. Discovery</h2>
 
 <h3>15.1 From the browser: slicc-cdp discovery events</h3>
@@ -530,7 +515,6 @@ mcpcat add docs --candidate 3        # the explicit install step (D7)</code></pr
 <pre><code>mcpcat discover https://shop.example.com     # probes, same candidate format, into the inbox</code></pre>
 <p>Host-side probes without a browser: <code>server/discover</code> on the URL itself and on <code>/mcp</code>, <code>/.well-known/ard.json</code>, <code>/.well-known/ai-catalog.json</code>, and <code>Link</code> headers with <code>rel="ard"</code>/<code>rel="ai-catalog"</code>. Probe rules follow slicc-cdp#87 (exact 200, non-HTML content type, <code>credentials: omit</code>, manual redirects where the transport allows). <span class="tag p2">P2</span>: <code>mcpcat discover --registry &lt;query&gt;</code> against the official MCP Registry.</p>
 
-<!-- ============================================================ -->
 <h2 id="codemode">16. Code mode</h2>
 <p>Three levels, from least to most machinery:</p>
 
@@ -557,7 +541,6 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
   <li>Optional <code>--allow-shell</code> adds a <code>shell(argv, {stdin})</code> global through the platform spawn, for parity with the agent's codemode which can call <code>bash</code>. Off by default.</li>
 </ul>
 
-<!-- ============================================================ -->
 <h2 id="seven">17. Running inside Sliccy Seven</h2>
 
 <h3>17.1 Install</h3>
@@ -582,7 +565,6 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
   <li>Skill: ship <code>mcpcat help --skill</code> output as a seven skill so the agent learns mcpcat from one file, replacing six's <code>skills/mcp/SKILL.md</code>.</li>
 </ul>
 
-<!-- ============================================================ -->
 <h2 id="v6">18. Compatibility with SLICC six <code>mcp</code></h2>
 <table>
   <tr><th>six</th><th>mcpcat</th><th>Notes</th></tr>
@@ -603,7 +585,6 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
   <tr><td>MCP Apps sprinkles (<code>apps/list</code>)</td><td>out of scope</td><td>Non-standard; UI belongs to slicc-spectrum.</td></tr>
 </table>
 
-<!-- ============================================================ -->
 <h2 id="security">19. Security model</h2>
 <ul>
   <li><strong>mcpcat runs what you configure.</strong> A stdio server is code with your privileges; a project <code>.pi/mcp.json</code> could name any command. Project files are read but their <code>command</code> entries are not started, and their <code>${VAR}</code>/<code>!command</code> not expanded, without <code>--trust-project</code> or an explicit <code>file:name</code> target.</li>
@@ -616,7 +597,6 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
   <li><strong>Code mode</strong> scripts can call tools and nothing else (no fetch, fs, timers), unless <code>--allow-shell</code>.</li>
 </ul>
 
-<!-- ============================================================ -->
 <h2 id="repo">20. Repository, build, test, release</h2>
 <pre><code>mcpcat/
   AGENTS.md  README.md  LICENSE (Apache-2.0)  package.json  biome.json  tsconfig.json  lefthook.yml  renovate.json
@@ -693,7 +673,6 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
   <li>each release's version and sha256, sent to homescoop.</li>
 </ul>
 
-<!-- ============================================================ -->
 <h2 id="milestones">21. Milestones and issue seeds</h2>
 <p>Each row is meant to become one or a few GitHub issues, small enough for one bb subthread. Dependencies are listed so threads can run in parallel.</p>
 <table>
@@ -713,7 +692,6 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
   <tr><td>M12</td><td>Seven rollout</td><td>Skill (<code>help --skill</code>) and seven skill file; homescoop certification (§20.1); bios optional catalog entry; man page for www.sliccy.com replacing <code>mcp</code>; close out slicc#3889 follow-ups.</td><td>M2–M5</td></tr>
 </table>
 
-<!-- ============================================================ -->
 <h2 id="open">22. Resolved questions</h2>
 <p>Decided by Lars on 2026-10-12. Items marked <em>ask</em> go to another lane through the Seven PM.</p>
 <dl class="decisions">
@@ -774,7 +752,6 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
   <dd><strong>Gated.</strong> bios pins an exact certified version plus a <code>certs.json</code> line, and each later release gets a short delta cert. mcpcat publishes freely. The cert's scope is <a href="#cert">§20.1</a>.</dd>
 </dl>
 
-<!-- ============================================================ -->
 <h2 id="sources">23. Sources</h2>
 <ul class="small">
   <li><a href="https://github.com/ai-ecoverse/slicc/issues/3793">slicc#3793 Sliccy Seven</a> · <a href="https://github.com/ai-ecoverse/slicc/issues/3889">slicc#3889 Decide the future of mcp in seven</a> (decision comment 2026-10-11)</li>
