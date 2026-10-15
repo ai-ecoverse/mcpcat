@@ -838,11 +838,24 @@ interface ProxyHandle {
   shutdown: () => Promise<void>;
 }
 
+interface ServeAddress {
+  url: string;
+  loopbackUrl?: string;
+}
+
+function serveAddress(platform: Platform, host: string, port: number): ServeAddress {
+  if (platform.kind !== 'kernel') return { url: `http://${host}:${port}/mcp` };
+  return {
+    url: `http://${port}.kernel.localhost/mcp`,
+    loopbackUrl: `http://127.0.0.1:${port}/mcp`,
+  };
+}
+
 async function publishBearer(
   platform: Platform,
   token: string,
   port: number,
-  listenUrl: string,
+  address: ServeAddress,
   json: boolean
 ): Promise<string | undefined> {
   if (!json && platform.isatty(2)) {
@@ -858,7 +871,7 @@ async function publishBearer(
   await platform.fs.writeFile(tokenPath, token, { mode: 0o600 });
   await platform.write(2, `mcpcat serve: bearer saved to ${tokenPath}\n`);
   if (json) {
-    await platform.write(1, `${JSON.stringify({ url: listenUrl, bearerFile: tokenPath })}\n`);
+    await platform.write(1, `${JSON.stringify({ ...address, bearerFile: tokenPath })}\n`);
   }
   return tokenPath;
 }
@@ -1102,7 +1115,8 @@ async function runWebMcpHttp(
   const serverOrigins = buildServerOrigins(options.host, actualPort);
   const allowedHosts = buildAllowedHosts(options.host, actualPort, options.allowHosts);
 
-  const listenUrl = `http://${options.host}:${actualPort}/mcp`;
+  const address = serveAddress(platform, options.host, actualPort);
+  const listenUrl = address.url;
   let tokenFilePath: string | undefined;
 
   if (generatedBearer && resolvedBearer) {
@@ -1110,12 +1124,12 @@ async function runWebMcpHttp(
       platform,
       resolvedBearer,
       actualPort,
-      listenUrl,
+      address,
       options.json
     );
   } else {
     if (options.json) {
-      await platform.write(1, `${JSON.stringify({ url: listenUrl })}\n`);
+      await platform.write(1, `${JSON.stringify(address)}\n`);
     }
   }
   await platform.write(2, `mcpcat serve --webmcp: listening on ${listenUrl}\n`);
@@ -1338,7 +1352,8 @@ async function runProxyHttp(
   const serverOrigins = buildServerOrigins(options.host, actualPort);
   const allowedHosts = buildAllowedHosts(options.host, actualPort, options.allowHosts);
 
-  const listenUrl = `http://${options.host}:${actualPort}/mcp`;
+  const address = serveAddress(platform, options.host, actualPort);
+  const listenUrl = address.url;
   let tokenFilePath: string | undefined;
 
   if (generatedBearer && resolvedBearer) {
@@ -1346,12 +1361,12 @@ async function runProxyHttp(
       platform,
       resolvedBearer,
       actualPort,
-      listenUrl,
+      address,
       options.json
     );
   } else {
     if (options.json) {
-      await platform.write(1, `${JSON.stringify({ url: listenUrl })}\n`);
+      await platform.write(1, `${JSON.stringify(address)}\n`);
     }
   }
   await platform.write(2, `mcpcat serve --proxy: listening on ${listenUrl}\n`);
@@ -1563,7 +1578,8 @@ async function runHttpServer(
   const serverOrigins = buildServerOrigins(options.host, actualPort);
   const allowedHosts = buildAllowedHosts(options.host, actualPort, options.allowHosts);
 
-  const listenUrl = `http://${options.host}:${actualPort}/mcp`;
+  const address = serveAddress(platform, options.host, actualPort);
+  const listenUrl = address.url;
   let tokenFilePath: string | undefined;
 
   if (generatedBearer && resolvedBearer) {
@@ -1571,12 +1587,12 @@ async function runHttpServer(
       platform,
       resolvedBearer,
       actualPort,
-      listenUrl,
+      address,
       options.json
     );
   } else {
     if (options.json) {
-      await platform.write(1, `${JSON.stringify({ url: listenUrl })}\n`);
+      await platform.write(1, `${JSON.stringify(address)}\n`);
     }
   }
   await platform.write(2, `mcpcat serve: listening on ${listenUrl}\n`);

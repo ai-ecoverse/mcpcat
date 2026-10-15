@@ -239,10 +239,23 @@ async function kernelListen(ctx: KernelContext, options: ListenOptions): Promise
 
 const KERNEL_LOCALHOST_RE = /^(\d+)\.kernel\.localhost$/;
 
+const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '[::1]']);
+
 function extractLoopbackPort(url: URL): number | null {
   const m = KERNEL_LOCALHOST_RE.exec(url.hostname);
   if (m) return Number(m[1]);
   return null;
+}
+
+function extractPlainLoopbackPort(url: URL): number | null {
+  if (url.protocol !== 'http:' || !LOOPBACK_HOSTNAMES.has(url.hostname)) return null;
+  return url.port ? Number(url.port) : 80;
+}
+
+function isConnectionRefused(err: unknown): boolean {
+  const e = err as { code?: unknown; message?: unknown } | null;
+  if (e?.code === 'ECONNREFUSED') return true;
+  return typeof e?.message === 'string' && e.message.includes('ECONNREFUSED');
 }
 
 function collectHeaders(init?: RequestInit): [string, string][] {
@@ -315,7 +328,8 @@ async function kernelLoopbackFetch(
   ctx: KernelContext,
   url: URL,
   port: number,
-  init?: RequestInit
+  init?: RequestInit,
+  onRefused?: () => Promise<Response>
 ): Promise<Response> {
   const method = (init?.method ?? 'GET').toUpperCase();
   const enc = new TextEncoder();
@@ -328,7 +342,13 @@ async function kernelLoopbackFetch(
   const headerEntries = collectHeaders(init);
   const reqBytes = buildHttpRequest(method, url, headerEntries, bodyBytes);
 
-  const conn = await ctx.net.connect({ host: '127.0.0.1', port });
+  let conn: Awaited<ReturnType<KernelContext['net']['connect']>>;
+  try {
+    conn = await ctx.net.connect({ host: '127.0.0.1', port });
+  } catch (err) {
+    if (onRefused && isConnectionRefused(err)) return onRefused();
+    throw err;
+  }
   const writer = conn.writable.getWriter();
   await writer.write(reqBytes);
 
@@ -396,6 +416,10 @@ function createKernelFetch(
     }
     const port = extractLoopbackPort(url);
     if (port !== null) return kernelLoopbackFetch(ctx, url, port, init);
+    const plainPort = extractPlainLoopbackPort(url);
+    if (plainPort !== null) {
+      return kernelLoopbackFetch(ctx, url, plainPort, init, () => ctx.fetch(input, init));
+    }
     return ctx.fetch(input, init);
   };
 }
