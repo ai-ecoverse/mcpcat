@@ -67,14 +67,13 @@ jobs:
 
   cert:
     runs-on: ${{ needs.runner.outputs.runner }}
-    needs: [runner, ci]
+    needs: runner
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
       - run: npm ci
-      - run: npm run build
       - name: Run cert with the kernel slicc-bios ships
         run: |
           kernel=$(node -p "require('@ai-ecoverse/slicc-bios/src/packages/package.json').dependencies['@ai-ecoverse/slicc-kernel']")
