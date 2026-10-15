@@ -17,7 +17,10 @@ permissions:
   contents: write
 
 env:
+  # renovate: datasource=node-version depName=node versioning=node
   NODE_VERSION: '24'
+  # renovate: datasource=docker depName=alpine
+  ALPINE_IMAGE: alpine:3.24.2
 
 jobs:
   package:
@@ -70,7 +73,7 @@ jobs:
 
       - name: Installer test, alpine with nodejs
         run: |
-          docker run --rm -v "$PWD:/w" -w /w -e TAG -e EXPECT_MANAGED_NODE=0 alpine:latest sh -euc '
+          docker run --rm -v "$PWD:/w" -w /w -e TAG -e EXPECT_MANAGED_NODE=0 "$ALPINE_IMAGE" sh -euc '
             apk add --no-cache python3 tar xz nodejs >/dev/null
             sh test/integration/test-install.sh assets "${TAG#v}"
           '
@@ -79,7 +82,7 @@ jobs:
 
       - name: Installer test, alpine without node (musl rejection)
         run: |
-          docker run --rm -v "$PWD:/w" -w /w alpine:latest sh -euc '
+          docker run --rm -v "$PWD:/w" -w /w "$ALPINE_IMAGE" sh -euc '
             if SLICC_INSTALL_BASE_URL="http://dummy" sh install.sh 2>/tmp/err.txt; then
               echo "FAIL: should have exited 1 on musl without node" >&2
               exit 1
