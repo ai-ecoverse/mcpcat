@@ -48,12 +48,17 @@ function parsePidFile(path) {
   return { servers, grandchildren };
 }
 
-function assertAllDead(pidFile, label) {
+async function assertAllDead(pidFile, label) {
   const { servers, grandchildren } = parsePidFile(pidFile);
   assert.equal(servers.length, 1, `${label}: exactly one server should have been spawned`);
-  for (const pid of [...servers, ...grandchildren]) {
-    assert.ok(!pidExists(pid), `${label}: pid ${pid} is still alive`);
+  const pids = [...servers, ...grandchildren];
+  let alive = pids.filter(pidExists);
+  const end = Date.now() + 5_000;
+  while (alive.length > 0 && Date.now() < end) {
+    await sleep(50);
+    alive = pids.filter(pidExists);
   }
+  assert.deepEqual(alive, [], `${label}: pids still alive 5 s after mcpcat exited`);
 }
 
 const spawnedChildren = [];
@@ -84,8 +89,11 @@ function waitExit(child) {
   });
 }
 
-async function serverRecorded(pidFile) {
-  while (parsePidFile(pidFile).servers.length === 0) await sleep(20);
+function serverRecorded(pidFile) {
+  return waitUntil(
+    () => parsePidFile(pidFile).grandchildren.length > 0,
+    `the stdio server to record its pid in ${pidFile}`
+  );
 }
 
 function freshPidFile() {
@@ -105,8 +113,7 @@ describe('lifecycle: host stdio client', { timeout: 30_000 }, () => {
     );
     const { code } = await waitExit(child);
     assert.equal(code, 0);
-    await sleep(500);
-    assertAllDead(pidFile, 'normal exit');
+    await assertAllDead(pidFile, 'normal exit');
   });
 
   it('-m timeout: all pids dead, exactly one server', async () => {
@@ -116,8 +123,7 @@ describe('lifecycle: host stdio client', { timeout: 30_000 }, () => {
     });
     const { code } = await waitExit(child);
     assert.equal(code, 124);
-    await sleep(500);
-    assertAllDead(pidFile, 'timeout exit');
+    await assertAllDead(pidFile, 'timeout exit');
   });
 
   it('SIGTERM: all pids dead, exactly one server', async () => {
@@ -132,8 +138,7 @@ describe('lifecycle: host stdio client', { timeout: 30_000 }, () => {
       child.kill('SIGTERM');
     } catch {}
     await exitPromise;
-    await sleep(500);
-    assertAllDead(pidFile, 'SIGTERM');
+    await assertAllDead(pidFile, 'SIGTERM');
   });
 
   it('SIGHUP: all pids dead, exactly one server', async () => {
@@ -148,8 +153,7 @@ describe('lifecycle: host stdio client', { timeout: 30_000 }, () => {
       child.kill('SIGHUP');
     } catch {}
     await exitPromise;
-    await sleep(500);
-    assertAllDead(pidFile, 'SIGHUP');
+    await assertAllDead(pidFile, 'SIGHUP');
   });
 
   it('SIGINT: all pids dead, exactly one server', async () => {
@@ -164,8 +168,7 @@ describe('lifecycle: host stdio client', { timeout: 30_000 }, () => {
       child.kill('SIGINT');
     } catch {}
     await exitPromise;
-    await sleep(500);
-    assertAllDead(pidFile, 'SIGINT');
+    await assertAllDead(pidFile, 'SIGINT');
   });
 });
 
@@ -208,11 +211,10 @@ describe('lifecycle: host serve --proxy stdio', { timeout: 30_000 }, () => {
         },
       }),
     }).catch(() => {});
-    await sleep(500);
+    await serverRecorded(pidFile);
     child.kill('SIGTERM');
     await waitExit(child);
-    await sleep(500);
-    assertAllDead(pidFile, 'serve proxy SIGTERM');
+    await assertAllDead(pidFile, 'serve proxy SIGTERM');
   });
 
   it('SIGHUP: proxy upstream pids dead, exactly one server', async () => {
@@ -241,11 +243,10 @@ describe('lifecycle: host serve --proxy stdio', { timeout: 30_000 }, () => {
         },
       }),
     }).catch(() => {});
-    await sleep(500);
+    await serverRecorded(pidFile);
     child.kill('SIGHUP');
     await waitExit(child);
-    await sleep(500);
-    assertAllDead(pidFile, 'serve proxy SIGHUP');
+    await assertAllDead(pidFile, 'serve proxy SIGHUP');
   });
 });
 
@@ -264,7 +265,6 @@ describe('lifecycle: SIGHUP removes serve token file', { timeout: 15_000 }, () =
     assert.ok(existsSync(tokenFile), 'token file should exist before SIGHUP');
     child.kill('SIGHUP');
     await waitExit(child);
-    await sleep(200);
     assert.ok(!existsSync(tokenFile), 'token file should be gone after SIGHUP');
   });
 });
