@@ -70,7 +70,7 @@ jobs:
           skip() { echo "::notice::$1"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; }
           semver='^[0-9]+\.[0-9]+\.[0-9]+$'
           releases() { git tag --list 'v*' | sed 's/^v//' | grep -E "$semver" | sort -V; }
-          planted= dry_run=false
+          planted='' dry_run=false
           if [ "$EVENT" = workflow_run ]; then
             version=$(git tag --points-at "$RUN_SHA" 'v*' | sed 's/^v//' | grep -E "$semver" | sort -V | tail -1 || true)
             [ -n "$version" ] || skip "Release on $RUN_SHA tagged no version"
@@ -118,7 +118,6 @@ jobs:
       PREV: ${{ needs.plan.outputs.prev }}
       PLANTED: ${{ needs.plan.outputs.planted }}
       GH_REPO: ${{ github.repository }}
-      WORK: ${{ runner.temp }}/cert
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -142,6 +141,7 @@ jobs:
             *) echo "::error::no gh release for $(uname -m)"; exit 1 ;;
           esac
           mkdir -p "$RUNNER_TEMP/bin" "$RUNNER_TEMP/cert-review"
+          echo "WORK=$RUNNER_TEMP/cert" >> "$GITHUB_ENV"
           if ! command -v gh > /dev/null; then
             v=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/cli/cli/releases/latest | jq -r '.tag_name | ltrimstr("v")')
             (cd "$RUNNER_TEMP/bin" \
@@ -333,7 +333,7 @@ jobs:
               const fs = require("node:fs");
               const [notes, body] = process.argv.slice(1).map((f) => fs.readFileSync(f, "utf8"));
               const kept = notes.replace(/\n*<!-- cert-review -->[\s\S]*?<!-- \/cert-review -->\n*/g, "").trimEnd();
-              fs.writeFileSync(process.argv[1], `${kept}\n\n${body}`);
+              fs.writeFileSync(process.argv[1], kept + "\n\n" + body);
             ' "$RUNNER_TEMP/notes.md" "$RUNNER_TEMP/record/body.md"
             gh release edit "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md" > /dev/null
             echo "release v$VERSION: $line"
