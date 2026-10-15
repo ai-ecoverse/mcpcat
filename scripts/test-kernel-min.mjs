@@ -16,7 +16,10 @@ execSync(`npm install --no-save @ai-ecoverse/slicc-kernel@${minVersion}`, {
 });
 
 try {
-  execSync('node --test --test-timeout=30000 test/integration/*kernel*.test.mjs', {
+  const concurrency = process.env.TEST_CONCURRENCY
+    ? ` --test-concurrency=${process.env.TEST_CONCURRENCY}`
+    : '';
+  execSync(`node --test${concurrency} --test-timeout=30000 test/integration/*kernel*.test.mjs`, {
     cwd: root,
     stdio: 'inherit',
   });

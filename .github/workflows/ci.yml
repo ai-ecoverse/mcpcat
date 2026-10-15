@@ -65,6 +65,7 @@ jobs:
       runs-on: ${{ needs.runner.outputs.runner }}
       node-version: '24'
       chromium: false
+      test: TEST_CONCURRENCY=4 npm test
 
   cert:
     runs-on: ${{ needs.runner.outputs.runner }}
@@ -85,6 +86,7 @@ jobs:
         run: npm run cert -- '--kernel=${{ matrix.kernel }}'
         env:
           NODE_NO_WARNINGS: '1'
+          TEST_CONCURRENCY: '4'
 
   all-green:
     if: always()

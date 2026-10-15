@@ -47,6 +47,7 @@ function runTests(files) {
       `--test-reporter=${countReporter}`,
       '--test-reporter-destination=stdout',
       '--test-timeout=120000',
+      ...(env.TEST_CONCURRENCY ? [`--test-concurrency=${env.TEST_CONCURRENCY}`] : []),
       ...patternArgs,
       ...files,
     ],
