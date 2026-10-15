@@ -225,3 +225,125 @@ describe('add --bridge: a signal right after "listening" shuts the bridge down',
     });
   }
 });
+
+const discoveryExit = { SIGHUP: 129, SIGTERM: 143, SIGINT: 130 };
+
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+describe('serve <cmd>: a signal during CLI discovery kills the discovery child and exits', () => {
+  for (const sig of ['SIGHUP', 'SIGTERM', 'SIGINT']) {
+    it(`${sig} on the host`, async () => {
+      const pidFile = join(home, `discovery-${sig}.pid`);
+      const { cmd, args } = mcpcatArgs([
+        'serve',
+        '--env',
+        'PID_RECORD_FILE',
+        `slow=${join(fixturesDir, 'serve-slow-discovery-cli.mjs')}`,
+      ]);
+      const child = spawn(cmd, args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, NODE_NO_WARNINGS: '1', HOME: home, PID_RECORD_FILE: pidFile },
+      });
+      let stderr = '';
+      child.stderr.on('data', (c) => {
+        stderr += c.toString();
+      });
+      const exited = new Promise((resolve) => {
+        child.on('exit', (code, signal) => resolve({ code, signal }));
+      });
+      const pid = await waitUntil(
+        () => existsSync(pidFile) && Number(readFileSync(pidFile, 'utf8').trim()),
+        'the discovery child to record its pid'
+      );
+      child.kill(sig);
+      const { code, signal } = await exited;
+      assert.equal(signal, null, `mcpcat died of ${signal} during discovery: ${stderr}`);
+      assert.equal(code, discoveryExit[sig], `exit code after ${sig}: ${stderr}`);
+      await waitUntil(() => !pidAlive(pid), `discovery child ${pid} to be gone`, 5_000);
+    });
+  }
+});
+
+describe('serve <cmd> in the kernel: a signal during CLI discovery kills the discovery child and exits', () => {
+  let kernel;
+  let client;
+
+  before(async () => {
+    kernel = await createNodeKernel({});
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat/dist/kernel/mcpcat.mjs',
+      readFileSync(kernelBundle)
+    );
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat/package.json',
+      JSON.stringify({
+        name: '@ai-ecoverse/mcpcat',
+        version: '0.0.0',
+        type: 'module',
+        slicc: { commands: { mcpcat: { abi: 'js', module: 'dist/kernel/mcpcat.mjs' } } },
+      })
+    );
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat-test-slow-discovery/dist/main.mjs',
+      readFileSync(join(fixturesDir, 'kernel-slow-discovery-cli.mjs'))
+    );
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat-test-slow-discovery/package.json',
+      JSON.stringify({
+        name: '@ai-ecoverse/mcpcat-test-slow-discovery',
+        version: '1.0.0',
+        type: 'module',
+        slicc: {
+          commands: {
+            'mcpcat-test-slow-discovery': { abi: 'js', module: 'dist/main.mjs' },
+          },
+        },
+      })
+    );
+    client = await attachKernel(await kernel.connect());
+  });
+
+  after(() => {
+    client?.close();
+    kernel?.terminate();
+  });
+
+  for (const sig of ['SIGHUP', 'SIGTERM', 'SIGINT']) {
+    it(sig, async () => {
+      const pidFile = `/tmp/discovery-${sig}.pid`;
+      let stderr = '';
+      const sp = await client.spawn(
+        ['mcpcat', 'serve', '--env', 'PID_RECORD_FILE', 'mcpcat-test-slow-discovery'],
+        {
+          stdin: 'pipe',
+          env: { PID_RECORD_FILE: pidFile },
+          onStdout() {},
+          onStderr(chunk) {
+            stderr += new TextDecoder().decode(chunk);
+          },
+        }
+      );
+      const pid = await waitUntil(async () => {
+        try {
+          return Number(new TextDecoder().decode(await kernel.readFile(pidFile)).trim());
+        } catch {
+          return 0;
+        }
+      }, 'the discovery child to record its pid');
+      sp.signal(sig);
+      assert.equal(await sp.exited, discoveryExit[sig], `exit code after ${sig}: ${stderr}`);
+      await waitUntil(
+        async () => !(await client.ps()).some((p) => p.pid === pid && p.state !== 'Z'),
+        `discovery child ${pid} to be gone`,
+        5_000
+      );
+    });
+  }
+});
