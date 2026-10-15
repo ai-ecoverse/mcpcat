@@ -16,9 +16,9 @@
     }
   },
   {
-    "name": "get_price",
-    "title": "Get Price",
-    "description": "Returns the current price from warehouse",
+    "name": "get_stock",
+    "title": "Get Stock",
+    "description": "Returns the current stock from warehouse",
     "inputSchema": {
       "type": "object",
       "properties": {
