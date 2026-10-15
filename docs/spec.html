@@ -600,7 +600,7 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
 <h2 id="repo">20. Repository, build, test, release</h2>
 <pre><code>mcpcat/
   AGENTS.md  README.md  LICENSE (Apache-2.0)  package.json  biome.json  tsconfig.json  lefthook.yml  renovate.json
-  .github/workflows/  ci.yml (slicc-shared-web node-ci.yml)  release.yml (node-release.yml)
+  .github/workflows/  ci.yml (slicc-shared-web node-ci.yml)  release.yml (tag, pack, cert-review, publish)
   src/
     cli/  client/  args/  render/  config/  auth/  serve/  codemode/  discovery/
     platform/  types.ts  host.ts  kernel.ts
@@ -618,7 +618,14 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
   <li>Conventions from slicc-shared-web: Biome strict config, no comments in source, AGENTS.md ≤ 1,000 characters and no CLAUDE.md, unit tests out of git, <code>slicc-lint</code>.</li>
   <li><code>package.json</code>: <code>"version": "0.0.0"</code>, <code>"type": "module"</code>, <code>bin</code>, <code>slicc.commands</code>, <code>engines</code> (<code>node &gt;= 24</code>, <code>slicc-kernel &gt;= &lt;first version with ctx.spawn + ctx.net + ctx.fetch&gt;</code>), <code>fledgling</code> block, <code>publishConfig</code> with provenance.</li>
   <li>Builds are deterministic: a rebuild from the release tag is byte-identical (homescoop checks this, <a href="#cert">§20.1</a>). No install scripts.</li>
-  <li>Release: semantic-release on <code>main</code> through the shared <code>node-release.yml</code>, npm trusted publishing (<code>npm run trust</code> once), provenance. npm, plus the npm-pack tarball and an <code>install.sh</code> attached to each GitHub release (<a href="#q-binaries">Q10</a>, #50).</li>
+  <li>Release, <strong>mcpcat: certified = latest</strong>. Every push to <code>main</code> runs <code>release.yml</code>:
+    <ol>
+      <li><strong>tag:</strong> semantic-release (<code>npmPublish: false</code>) on the bench pool computes the version, pushes the tag and drafts the GitHub release notes. It does not publish.</li>
+      <li><strong>pack:</strong> packs the tarball from the tag (<code>scripts/cert-review/pack.mjs</code>, with <code>gitHead</code> = the tag commit) and uploads it as an artifact with its sha256.</li>
+      <li><strong>cert-review</strong> (<code>cert-review.yml</code>, <code>workflow_call</code>) reviews that artifact. Its <code>record</code> job runs on a fresh runner, re-hashes the artifact and writes the verdict line.</li>
+      <li><strong>publish:</strong> on <code>ubuntu-latest</code>, the only job with <code>id-token: write</code>. It runs <code>npm publish --provenance</code> as <code>latest</code> only when the verdict is <code>certified</code> and its sha256 is the artifact's (<code>scripts/cert-review/gate.mjs</code>). Then <strong>verify</strong> checks npm's integrity, the SLSA provenance (<code>release.yml</code> on <code>refs/heads/main</code>) and <code>gitHead</code> against the certified sha256 and the tag.</li>
+    </ol>
+    A FAIL leaves the version tagged and unpublished, as a prerelease whose notes hold the verdict line, and the next release carries the fix. npm <code>latest</code> is therefore always the last certified version, and there is no separate <code>certified</code> dist-tag. The installer assets (the npm tarball, <code>install.sh</code>, <code>SHA256SUMS</code>) are attached after publish and are the certified bytes (<a href="#q-binaries">Q10</a>, #50, #111). Releases run only from <code>main</code> (#104), with npm trusted publishing bound to <code>release.yml</code> (<code>npm run trust</code> once).</li>
   <li>Tests never touch <code>127.0.0.1:9222</code>–<code>9229</code> on a developer machine. The WebMCP tests drive their own Chromium from the slicc-shared-web harness on a pipe, and pass its endpoint to <code>playwright-cli</code> with <code>--cdp</code>.</li>
   <li>Dependencies (exact pins, Renovate): <code>@earendil-works/pi-mcp</code>, <code>@earendil-works/pi-codemode</code> (+ <code>quickjs-wasi</code>), <code>esbuild</code> (dev), <code>@ai-ecoverse/slicc-kernel</code> (dev, for kernel tests), <code>@ai-ecoverse/slicc-shared-web</code> (dev). No MCP SDK, no CLI framework: argument parsing is hand-written to keep the kernel bundle small and the six-compatible coercion exact.</li>
   <li>Size budget: kernel bundle ≤ 400 KB minified before QuickJS; QuickJS wasm loaded only by <code>code</code>.</li>
@@ -629,7 +636,7 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
 <ol>
   <li><strong>Bytes:</strong>
     <ul>
-      <li>the registry tarball's sha256, and <code>gitHead</code> = the release tag;</li>
+      <li>the tarball's sha256, the same before publish (the artifact) and after (the registry), and <code>gitHead</code> = the release tag;</li>
       <li>a <strong>byte-identical rebuild from the tag</strong> (deterministic esbuild);</li>
       <li>no install scripts, and a tight <code>files</code> list;</li>
       <li><code>engines</code> minimums that are true;</li>
@@ -749,7 +756,7 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
   <dd><strong>Revised twice on 2026-10-13</strong>, by requests from Lars via the Seven PM. The first revision shipped standalone SEA binaries (#33). The second dropped bundled Node (#50). Each release now attaches mcpcat's npm-pack tarball, <code>install.sh</code> and <code>SHA256SUMS</code>. <code>curl -fsSL https://github.com/ai-ecoverse/mcpcat/releases/latest/download/install.sh | sh</code> uses a <code>node</code> ≥ <code>engines.node</code> from <code>PATH</code>; otherwise it downloads the official latest-LTS Node, verifies it against <code>SHASUMS256.txt</code> and puts it in <code>~/.local/share/mcpcat/node</code>. On musl it asks for the package manager's Node. npm publishing and the kernel build continue unchanged.</dd>
 
   <dt id="q-cert">Q11 · Certifying the <code>abi: "js"</code> package · <em>answered by homescoop</em></dt>
-  <dd><strong>Gated.</strong> bios pins an exact certified version plus a <code>certs.json</code> line, and each later release gets a short delta cert. mcpcat publishes freely. The cert's scope is <a href="#cert">§20.1</a>.</dd>
+  <dd><strong>Gated.</strong> bios pins an exact certified version plus a <code>certs.json</code> line, and each later release gets a short delta cert. mcpcat's own cert-review certifies each release before it is published: certified = latest (<a href="#repo">§20</a>). The cert's scope is <a href="#cert">§20.1</a>.</dd>
 </dl>
 
 <h2 id="sources">23. Sources</h2>

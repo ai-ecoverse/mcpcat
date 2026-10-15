@@ -7,6 +7,11 @@ on:
         description: 'Release tag (e.g. v1.0.0)'
         required: true
         type: string
+      sha256:
+        description: 'The certified sha256 the npm tarball must have'
+        required: false
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       tag:
@@ -48,8 +53,14 @@ jobs:
           npm pack "@ai-ecoverse/mcpcat@$version" --pack-destination assets
           mv "assets/ai-ecoverse-mcpcat-$version.tgz" "assets/mcpcat-$version.tgz"
           cd assets && sha256sum "mcpcat-$version.tgz" | tee SHA256SUMS
+          if [ -n "$CERTIFIED" ]; then
+            actual=$(sha256sum "mcpcat-$version.tgz" | cut -d' ' -f1)
+            [ "$actual" = "$CERTIFIED" ] || { echo "::error::npm serves sha256 $actual, cert-review certified $CERTIFIED"; exit 1; }
+            echo "the npm tarball is the certified one: $actual"
+          fi
         env:
           TAG: ${{ inputs.tag }}
+          CERTIFIED: ${{ inputs.sha256 }}
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -149,17 +160,22 @@ jobs:
           cp install.sh release/
           cd release && sha256sum mcpcat-*.tgz > SHA256SUMS
 
-      - name: Create GitHub release with assets
+      - name: Attach the assets to the GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ inputs.tag }}"
-          gh release create "$TAG" release/* \
-            --repo "${{ github.repository }}" \
-            --title "$TAG" \
-            --generate-notes \
-            --verify-tag \
-            --prerelease
+          if gh release view "$TAG" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            gh release upload "$TAG" release/* --repo "${{ github.repository }}" --clobber
+            gh release edit "$TAG" --repo "${{ github.repository }}" --draft=false --prerelease
+          else
+            gh release create "$TAG" release/* \
+              --repo "${{ github.repository }}" \
+              --title "$TAG" \
+              --generate-notes \
+              --verify-tag \
+              --prerelease
+          fi
 
       - name: Promote to latest if highest semver with assets
         env:
@@ -192,7 +208,7 @@ jobs:
           TAG="${{ inputs.tag }}"
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             echo "Release $TAG exists, ensuring it stays as prerelease"
-            gh release edit "$TAG" --repo "${{ github.repository }}" --prerelease
+            gh release edit "$TAG" --repo "${{ github.repository }}" --draft=false --prerelease
           else
             echo "Creating $TAG as prerelease (asset build failed)"
             gh release create "$TAG" \
