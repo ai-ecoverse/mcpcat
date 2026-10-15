@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   ci:
-    uses: ai-ecoverse/slicc-shared-web/.github/workflows/node-ci.yml@v1.13.1
+    uses: ai-ecoverse/slicc-shared-web/.github/workflows/node-ci.yml@v1.14.0
     with:
       node-version: '24'
       chromium: false
