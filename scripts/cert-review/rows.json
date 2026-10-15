@@ -1,0 +1,15 @@
+{
+  "secrets": ["cert-row-secrets", "auth", "m2"],
+  "oauth": ["cert-row-oauth", "auth", "auth-2026", "refresh-skew", "kernel-oauth-refresh"],
+  "serve-proxy": ["cert-row-serve", "serve-security", "proxy", "kernel-serve-url"],
+  "webmcp": ["webmcp"],
+  "dac": ["cert-row-users-kernel"],
+  "lifecycle": ["lifecycle", "b5-lifecycle", "pdeathsig-kernel", "sigint", "serve-signal-cleanup"],
+  "codemode": [
+    "cert-row-codemode",
+    "codemode-security",
+    "codemode-kernel",
+    "codemode-kernel-deadline"
+  ],
+  "discovery": ["cert-row-discovery", "discovery"]
+}

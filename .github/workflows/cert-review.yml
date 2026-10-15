@@ -1,0 +1,342 @@
+name: cert-review
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'The released version to certify, x.y.z (tag v<version>)'
+        required: true
+        type: string
+      prev:
+        description: 'The previous version the delta is read from, x.y.z (tag v<prev>), never resolved from npm'
+        required: true
+        type: string
+      planted:
+        description: 'Proofs only: a branch to build and review instead of the npm package (never certified, never published)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Write the record artifact only: no commit status, no release notes'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: cert-review / plan
+    if: >-
+      github.event_name == 'workflow_dispatch' || (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      )
+    runs-on: ${{ vars.CERT_RUNNER || 'cloud-run-bench' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      go: ${{ steps.plan.outputs.go }}
+      version: ${{ steps.plan.outputs.version }}
+      prev: ${{ steps.plan.outputs.prev }}
+      commit: ${{ steps.plan.outputs.commit }}
+      planted: ${{ steps.plan.outputs.planted }}
+      dry_run: ${{ steps.plan.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: The version, its previous tag and its commit
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          IN_VERSION: ${{ inputs.version }}
+          IN_PREV: ${{ inputs.prev }}
+          IN_PLANTED: ${{ inputs.planted }}
+          IN_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          skip() { echo "::notice::$1"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          semver='^[0-9]+\.[0-9]+\.[0-9]+$'
+          releases() { git tag --list 'v*' | sed 's/^v//' | grep -E "$semver" | sort -V; }
+          planted='' dry_run=false
+          if [ "$EVENT" = workflow_run ]; then
+            version=$(git tag --points-at "$RUN_SHA" 'v*' | sed 's/^v//' | grep -E "$semver" | sort -V | tail -1 || true)
+            [ -n "$version" ] || skip "Release on $RUN_SHA tagged no version"
+            prev=$(releases | awk -v v="$version" '$0 == v { print last; exit } { last = $0 }')
+            [ -n "$prev" ] || skip "v$version has no earlier release tag"
+          else
+            version=$IN_VERSION prev=$IN_PREV planted=$IN_PLANTED dry_run=$IN_DRY_RUN
+            [[ "$version" =~ $semver ]] || { echo "::error::version '$version' is not x.y.z"; exit 1; }
+            [[ "$prev" =~ $semver ]] || { echo "::error::prev '$prev' is not x.y.z"; exit 1; }
+            [ "$(printf '%s\n%s\n' "$prev" "$version" | sort -V | head -1)" = "$prev" ] && [ "$prev" != "$version" ] \
+              || { echo "::error::prev $prev is not before $version"; exit 1; }
+            git rev-parse -q --verify "refs/tags/v$prev^{commit}" > /dev/null || { echo "::error::no tag v$prev"; exit 1; }
+            if [ -n "$planted" ]; then
+              [[ "$planted" =~ ^[A-Za-z0-9._/-]+$ ]] && [ "$planted" != main ] || { echo "::error::planted '$planted' is not a branch name"; exit 1; }
+              dry_run=true
+            fi
+          fi
+          git rev-parse -q --verify "refs/tags/v$version^{commit}" > /dev/null || { echo "::error::no tag v$version"; exit 1; }
+          commit=$(git rev-parse "v$version^{commit}")
+          {
+            echo "go=true"
+            echo "version=$version"
+            echo "prev=$prev"
+            echo "commit=$commit"
+            echo "planted=$planted"
+            echo "dry_run=$dry_run"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  review:
+    name: cert-review / review
+    needs: plan
+    if: needs.plan.outputs.go == 'true'
+    runs-on: ${{ vars.CERT_RUNNER || 'cloud-run-bench' }}
+    timeout-minutes: 120
+    concurrency:
+      group: cert-review-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    env:
+      LEFTHOOK: '0'
+      VERSION: ${{ needs.plan.outputs.version }}
+      PREV: ${{ needs.plan.outputs.prev }}
+      PLANTED: ${{ needs.plan.outputs.planted }}
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+
+      - name: gh and cert-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$(uname -m)" in
+            x86_64) arch=amd64 ;;
+            aarch64 | arm64) arch=arm64 ;;
+            *) echo "::error::no gh release for $(uname -m)"; exit 1 ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/bin" "$RUNNER_TEMP/cert-review"
+          echo "WORK=$RUNNER_TEMP/cert" >> "$GITHUB_ENV"
+          if ! command -v gh > /dev/null; then
+            v=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/cli/cli/releases/latest | jq -r '.tag_name | ltrimstr("v")')
+            (cd "$RUNNER_TEMP/bin" \
+              && curl -fsSL -O "https://github.com/cli/cli/releases/download/v$v/gh_${v}_linux_$arch.tar.gz" \
+                -O "https://github.com/cli/cli/releases/download/v$v/gh_${v}_checksums.txt" \
+              && sha256sum -c "gh_${v}_checksums.txt" --ignore-missing \
+              && tar -xzf "gh_${v}_linux_$arch.tar.gz" --strip-components=2 "gh_${v}_linux_$arch/bin/gh")
+          fi
+          printf '#!/bin/sh\nexec env -u AWS_BEARER_TOKEN_BEDROCK -u GH_TOKEN -u GITHUB_TOKEN "$@"\n' > "$RUNNER_TEMP/bin/cert-run"
+          chmod +x "$RUNNER_TEMP/bin/cert-run"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Stage the published tarball, the rebuild, the previous release and the pinned kernels (no secrets in this step)
+        run: |
+          npm ci --no-audit --no-fund
+          node scripts/cert-review/stage.mjs --version "$VERSION" --prev "$PREV" --work "$WORK" ${PLANTED:+--planted "$PLANTED"}
+
+      - name: Suites and security rows (no secrets in this step)
+        run: node scripts/cert-review/suites.mjs --work "$WORK" || echo "::warning::some suites failed; the review reads suites.json"
+
+      - name: Review
+        id: review
+        uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8
+        env:
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          AWS_REGION: ${{ vars.CERT_AWS_REGION || 'us-west-2' }}
+          GH_TOKEN: ${{ github.token }}
+        with:
+          use_bedrock: 'true'
+          github_token: ${{ github.token }}
+          show_full_output: ${{ github.event_name == 'workflow_dispatch' }}
+          claude_args: |
+            --model ${{ vars.CERT_BEDROCK_MODEL || 'global.anthropic.claude-opus-5-5' }}
+            --allowedTools "Bash,Read,Write,Edit,Glob,Grep,WebFetch"
+            --permission-mode bypassPermissions
+            --max-turns 300
+          prompt: |
+            You certify `@ai-ecoverse/mcpcat@${{ env.VERSION }}`, a curl for the Model Context Protocol: a host CLI (`dist/host/mcpcat.mjs`) and a slicc-kernel `abi: "js"` command (`dist/kernel/mcpcat.mjs`) that seven (seven.sliccy.ai) runs in the browser. mcpcat releases from main on every merge. Decide, from evidence, whether this release is fit for seven. The delta is read from `v${{ env.PREV }}`. Run: ${{ env.RUN_URL }}.
+
+            WHAT'S SET UP
+            - The current directory is mcpcat's main at ${{ github.sha }} (the cert tools in `scripts/cert-review/` and the committed integration tests). `${{ env.WORK }}/stage.json` describes everything below with paths, shas and commits; read it first.
+            - `published`: the tarball under review, from npm. These exact bytes are what users install. A later job re-downloads it and checks, in code, its integrity, the SLSA provenance (release.yml on refs/heads/main), gitHead = tag `v${{ env.VERSION }}` and that the commit is on main: don't repeat those. When `planted` is set, the tarball is a build of that branch instead of the npm package; review it exactly as you would a release.
+            - `rebuilt`: `trees.tag` is the subject's tree (tag `v${{ env.VERSION }}`), where `npm ci; npm version ${{ env.VERSION }} --no-git-tag-version; MCPCAT_STRIP_SCRIPTS=1 npm pack` ran. `reproducible` and `differingFiles` compare it with `published`; both are unpacked in `${{ env.WORK }}/pub/x/package` and `${{ env.WORK }}/rebuilt/x/package`. After the rebuild, `trees.tag/dist` was replaced by the published dist, so the subject's own tests run on the published bytes.
+            - `trees.prev` is `v${{ env.PREV }}` built from source; `trees.neg` is the subject's tree with `v${{ env.PREV }}`'s dist (the NEGATIVE: the subject's tests on the previous code); `trees.previousPublished` is `v${{ env.PREV }}`'s npm tarball, unpacked.
+            - `trees.rows` is main's tests with the published dist: the security rows, listed in `scripts/cert-review/rows.json` (row → test files in `test/integration/`). They are committed integration tests; you review and run them, you never design probes.
+            - `kernels`: the pinned slicc-kernels (the `kernel-cert-*` devDependencies and slicc-bios's kernel), each with its `tgz` and an installed `dir`.
+            - `surface`: per version, the kernel bundle's imports (from esbuild's metafile), `eval(` and `Function` hits (comments stripped), the `ctx.*` set (and `ctxAdded`/`ctxRemoved`), LICENSE and THIRD_PARTY_NOTICES, and the manifest's dependencies, scripts, engines, bin and `slicc.commands`.
+            - **Already run, with no secrets** (`${{ env.WORK }}/suites.json`, logs in `${{ env.WORK }}/logs/`): the subject's host suite (`npm run test:integration` in `trees.tag`), `npm run cert -- --kernel=<tgz>` on every pinned kernel in `trees.tag`, and the rows on the host and on every pinned kernel in `trees.rows`. Don't run them again; re-run single files only to tell a flake from a failure.
+            - **Run every command that executes mcpcat, a test or a fixture through `cert-run`**, which drops the Bedrock key and the GitHub token from its environment: for example `cd <trees.neg> && cert-run node --test --test-timeout=120000 test/integration/<file>.test.mjs`, and for a kernel test `cert-run env MCPCAT_CERT_KERNEL_DIR=<kernels[i].dir> node --test …`. Never touch ports 9222–9229.
+            - `gh` reads this repository: `gh api repos/${{ github.repository }}/compare/v${{ env.PREV }}...v${{ env.VERSION }}`, `gh pr view <n>`, `gh issue list --state all --search …`, and `gh issue create`.
+
+            WHAT TO CHECK
+            1. **Rebuild.** `reproducible` must be true. Otherwise explain every differing file from the two unpacked trees; an unexplained non-reproducible build is a FAIL.
+            2. **Surface.** The kernel bundle has no imports and no `eval` or `new Function`/`Function(` that runs code (show any hit is inert). Every `ctx.*` added or removed since `v${{ env.PREV }}` is explained by the delta. LICENSE and dist/THIRD_PARTY_NOTICES are there, and the notices cover what the delta bundles. The manifest has 0 dependencies and no install scripts.
+            3. **Suites.** Every entry in suites.json passed on every pinned kernel and on the host. For each failure, read its log and re-run that file alone in the same tree. A row that fails only because main's test checks behaviour added after `v${{ env.VERSION }}` (see `git log` of the test file, and the subject's own suite) is not a regression of this release: it is a known issue of this release if it is a bug that was fixed later, which you cite.
+            4. **The delta.** Read every commit and pull request in `compare/v${{ env.PREV }}...v${{ env.VERSION }}`. For each fix, name the committed test that covers it, show that it passes on the subject (`trees.tag`) and that it **fails in `trees.neg`** (the NEGATIVE). A fix without such a test, or whose test also passes in `trees.neg`, is a test gap.
+            5. **Security rows**, from rows.json and its suites: secrets redaction (`${VAR}` in headers and mcp.json, error paths, `-v`, `--json`); OAuth (DCR, PKCE, state, redirect, rotation, redaction, the store at 0600); serve and proxy (loopback bind, bearer, Origin and Host, no CORS, the proxy pinned to its upstream); webmcp (no tool shared between origins, issue `#96`); DAC under users enforce (alice and bob); lifecycle (no orphans, including SIGKILL on kernels ≥ 1.88); the code-mode sandbox (the globals, import and Function blocked, the wall-time bound); the discovery canary (0 hits). Say for each row whether its tests ran and passed on the host and on every kernel. When the delta touches a row's surface and no committed test covers the change, that is a test gap: report it, don't improvise a probe. If a provider safety filter stops you, don't rephrase or work around it: stop, say so in comment.md and answer `fail` with that reason.
+
+            SEVERITY (Lars, 2026-10-14: roll forward, don't reject over minor issues)
+            FAIL only for a security or secret exposure, data loss or corruption, a supply-chain integrity problem (sha/provenance mismatch, an unexplained non-reproducible build), a license violation, a crash or boot failure, or a regression that breaks a common workflow without a workaround. Everything else is a known issue with a repro, and the test that would catch it. **File every known issue that isn't filed yet**, with a repro and the behaviour-level integration test that would catch it. Search first, open and closed: `gh issue list -R ${{ github.repository }} --state all --search …` and `gh issue list -R ai-ecoverse/slicc-kernel --state all --search …`, and cite a match as `#<n>` or `ai-ecoverse/slicc-kernel#<n>` instead of filing again. Then `gh issue create -R ${{ github.repository }}` with the repro, the version and kernel it fails on, and the test; for a slicc-kernel problem, say so in the title.
+
+            YOUR ANSWER, in `${{ runner.temp }}/cert-review/`
+            - `verdict.json`: `{ "verdict": "certified" | "fail", "known": ["#<n>" or "<owner>/<repo>#<n>", …], "reason": "<one line, for a fail>" }`. Every known issue is a filed issue. Don't write shas or versions: a later job computes the line from the registry.
+            - `comment.md`: **Cert review: @ai-ecoverse/mcpcat@${{ env.VERSION }}** (from ${{ env.PREV }}), then a table `| Check | Result |` with the rows Rebuild, Surface, Suites (host and each kernel), Delta and NEGATIVE (one line per fix), one row per security row, and Known issues; then a few sentences on what changed and what a human should look at. Say that the kernel floor (slicc-kernel 1.65.2, the `engines` minimum) is not covered by this run. Mention anything in this setup that got in your way.
+            Don't edit, commit or push anything, and don't comment on issues or pull requests other than the ones you file.
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: cert-review-verdict-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
+          path: |
+            ${{ runner.temp }}/cert-review/verdict.json
+            ${{ runner.temp }}/cert-review/comment.md
+          if-no-files-found: ignore
+
+      - name: Evidence
+        if: always()
+        env:
+          EXECUTION: ${{ steps.review.outputs.execution_file }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/evidence"
+          cp "${EXECUTION:-$RUNNER_TEMP/claude-execution-output.json}" "$RUNNER_TEMP/evidence/claude-turns.json" 2> /dev/null || true
+          cp -r "$RUNNER_TEMP/cert-review" "$RUNNER_TEMP/evidence/" 2> /dev/null || true
+          cp "$WORK/stage.json" "$WORK/suites.json" "$RUNNER_TEMP/evidence/" 2> /dev/null || true
+          cp -r "$WORK/logs" "$RUNNER_TEMP/evidence/" 2> /dev/null || true
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: cert-review-evidence-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
+          path: ${{ runner.temp }}/evidence/
+          if-no-files-found: ignore
+
+  record:
+    name: cert-review / record
+    needs: [plan, review]
+    if: always() && needs.plan.outputs.go == 'true' && needs.review.result != 'cancelled'
+    runs-on: ${{ vars.CERT_RUNNER || 'cloud-run-bench' }}
+    timeout-minutes: 20
+    concurrency:
+      group: cert-review-record-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      contents: write
+      statuses: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      PLANTED: ${{ needs.plan.outputs.planted }}
+      DRY_RUN: ${{ needs.plan.outputs.dry_run }}
+      PLAN_COMMIT: ${{ needs.plan.outputs.commit }}
+      SUFFIX: ${{ needs.plan.outputs.planted && '-planted' || '' }}
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: scripts/cert-review
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        continue-on-error: true
+        with:
+          name: cert-review-verdict-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
+          path: ${{ runner.temp }}/cert-review
+
+      - name: gh
+        run: |
+          if ! command -v gh > /dev/null; then
+            case "$(uname -m)" in
+              x86_64) arch=amd64 ;;
+              aarch64 | arm64) arch=arm64 ;;
+              *) echo "::error::no gh release for $(uname -m)"; exit 1 ;;
+            esac
+            mkdir -p "$RUNNER_TEMP/bin"
+            v=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/cli/cli/releases/latest | jq -r '.tag_name | ltrimstr("v")')
+            (cd "$RUNNER_TEMP/bin" \
+              && curl -fsSL -O "https://github.com/cli/cli/releases/download/v$v/gh_${v}_linux_$arch.tar.gz" \
+                -O "https://github.com/cli/cli/releases/download/v$v/gh_${v}_checksums.txt" \
+              && sha256sum -c "gh_${v}_checksums.txt" --ignore-missing \
+              && tar -xzf "gh_${v}_linux_$arch.tar.gz" --strip-components=2 "gh_${v}_linux_$arch/bin/gh")
+            echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: The line, from the registry and the verdict (this job's tools, from ${{ github.sha }})
+        id: record
+        run: |
+          mkdir -p "$RUNNER_TEMP/cert-review"
+          if node scripts/cert-review/record.mjs --version "$VERSION" --review "$RUNNER_TEMP/cert-review" \
+            --out "$RUNNER_TEMP/record" --run "$RUN_URL" --repo "$GH_REPO" ${PLANTED:+--planted "$PLANTED"}; then
+            echo "conclusion=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "conclusion=failure" >> "$GITHUB_OUTPUT"
+          fi
+          commit=$(jq -r '.commit // empty' "$RUNNER_TEMP/record/record.json")
+          echo "commit=${commit:-$PLAN_COMMIT}" >> "$GITHUB_OUTPUT"
+          { echo '```'; cat "$RUNNER_TEMP/record/line.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        id: artifact
+        with:
+          name: cert-review-record-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
+          path: |
+            ${{ runner.temp }}/record/record.json
+            ${{ runner.temp }}/record/line.txt
+            ${{ runner.temp }}/record/body.md
+          if-no-files-found: error
+
+      - name: The cert-review status on the release commit, and the line in the release notes
+        if: needs.plan.outputs.dry_run != 'true' && needs.plan.outputs.planted == ''
+        env:
+          CONCLUSION: ${{ steps.record.outputs.conclusion }}
+          COMMIT: ${{ steps.record.outputs.commit }}
+          ARTIFACT: ${{ steps.artifact.outputs.artifact-id }}
+        run: |
+          line=$(head -1 "$RUNNER_TEMP/record/line.txt")
+          gh api "repos/$GH_REPO/statuses/$COMMIT" \
+            -f state="$CONCLUSION" -f context=cert-review -f target_url="$RUN_URL/artifacts/$ARTIFACT" \
+            -f description="$(printf '%s' "$line" | cut -c1-140)" \
+            --jq '"status \(.id) \(.state) on \(.url)"'
+          if gh release view "v$VERSION" --json body --jq .body > "$RUNNER_TEMP/notes.md" 2> /dev/null; then
+            node -e '
+              const fs = require("node:fs");
+              const [notes, body] = process.argv.slice(1).map((f) => fs.readFileSync(f, "utf8"));
+              const kept = notes.replace(/\n*<!-- cert-review -->[\s\S]*?<!-- \/cert-review -->\n*/g, "").trimEnd();
+              fs.writeFileSync(process.argv[1], kept + "\n\n" + body);
+            ' "$RUNNER_TEMP/notes.md" "$RUNNER_TEMP/record/body.md"
+            gh release edit "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md" > /dev/null
+            echo "release v$VERSION: $line"
+          else
+            echo "::warning::no GitHub release for v$VERSION, so the line is only in the status and the artifact"
+          fi
