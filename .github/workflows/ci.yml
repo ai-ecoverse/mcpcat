@@ -64,6 +64,24 @@ jobs:
       runs-on: ${{ needs.runner.outputs.runner }}
       node-version: '24'
       chromium: false
+      timeout-minutes: 60
+      test: |
+        set -u
+        mkdir -p /tmp/k181 && (cd /tmp/k181 && npm init -y >/dev/null && npm install @ai-ecoverse/slicc-kernel@1.81.0 >/dev/null)
+        K181=/tmp/k181/node_modules/@ai-ecoverse/slicc-kernel
+        fails=0; runs=0
+        for i in $(seq 1 5); do
+          runs=$((runs+1)); npm run test:integration > /tmp/full-$i.log 2>&1 || { fails=$((fails+1)); grep -E "^✖|AssertionError" /tmp/full-$i.log | head -20; }
+        done
+        echo "full suite on 1.94.2: $fails failures in $runs runs"
+        for k in default 181; do
+          f=0
+          for i in $(seq 1 20); do
+            if [ $k = 181 ]; then export MCPCAT_CERT_KERNEL_DIR=$K181; else unset MCPCAT_CERT_KERNEL_DIR; fi
+            node --test --test-timeout=60000 test/integration/serve-signal-cleanup.test.mjs test/integration/lifecycle.test.mjs > /tmp/pair-$k-$i.log 2>&1 || { f=$((f+1)); grep -E "^✖|AssertionError|!==" /tmp/pair-$k-$i.log | head -10; }
+          done
+          echo "serve-signal-cleanup + lifecycle on kernel $k: $f failures in 20 runs"
+        done
 
   cert:
     runs-on: ${{ needs.runner.outputs.runner }}
