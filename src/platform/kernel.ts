@@ -284,6 +284,19 @@ function collectHeaders(init?: RequestInit): [string, string][] {
   return entries;
 }
 
+async function encodeBody(
+  body: RequestInit['body'],
+  headerEntries: [string, string][]
+): Promise<Uint8Array> {
+  if (body == null) return new Uint8Array(0);
+  const encoded = new Response(body);
+  const type = encoded.headers.get('content-type');
+  if (type && !headerEntries.some(([k]) => k.toLowerCase() === 'content-type')) {
+    headerEntries.push(['Content-Type', type]);
+  }
+  return new Uint8Array(await encoded.arrayBuffer());
+}
+
 function buildHttpRequest(
   method: string,
   url: URL,
@@ -343,16 +356,7 @@ async function kernelLoopbackFetch(
   onRefused?: () => Promise<Response>
 ): Promise<Response> {
   const method = (init?.method ?? 'GET').toUpperCase();
-  const enc = new TextEncoder();
   const dec = new TextDecoder();
-  let bodyStr = '';
-  if (init?.body != null) {
-    bodyStr = typeof init.body === 'string' ? init.body : dec.decode(init.body as ArrayBuffer);
-  }
-  const bodyBytes = enc.encode(bodyStr);
-  const headerEntries = collectHeaders(init);
-  const reqBytes = buildHttpRequest(method, url, headerEntries, bodyBytes);
-
   let conn: Awaited<ReturnType<KernelContext['net']['connect']>>;
   try {
     conn = await ctx.net.connect({ host: '127.0.0.1', port });
@@ -360,8 +364,10 @@ async function kernelLoopbackFetch(
     if (onRefused && isConnectionRefused(err)) return onRefused();
     throw err;
   }
+  const headerEntries = collectHeaders(init);
+  const bodyBytes = await encodeBody(init?.body, headerEntries);
   const writer = conn.writable.getWriter();
-  await writer.write(reqBytes);
+  await writer.write(buildHttpRequest(method, url, headerEntries, bodyBytes));
 
   const reader = conn.readable.getReader();
   let buf = new Uint8Array(4096);
