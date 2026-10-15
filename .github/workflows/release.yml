@@ -155,11 +155,13 @@ jobs:
 
   unpublished:
     name: release / not published
-    needs: [tag, pack, cert]
+    needs: [tag, pack, cert, publish]
     if: >-
-      always() && github.ref == 'refs/heads/main' && needs.tag.outputs.version != '' && !(
-        needs.cert.outputs.verdict == 'certified' &&
-        needs.cert.outputs.sha256 == needs.pack.outputs.sha256
+      always() && github.ref == 'refs/heads/main' && needs.tag.outputs.version != '' && (
+        needs.publish.result == 'failure' || !(
+          needs.cert.outputs.verdict == 'certified' &&
+          needs.cert.outputs.sha256 == needs.pack.outputs.sha256
+        )
       )
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -172,10 +174,12 @@ jobs:
       LINE: ${{ needs.cert.outputs.line }}
       PACK: ${{ needs.pack.result }}
       CERT: ${{ needs.cert.result }}
+      PUBLISH: ${{ needs.publish.result }}
     steps:
       - name: v${{ needs.tag.outputs.version }} stays tagged and unpublished
         run: |
           line="${LINE:-cert-ci: FAIL @ai-ecoverse/mcpcat@$VERSION: no cert-review line (pack $PACK, cert-review $CERT)}"
+          [ "$PUBLISH" != failure ] || line="the publish job failed after: $line"
           { echo '```'; echo "not published: $line"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           if gh release view "v$VERSION" > /dev/null 2>&1; then
             gh release edit "v$VERSION" --draft=false --prerelease --latest=false > /dev/null
@@ -190,9 +194,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read
+      contents: write
     env:
       GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.tag.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -205,13 +211,20 @@ jobs:
 
       - name: SLSA provenance, npm integrity and gitHead against the certified sha256
         env:
-          VERSION: ${{ needs.tag.outputs.version }}
           SHA256: ${{ needs.publish.outputs.sha256 }}
         run: |
           line=$(node scripts/cert-review/published.mjs --version "$VERSION" --sha256 "$SHA256") && ok=1 || ok=0
           { echo '```'; echo "$line"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           echo "$line"
           [ "$ok" = 1 ] || { echo "::error title=v$VERSION on npm::$line"; exit 1; }
+
+      - name: Published but not verified, so the release is a visible prerelease
+        if: failure()
+        run: |
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            gh release edit "v$VERSION" --draft=false --prerelease --latest=false > /dev/null
+            echo "v$VERSION is a prerelease: it is on npm, but the post-publish checks failed"
+          fi
 
   binaries:
     needs: [tag, publish, verify]
