@@ -74,6 +74,10 @@ case "$1" in
     echo "jerk 0.14.1"
     exit 0
     ;;
+  list)
+    echo '[{"provider":"mcp:testserver","source":"mcp.json"}]'
+    exit 0
+    ;;
 esac
 verb=""
 for arg in "$@"; do
@@ -154,6 +158,10 @@ esac
 case "$1" in
   --version)
     echo "jerk 0.14.1"
+    exit 0
+    ;;
+  list)
+    echo '[{"provider":"mcp:needslogin","source":"mcp.json"}]'
     exit 0
     ;;
 esac

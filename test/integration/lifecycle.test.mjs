@@ -88,6 +88,10 @@ function waitExit(child) {
   });
 }
 
+async function serverRecorded(pidFile) {
+  while (parsePidFile(pidFile).servers.length === 0) await sleep(20);
+}
+
 function freshPidFile() {
   const p = join(testHome, `pids-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
   try {
@@ -128,7 +132,7 @@ describe('lifecycle: host stdio client', { timeout: 30_000 }, () => {
       { PID_RECORD_FILE: pidFile }
     );
     const exitPromise = waitExit(child);
-    await sleep(500);
+    await serverRecorded(pidFile);
     try {
       child.kill('SIGTERM');
     } catch {}
@@ -144,7 +148,7 @@ describe('lifecycle: host stdio client', { timeout: 30_000 }, () => {
       { PID_RECORD_FILE: pidFile }
     );
     const exitPromise = waitExit(child);
-    await sleep(500);
+    await serverRecorded(pidFile);
     try {
       child.kill('SIGHUP');
     } catch {}
@@ -160,7 +164,7 @@ describe('lifecycle: host stdio client', { timeout: 30_000 }, () => {
       { PID_RECORD_FILE: pidFile }
     );
     const exitPromise = waitExit(child);
-    await sleep(500);
+    await serverRecorded(pidFile);
     try {
       child.kill('SIGINT');
     } catch {}

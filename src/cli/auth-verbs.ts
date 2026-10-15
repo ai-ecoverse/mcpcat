@@ -4,6 +4,7 @@ import {
   JerkTimeoutError,
   JerkTokenSource,
   jerkAvailable,
+  jerkKnows,
   runJerk,
 } from '../auth/jerk-token-source.ts';
 import { SignInCancelledError, signIn } from '../auth/oauth.ts';
@@ -14,24 +15,20 @@ import { MergedConfigSource } from '../config/index.ts';
 import type { McpOAuthConfig } from '../config/types.ts';
 import type { Platform } from '../platform/types.ts';
 
-let resolvedSource: TokenSource | undefined;
-
 export async function createTokenSource(
   platform: Platform,
+  name: string,
   timeoutMs: number = JERK_TIMEOUT_MS
 ): Promise<TokenSource> {
-  if (isKernel(platform)) return new PiFileTokenSource(platform);
-  if (resolvedSource) return resolvedSource;
-  if (await jerkAvailable(platform)) {
-    resolvedSource = new JerkTokenSource(platform, timeoutMs);
-  } else {
-    resolvedSource = new PiFileTokenSource(platform);
+  if (
+    !isKernel(platform) &&
+    !name.startsWith('url:') &&
+    (await jerkAvailable(platform)) &&
+    (await jerkKnows(platform, jerkMcpId(name)))
+  ) {
+    return new JerkTokenSource(platform, timeoutMs);
   }
-  return resolvedSource;
-}
-
-export function resetTokenSourceCache(): void {
-  resolvedSource = undefined;
+  return new PiFileTokenSource(platform);
 }
 
 const VALUE_FLAGS = new Set(['--scope', '-m', '--timeout']);
@@ -107,8 +104,14 @@ async function readStream(stream: ReadableStream<Uint8Array>): Promise<string> {
   return new TextDecoder().decode(buf);
 }
 
-async function jerkLogin(platform: Platform, target: string, args: string[]): Promise<number> {
-  const resolved = await resolveLoginTarget(platform, target);
+type LoginTarget = Awaited<ReturnType<typeof resolveLoginTarget>>;
+
+async function jerkLogin(
+  platform: Platform,
+  target: string,
+  resolved: LoginTarget,
+  args: string[]
+): Promise<number> {
   const id = jerkMcpId(resolved.name);
   const argv = ['jerk', id, 'create'];
   const scopeIdx = args.indexOf('--scope');
@@ -139,9 +142,9 @@ async function jerkLogin(platform: Platform, target: string, args: string[]): Pr
 async function jerkLogout(
   platform: Platform,
   target: string,
+  resolved: LoginTarget,
   source: JerkTokenSource
 ): Promise<number> {
-  const resolved = await resolveLoginTarget(platform, target);
   const id = jerkMcpId(resolved.name);
   const result = await runJerk(platform, ['jerk', id, 'drop', '--yes'], source.timeoutMs);
   if (result.status === 0) {
@@ -155,7 +158,7 @@ async function jerkLogout(
 export async function runLogin(
   platform: Platform,
   args: string[],
-  source: TokenSource
+  timeoutMs?: number
 ): Promise<number> {
   if (isKernel(platform)) {
     await platform.write(
@@ -172,10 +175,18 @@ export async function runLogin(
   }
 
   const target = positional[0];
+  let resolved: LoginTarget;
+  try {
+    resolved = await resolveLoginTarget(platform, target);
+  } catch (err) {
+    await platform.write(2, `mcpcat: ${(err as Error).message}\n`);
+    return 2;
+  }
+  const source = await createTokenSource(platform, resolved.name, timeoutMs);
 
   if (source instanceof JerkTokenSource) {
     try {
-      return await jerkLogin(platform, target, args);
+      return await jerkLogin(platform, target, resolved, args);
     } catch (err) {
       await platform.write(2, `mcpcat: login failed: ${(err as Error).message}\n`);
       return 4;
@@ -183,13 +194,6 @@ export async function runLogin(
   }
 
   const noBrowser = args.includes('--no-browser');
-  let resolved;
-  try {
-    resolved = await resolveLoginTarget(platform, target);
-  } catch (err) {
-    await platform.write(2, `mcpcat: ${(err as Error).message}\n`);
-    return 2;
-  }
 
   try {
     await signIn({
@@ -253,7 +257,7 @@ export async function runLogin(
 export async function runLogout(
   platform: Platform,
   args: string[],
-  source: TokenSource
+  timeoutMs?: number
 ): Promise<number> {
   if (isKernel(platform)) {
     await platform.write(2, 'mcpcat: logout is not available in seven.\n');
@@ -267,10 +271,18 @@ export async function runLogout(
   }
 
   const target = positional[0];
+  let resolved: LoginTarget;
+  try {
+    resolved = await resolveLoginTarget(platform, target);
+  } catch (err) {
+    await platform.write(2, `mcpcat: ${(err as Error).message}\n`);
+    return 2;
+  }
+  const source = await createTokenSource(platform, resolved.name, timeoutMs);
 
   if (source instanceof JerkTokenSource) {
     try {
-      return await jerkLogout(platform, target, source);
+      return await jerkLogout(platform, target, resolved, source);
     } catch (err) {
       if (err instanceof JerkTimeoutError) {
         await platform.write(2, `mcpcat: ${err.message}\n`);
@@ -279,14 +291,6 @@ export async function runLogout(
       await platform.write(2, `mcpcat: logout failed: ${(err as Error).message}\n`);
       return 1;
     }
-  }
-
-  let resolved;
-  try {
-    resolved = await resolveLoginTarget(platform, target);
-  } catch (err) {
-    await platform.write(2, `mcpcat: ${(err as Error).message}\n`);
-    return 2;
   }
 
   const removed = await source.remove(resolved.name, resolved.serverUrl);
