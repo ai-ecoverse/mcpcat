@@ -129,6 +129,23 @@ describe('add --bridge: a signal right after "listening" shuts the bridge down',
         slicc: { commands: { 'mcpcat-test-stdio': { abi: 'js', module: 'dist/server.mjs' } } },
       })
     );
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat-test-signal-at-listening/dist/main.mjs',
+      readFileSync(join(fixturesDir, 'kernel-signal-at-listening.mjs'))
+    );
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat-test-signal-at-listening/package.json',
+      JSON.stringify({
+        name: '@ai-ecoverse/mcpcat-test-signal-at-listening',
+        version: '1.0.0',
+        type: 'module',
+        slicc: {
+          commands: {
+            'mcpcat-test-signal-at-listening': { abi: 'js', module: 'dist/main.mjs' },
+          },
+        },
+      })
+    );
     client = await attachKernel(await kernel.connect());
   });
 
@@ -174,6 +191,37 @@ describe('add --bridge: a signal right after "listening" shuts the bridge down',
         await waitUntil(() => fire() || sent, 'the listening line');
         assert.equal(await sp.exited, 0, `round ${i}: bridge did not shut down cleanly: ${stderr}`);
       }
+    });
+  }
+
+  for (const sig of ['SIGHUP', 'SIGTERM', 'SIGINT']) {
+    it(`${sig} from inside the kernel the moment "listening" appears: the bridge exits cleanly, 40 bridges`, async () => {
+      const runs = await Promise.all(
+        Array.from({ length: 40 }, (_, i) =>
+          kernel.run(
+            [
+              'mcpcat-test-signal-at-listening',
+              sig,
+              'add',
+              '--bridge',
+              '--no-auth',
+              '--config',
+              `/tmp/bridge-in-kernel-${sig}-${i}.json`,
+              `k${i}`,
+              '--',
+              'mcpcat-test-stdio',
+            ],
+            { stdout: 'pipe', stderr: 'pipe' }
+          )
+        )
+      );
+      const outcomes = runs.map((r) => JSON.parse(r.stdout.trim() || '{}'));
+      assert.ok(
+        outcomes.every((o) => o.sent),
+        `every bridge should print "listening": ${JSON.stringify(outcomes)}`
+      );
+      const unclean = outcomes.map((o, i) => [i, o.status]).filter(([, status]) => status !== 0);
+      assert.deepEqual(unclean, [], `bridges that died of ${sig} instead of shutting down`);
     });
   }
 });

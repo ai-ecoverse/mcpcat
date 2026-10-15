@@ -1037,8 +1037,10 @@ async function dispatchMultiTarget(
     platform.exit(exitCode);
   }
 
-  platform.onSignal?.('SIGTERM', () => void killTreeAndExit(143));
-  platform.onSignal?.('SIGHUP', () => void killTreeAndExit(129));
+  await Promise.all([
+    platform.onSignal?.('SIGTERM', () => void killTreeAndExit(143)),
+    platform.onSignal?.('SIGHUP', () => void killTreeAndExit(129)),
+  ]);
   const config = await MergedConfigSource.load(platform);
 
   if (parsed.verb === 'code') {
@@ -1489,12 +1491,14 @@ async function runClientVerb(
     platform.exit(exitCode);
   }
 
-  platform.onSignal?.('SIGINT', () => {
-    interrupted = true;
-    sigintController.abort();
-  });
-  platform.onSignal?.('SIGTERM', () => void killTreeAndExit(143));
-  platform.onSignal?.('SIGHUP', () => void killTreeAndExit(129));
+  await Promise.all([
+    platform.onSignal?.('SIGINT', () => {
+      interrupted = true;
+      sigintController.abort();
+    }),
+    platform.onSignal?.('SIGTERM', () => void killTreeAndExit(143)),
+    platform.onSignal?.('SIGHUP', () => void killTreeAndExit(129)),
+  ]);
 
   const showProgress = !parsed.silent && (parsed.verbose || platform.isatty(2));
   const onProgress = (progress: number, total?: number, message?: string) => {

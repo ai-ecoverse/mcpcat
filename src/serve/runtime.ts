@@ -428,6 +428,12 @@ function concat(chunks: Uint8Array[]): Uint8Array {
 
 const KILL_GRACE_MS = 2000;
 
+async function trapShutdown(platform: Platform, handler: () => void): Promise<void> {
+  await Promise.all(
+    (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map((sig) => platform.onSignal?.(sig, handler))
+  );
+}
+
 async function killInflight(): Promise<void> {
   const procs = [...inflightProcs];
   if (procs.length === 0) return;
@@ -710,9 +716,7 @@ async function discoverWithSignal(
     earlyAbort.abort();
     inflightDone = killInflight();
   };
-  platform.onSignal?.('SIGTERM', onShutdown);
-  platform.onSignal?.('SIGINT', onShutdown);
-  platform.onSignal?.('SIGHUP', onShutdown);
+  await trapShutdown(platform, onShutdown);
   for (const cmd of commands) {
     try {
       const cli = await discoverCli(platform, cmd.path, cmd.name, childEnv, cwd, earlyAbort.signal);
@@ -1151,11 +1155,7 @@ async function runWebMcpHttp(
     }
   };
 
-  if (platform.onSignal) {
-    platform.onSignal('SIGINT', shutdown);
-    platform.onSignal('SIGTERM', shutdown);
-    platform.onSignal('SIGHUP', shutdown);
-  }
+  await trapShutdown(platform, shutdown);
 
   if (generatedBearer && resolvedBearer) {
     tokenFilePath = await publishBearer(
@@ -1394,11 +1394,7 @@ async function runProxyHttp(
     }
   };
 
-  if (platform.onSignal) {
-    platform.onSignal('SIGINT', shutdown);
-    platform.onSignal('SIGTERM', shutdown);
-    platform.onSignal('SIGHUP', shutdown);
-  }
+  await trapShutdown(platform, shutdown);
 
   if (generatedBearer && resolvedBearer) {
     tokenFilePath = await publishBearer(
@@ -1626,11 +1622,7 @@ async function runHttpServer(
     }
   };
 
-  if (platform.onSignal) {
-    platform.onSignal('SIGINT', shutdown);
-    platform.onSignal('SIGTERM', shutdown);
-    platform.onSignal('SIGHUP', shutdown);
-  }
+  await trapShutdown(platform, shutdown);
 
   if (generatedBearer && resolvedBearer) {
     tokenFilePath = await publishBearer(

@@ -62,7 +62,7 @@ export interface Platform {
   write(fd: number, data: Uint8Array | string): Promise<void>;
   exit(code: number): never;
   openUrl?(url: string): Promise<void>;
-  onSignal?(signal: 'SIGINT' | 'SIGTERM' | 'SIGHUP', handler: () => void): void;
+  onSignal?(signal: 'SIGINT' | 'SIGTERM' | 'SIGHUP', handler: () => void): void | Promise<void>;
   seal?(request: string): Promise<string>;
   packageDir?: string;
 }
