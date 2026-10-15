@@ -461,6 +461,7 @@ mcpcat serve --tool 'disk_usage: du -sh {path}' --tool 'uptime: uptime' --http 8
   <li><code>--call-timeout</code> (default 120 s): on expiry the call returns <code>isError</code>, the child gets SIGTERM, then SIGKILL after 5 s.</li>
   <li>Result: stdout as text (or as <code>structuredContent</code> when it parses as JSON and the tool declares an <code>outputSchema</code>), stderr appended under a <code>stderr:</code> marker when non-empty, exit status in <code>_meta</code>. A non-zero exit is <code>isError: true</code>. Output over <code>--max-output</code> (default 1 MiB) is cut in the middle.</li>
   <li>Cancellation from the client kills the child.</li>
+  <li>Signals: a SIGHUP, SIGINT or SIGTERM while <code>serve</code> is still discovering its commands kills the discovery children and exits 129, 130 or 143, like the client verbs; once serving, the same signals shut the server down (in-flight children killed, token file removed) and it exits 0.</li>
 </ul>
 
 <h3>12.3 Transports</h3>
