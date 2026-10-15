@@ -6,6 +6,7 @@ import { after, before, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { attachKernel, createNodeKernel } from './helpers/kernel.mjs';
+import { waitUntil } from './helpers/wait.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const fixturesDir = join(root, 'test/integration/fixtures');
@@ -59,17 +60,17 @@ const isTree = (p) =>
   p.argv.some((a) => /mcpcat-test-(wrap|slow-legacy|sleeper)/.test(a)) &&
   !p.argv.some((a) => a === 'mcpcat');
 
-async function treeRunning(client, timeoutMs = 10_000) {
-  const end = Date.now() + timeoutMs;
-  while (Date.now() < end) {
+function treeRunning(client) {
+  return waitUntil(async () => {
     const tree = (await client.ps()).filter(isTree);
     const has = (name) => tree.some((p) => p.argv.some((a) => a.includes(name)));
-    if (has('mcpcat-test-wrap') && has('mcpcat-test-slow-legacy') && has('mcpcat-test-sleeper')) {
-      return tree;
-    }
-    await sleep(100);
-  }
-  throw new Error('wrapper, server and grandchild never all ran');
+    return (
+      has('mcpcat-test-wrap') &&
+      has('mcpcat-test-slow-legacy') &&
+      has('mcpcat-test-sleeper') &&
+      tree
+    );
+  }, 'wrapper, server and grandchild to all run');
 }
 
 async function survivors(client, timeoutMs = 5_000) {
@@ -92,16 +93,6 @@ const scenarios = [
 
 function listening(stderr) {
   return /listening on (http:\/\/\d+\.kernel\.localhost\/mcp)/.exec(stderr)?.[1];
-}
-
-async function waitFor(fn, what, timeoutMs = 10_000) {
-  const end = Date.now() + timeoutMs;
-  while (Date.now() < end) {
-    const v = fn();
-    if (v) return v;
-    await sleep(50);
-  }
-  throw new Error(`timed out waiting for ${what}`);
 }
 
 describe('kernel: a SIGKILLed mcpcat takes its stdio servers with it', {
@@ -137,7 +128,7 @@ describe('kernel: a SIGKILLed mcpcat takes its stdio servers with it', {
         });
         let caller;
         if (args[0] === 'serve') {
-          const url = await waitFor(() => listening(stderr), 'the proxy to listen');
+          const url = await waitUntil(() => listening(stderr), 'the proxy to listen');
           caller = await client.spawn(['mcpcat', 'call', url, 'slow', '-d', '{}'], {
             stdin: 'pipe',
             env: {},

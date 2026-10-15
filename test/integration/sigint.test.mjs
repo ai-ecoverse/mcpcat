@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { attachKernel, createNodeKernel, hostUrl, nodeTransport } from './helpers/kernel.mjs';
+import { waitUntil } from './helpers/wait.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const hostBin = join(root, 'dist/host/mcpcat.mjs');
@@ -176,10 +177,10 @@ describe('host: SIGINT cancels 2026 HTTP call and exits 130', () => {
     const code = await waitForExit(child);
     assert.equal(code, 130, 'exit code should be 130');
 
-    await new Promise((r) => setTimeout(r, 300));
-    const res = await fetch(`${url}/__aborted`);
-    const abortedList = await res.json();
-    assert.ok(abortedList.length > 0, 'server should record at least one aborted request');
+    const abortedList = await waitUntil(async () => {
+      const list = await (await fetch(`${url}/__aborted`)).json();
+      return list.length > 0 && list;
+    }, 'the server to see the aborted request');
     assert.equal(abortedList[0].tool, 'slow-cancel');
   });
 });
@@ -208,17 +209,26 @@ describe('kernel: SIGINT cancels 2026 HTTP call and exits 130', () => {
   });
 
   it('SIGINT via kill exits 130', async () => {
-    const proc = await client.spawn(['mcpcat', 'call', url, 'slow-cancel', '-d', '{}'], {
-      stdout: 'pipe',
-      stderr: 'pipe',
+    let stderr = '';
+    const proc = await client.spawn(['mcpcat', '-v', 'call', url, 'slow-cancel', '-d', '{}'], {
+      stdin: 'pipe',
+      onStdout() {},
+      onStderr(chunk) {
+        stderr += new TextDecoder().decode(chunk);
+      },
     });
 
-    await new Promise((r) => setTimeout(r, 2000));
+    await waitUntil(() => /Mcp-Method: tools\/call/i.test(stderr), 'the tools/call request');
 
     await client.kill(proc.pid, 'SIGINT');
 
     const code = await proc.exited;
-    assert.equal(code, 130, 'exit code should be 130');
+    assert.equal(code, 130, `exit code should be 130; stderr: ${stderr}`);
+    const aborted = await waitUntil(async () => {
+      const list = await (await fetch(`http://127.0.0.1:${server.port}/__aborted`)).json();
+      return list.length > 0 && list;
+    }, 'the server to see the aborted request');
+    assert.equal(aborted[0].tool, 'slow-cancel');
   });
 });
 
@@ -237,16 +247,13 @@ describe('kernel: SIGINT cancels stdio call', () => {
 
   it('SIGINT on stdio call prints interrupted and terminates', async () => {
     const res = await kernel.run(
-      ['sigint-runner', '2500', 'call', 'stdio:mcpcat-test-slow', 'slow', '-d', '{"ms":30000}'],
+      ['sigint-runner', '-v', 'call', 'stdio:mcpcat-test-slow', 'slow', '-d', '{"ms":30000}'],
       { stdout: 'pipe', stderr: 'pipe' }
     );
     assert.ok(
       res.stderr.includes('interrupted'),
       `stderr should mention interrupted, got: ${res.stderr}`
     );
-    assert.ok(
-      res.status < 128 || res.status === 130,
-      `exit code should be 130 or a low code, got: ${res.status}`
-    );
+    assert.equal(res.status, 130, `stderr: ${res.stderr}`);
   });
 });

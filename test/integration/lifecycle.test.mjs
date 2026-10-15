@@ -8,19 +8,15 @@ import { after, before, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { mcpcatArgs } from './helpers/bin.mjs';
-import { attachKernel, createNodeKernel } from './helpers/kernel.mjs';
+import { attachKernel, createNodeKernel, hasPgid } from './helpers/kernel.mjs';
+import { waitUntil } from './helpers/wait.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const fixturesDir = join(root, 'test/integration/fixtures');
 const legacyCli = join(fixturesDir, 'server-stdio-legacy-pidtrack.mjs');
+const slowCli = join(fixturesDir, 'server-stdio-legacy-slow-pidtrack.mjs');
 const kernelBundle = join(root, 'dist/kernel/mcpcat.mjs');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-
-const kernelPkg = JSON.parse(
-  readFileSync(join(root, 'node_modules/@ai-ecoverse/slicc-kernel/package.json'), 'utf8')
-);
-const kernelVersion = kernelPkg.version.split('.').map(Number);
-const hasPgid = kernelVersion[0] > 1 || (kernelVersion[0] === 1 && kernelVersion[1] >= 74);
 
 const testHome = join(tmpdir(), `mcpcat-lifecycle-${Date.now()}`);
 mkdirSync(join(testHome, '.pi', 'agent'), { recursive: true });
@@ -113,14 +109,13 @@ describe('lifecycle: host stdio client', { timeout: 30_000 }, () => {
     assertAllDead(pidFile, 'normal exit');
   });
 
-  it('-m 1 timeout: all pids dead, exactly one server', async () => {
+  it('-m timeout: all pids dead, exactly one server', async () => {
     const pidFile = freshPidFile();
-    const child = spawnMcpcat(
-      ['-m', '1', 'call', `stdio:node ${legacyCli}`, 'echo', '-d', '{"message":"hi"}'],
-      { PID_RECORD_FILE: pidFile }
-    );
+    const child = spawnMcpcat(['-m', '3', 'call', `stdio:node ${slowCli}`, 'slow', '-d', '{}'], {
+      PID_RECORD_FILE: pidFile,
+    });
     const { code } = await waitExit(child);
-    assert.equal(code, 0);
+    assert.equal(code, 124);
     await sleep(500);
     assertAllDead(pidFile, 'timeout exit');
   });
@@ -304,6 +299,55 @@ async function installKernelFixture(kernel, name, pkgName, file) {
   );
 }
 
+async function installKernelFixtures(kernel) {
+  await installMcpcat(kernel);
+  for (const [name, file] of [
+    ['mcpcat-test-legacy', 'kernel-stdio-legacy-pidtrack.mjs'],
+    ['mcpcat-test-slow-legacy', 'kernel-stdio-legacy-slow-pidtrack.mjs'],
+    ['mcpcat-test-sleeper', 'kernel-sleeper.mjs'],
+  ]) {
+    await installKernelFixture(kernel, name, name, file);
+  }
+}
+
+async function readKernelPids(kernel, pidFile) {
+  let content;
+  try {
+    content = new TextDecoder().decode(await kernel.readFile(pidFile));
+  } catch {
+    return { servers: [], grandchildren: [] };
+  }
+  const servers = [];
+  const grandchildren = [];
+  for (const l of content.trim().split('\n')) {
+    const [kind, pidStr] = l.split(':');
+    if (kind === 'server') servers.push(Number(pidStr));
+    else if (kind === 'grandchild') grandchildren.push(Number(pidStr));
+  }
+  return { servers, grandchildren };
+}
+
+function kernelServerRecorded(kernel, pidFile) {
+  return waitUntil(
+    async () => (await readKernelPids(kernel, pidFile)).servers.length > 0,
+    `the stdio server to record its pid in ${pidFile}`
+  );
+}
+
+async function assertKernelPidsDead(kernel, client, pidFile, label) {
+  const { servers, grandchildren } = await readKernelPids(kernel, pidFile);
+  assert.equal(servers.length, 1, `${label}: exactly one server`);
+  const pids = [...servers, ...grandchildren];
+  let alive = [];
+  const end = Date.now() + 5_000;
+  do {
+    const live = new Set((await client.ps()).filter((p) => p.state !== 'Z').map((p) => p.pid));
+    alive = pids.filter((pid) => live.has(pid));
+    if (alive.length > 0) await sleep(50);
+  } while (alive.length > 0 && Date.now() < end);
+  assert.deepEqual(alive, [], `${label}: pids still alive 5 s after mcpcat exited`);
+}
+
 describe('lifecycle: kernel stdio client', {
   skip: !hasPgid && 'pgid requires slicc-kernel >= 1.74.0',
   timeout: 30_000,
@@ -313,19 +357,7 @@ describe('lifecycle: kernel stdio client', {
 
   before(async () => {
     kernel = await createNodeKernel({});
-    await installMcpcat(kernel);
-    await installKernelFixture(
-      kernel,
-      'mcpcat-test-legacy',
-      'mcpcat-test-legacy',
-      'kernel-stdio-legacy-pidtrack.mjs'
-    );
-    await installKernelFixture(
-      kernel,
-      'mcpcat-test-sleeper',
-      'mcpcat-test-sleeper',
-      'kernel-sleeper.mjs'
-    );
+    await installKernelFixtures(kernel);
     const port = await kernel.connect();
     client = await attachKernel(port);
   });
@@ -335,25 +367,6 @@ describe('lifecycle: kernel stdio client', {
     kernel?.terminate();
   });
 
-  async function kernelPidCheck(pidFile, label) {
-    const content = new TextDecoder().decode(await kernel.readFile(pidFile));
-    const lines = content.trim().split('\n');
-    const servers = [];
-    const grandchildren = [];
-    for (const l of lines) {
-      const [kind, pidStr] = l.split(':');
-      const pid = Number(pidStr);
-      if (kind === 'server') servers.push(pid);
-      else if (kind === 'grandchild') grandchildren.push(pid);
-    }
-    assert.equal(servers.length, 1, `${label}: exactly one server`);
-    const ps = await client.ps();
-    const alivePids = new Set(ps.map((p) => p.pid));
-    for (const pid of [...servers, ...grandchildren]) {
-      assert.ok(!alivePids.has(pid), `${label}: pid ${pid} still alive`);
-    }
-  }
-
   it('normal exit: all pids dead, exactly one server', async () => {
     const pidFile = '/tmp/kpids-normal.txt';
     const { status, stderr } = await kernel.run(
@@ -361,29 +374,33 @@ describe('lifecycle: kernel stdio client', {
       { stdout: 'pipe', stderr: 'pipe', env: { PID_RECORD_FILE: pidFile } }
     );
     assert.equal(status, 0, `stderr: ${stderr}`);
-    await sleep(500);
-    await kernelPidCheck(pidFile, 'kernel normal exit');
+    await assertKernelPidsDead(kernel, client, pidFile, 'kernel normal exit');
   });
 
-  it('SIGTERM: all pids dead, exactly one server', async () => {
-    const pidFile = '/tmp/kpids-sigterm.txt';
-    const result = await kernel.run(
-      ['mcpcat', 'call', 'stdio:mcpcat-test-legacy', 'echo', '-d', '{"message":"hi"}'],
-      { stdout: 'pipe', stderr: 'pipe', env: { PID_RECORD_FILE: pidFile } }
-    );
-    await sleep(500);
-    await kernelPidCheck(pidFile, 'kernel SIGTERM');
-  });
-
-  it('SIGHUP: all pids dead, exactly one server', async () => {
-    const pidFile = '/tmp/kpids-sighup.txt';
-    const result = await kernel.run(
-      ['mcpcat', 'call', 'stdio:mcpcat-test-legacy', 'echo', '-d', '{"message":"hi"}'],
-      { stdout: 'pipe', stderr: 'pipe', env: { PID_RECORD_FILE: pidFile } }
-    );
-    await sleep(500);
-    await kernelPidCheck(pidFile, 'kernel SIGHUP');
-  });
+  for (const [sig, code] of [
+    ['SIGTERM', 143],
+    ['SIGHUP', 129],
+  ]) {
+    it(`${sig}: all pids dead, exactly one server`, async () => {
+      const pidFile = `/tmp/kpids-${sig.toLowerCase()}.txt`;
+      let stderr = '';
+      const sp = await client.spawn(
+        ['mcpcat', 'call', 'stdio:mcpcat-test-slow-legacy', 'slow', '-d', '{}'],
+        {
+          stdin: 'pipe',
+          env: { PID_RECORD_FILE: pidFile },
+          onStdout() {},
+          onStderr(chunk) {
+            stderr += new TextDecoder().decode(chunk);
+          },
+        }
+      );
+      await kernelServerRecorded(kernel, pidFile);
+      sp.signal(sig);
+      assert.equal(await sp.exited, code, `stderr: ${stderr}`);
+      await assertKernelPidsDead(kernel, client, pidFile, `kernel ${sig}`);
+    });
+  }
 });
 
 describe('lifecycle: kernel add --bridge', {
@@ -395,19 +412,7 @@ describe('lifecycle: kernel add --bridge', {
 
   before(async () => {
     kernel = await createNodeKernel({});
-    await installMcpcat(kernel);
-    await installKernelFixture(
-      kernel,
-      'mcpcat-test-legacy',
-      'mcpcat-test-legacy',
-      'kernel-stdio-legacy-pidtrack.mjs'
-    );
-    await installKernelFixture(
-      kernel,
-      'mcpcat-test-sleeper',
-      'mcpcat-test-sleeper',
-      'kernel-sleeper.mjs'
-    );
+    await installKernelFixtures(kernel);
     const port = await kernel.connect();
     client = await attachKernel(port);
   });
@@ -419,33 +424,31 @@ describe('lifecycle: kernel add --bridge', {
 
   it('SIGTERM kills bridge upstream, one server', async () => {
     const pidFile = '/tmp/kpids-bridge.txt';
+    let output = '';
+    const collect = (chunk) => {
+      output += new TextDecoder().decode(chunk);
+    };
     const sp = await client.spawn(
       ['mcpcat', 'add', '--bridge', '--no-auth', 'test-bridge', '--', 'mcpcat-test-legacy'],
       {
         stdin: 'pipe',
         env: { PID_RECORD_FILE: pidFile },
-        onStdout() {},
-        onStderr() {},
+        onStdout: collect,
+        onStderr: collect,
       }
     );
-    await sleep(2000);
+    const url = await waitUntil(
+      () => /http:\/\/\d+\.kernel\.localhost\/mcp/.exec(output)?.[0],
+      'the bridge to print its URL'
+    );
+    const call = await kernel.run(['mcpcat', 'call', url, 'echo', '-d', '{"message":"hi"}'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.equal(call.status, 0, `call through the bridge: ${call.stderr}`);
+    await kernelServerRecorded(kernel, pidFile);
     sp.signal('SIGTERM');
     await sp.exited;
-    await sleep(500);
-    let content;
-    try {
-      content = new TextDecoder().decode(await kernel.readFile(pidFile));
-    } catch {
-      return;
-    }
-    const lines = content.trim().split('\n');
-    const servers = lines.filter((l) => l.startsWith('server:'));
-    assert.equal(servers.length, 1, 'bridge: exactly one server');
-    const ps = await client.ps();
-    const alivePids = new Set(ps.map((p) => p.pid));
-    for (const l of lines) {
-      const pid = Number(l.split(':')[1]);
-      assert.ok(!alivePids.has(pid), `bridge: pid ${pid} still alive`);
-    }
+    await assertKernelPidsDead(kernel, client, pidFile, 'bridge');
   });
 });

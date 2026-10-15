@@ -8,20 +8,14 @@ import { after, before, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { mcpcatArgs } from './helpers/bin.mjs';
-import { attachKernel, createNodeKernel } from './helpers/kernel.mjs';
+import { attachKernel, createNodeKernel, hasDeathSignal, hasPgid } from './helpers/kernel.mjs';
+import { waitUntil } from './helpers/wait.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const fixturesDir = join(root, 'test/integration/fixtures');
 const slowWrapper = join(fixturesDir, 'server-stdio-legacy-slow-wrapper.sh');
 const kernelBundle = join(root, 'dist/kernel/mcpcat.mjs');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-
-const kernelPkg = JSON.parse(
-  readFileSync(join(root, 'node_modules/@ai-ecoverse/slicc-kernel/package.json'), 'utf8')
-);
-const kernelVersion = kernelPkg.version.split('.').map(Number);
-const hasPgid = kernelVersion[0] > 1 || (kernelVersion[0] === 1 && kernelVersion[1] >= 74);
-const hasDeathSignal = kernelVersion[0] > 1 || (kernelVersion[0] === 1 && kernelVersion[1] >= 88);
 
 const testHome = join(tmpdir(), `mcpcat-b5-${Date.now()}`);
 mkdirSync(join(testHome, '.pi', 'agent'), { recursive: true });
@@ -53,12 +47,17 @@ function parsePidFile(path) {
   return { servers, grandchildren };
 }
 
-function assertAllDead(pidFile, label) {
+async function assertAllDead(pidFile, label) {
   const { servers, grandchildren } = parsePidFile(pidFile);
   assert.ok(servers.length >= 1, `${label}: at least one server pid expected`);
-  for (const pid of [...servers, ...grandchildren]) {
-    assert.ok(!pidExists(pid), `${label}: pid ${pid} is still alive`);
+  const pids = [...servers, ...grandchildren];
+  let alive = pids.filter(pidExists);
+  const end = Date.now() + 5_000;
+  while (alive.length > 0 && Date.now() < end) {
+    await sleep(50);
+    alive = pids.filter(pidExists);
   }
+  assert.deepEqual(alive, [], `${label}: pids still alive 5 s after mcpcat exited`);
 }
 
 const spawnedChildren = [];
@@ -109,13 +108,11 @@ function spawnMcpcatSameGroup(args, extraEnv = {}) {
   return child;
 }
 
-async function waitForPidFile(pidFile, timeoutMs = 5000) {
-  const end = Date.now() + timeoutMs;
-  while (Date.now() < end) {
-    if (existsSync(pidFile)) return true;
-    await sleep(100);
-  }
-  return false;
+function serverRecorded(pidFile) {
+  return waitUntil(
+    () => parsePidFile(pidFile).grandchildren.length > 0,
+    `the stdio server to record its pid in ${pidFile}`
+  );
 }
 
 describe('B5: host wrapper-launched stdio, signal to PID', { timeout: 30_000 }, () => {
@@ -127,11 +124,10 @@ describe('B5: host wrapper-launched stdio, signal to PID', { timeout: 30_000 }, 
       });
       child.stderr.on('data', () => {});
       const exitPromise = waitExit(child);
-      assert.ok(await waitForPidFile(pidFile), 'pid file should appear');
+      await serverRecorded(pidFile);
       child.kill(sig);
       await exitPromise;
-      await sleep(500);
-      assertAllDead(pidFile, `host pid ${sig}`);
+      await assertAllDead(pidFile, `host pid ${sig}`);
     });
   }
 });
@@ -145,11 +141,10 @@ describe('B5: host wrapper-launched stdio, signal to GROUP', { timeout: 30_000 }
       });
       child.stderr.on('data', () => {});
       const exitPromise = waitExit(child);
-      assert.ok(await waitForPidFile(pidFile), 'pid file should appear');
+      await serverRecorded(pidFile);
       process.kill(-child.pid, sig);
       await exitPromise;
-      await sleep(500);
-      assertAllDead(pidFile, `host group ${sig}`);
+      await assertAllDead(pidFile, `host group ${sig}`);
     });
   }
 });
@@ -205,6 +200,16 @@ describe('B5: kernel stdio, SIGTERM/SIGHUP to group kills server tree', {
     kernel?.terminate();
   });
 
+  function kernelServerRecorded(pidFile) {
+    return waitUntil(async () => {
+      try {
+        return new TextDecoder().decode(await kernel.readFile(pidFile)).includes('grandchild:');
+      } catch {
+        return false;
+      }
+    }, `the stdio server to record its pid in ${pidFile}`);
+  }
+
   for (const sig of ['SIGTERM', 'SIGHUP']) {
     it(`${sig} to group: server and grandchild dead`, async () => {
       const pidFile = `/tmp/k-b5-${sig.toLowerCase()}-${Date.now()}.txt`;
@@ -218,7 +223,7 @@ describe('B5: kernel stdio, SIGTERM/SIGHUP to group kills server tree', {
         }
       );
 
-      await sleep(2000);
+      await kernelServerRecorded(pidFile);
 
       const psBefore = await client.ps();
       const serversBefore = psBefore.filter((p) =>
@@ -228,10 +233,14 @@ describe('B5: kernel stdio, SIGTERM/SIGHUP to group kills server tree', {
 
       sp.signal(sig);
       await sp.exited;
-      await sleep(500);
 
-      const psAfter = await client.ps();
-      const survivors = psAfter.filter((p) => p.argv.some((a) => a.includes('mcpcat-test')));
+      const isTest = (p) => p.state !== 'Z' && p.argv.some((a) => a.includes('mcpcat-test'));
+      let survivors = (await client.ps()).filter(isTest);
+      const end = Date.now() + 5_000;
+      while (survivors.length > 0 && Date.now() < end) {
+        await sleep(50);
+        survivors = (await client.ps()).filter(isTest);
+      }
       assert.equal(
         survivors.length,
         0,
@@ -243,19 +252,17 @@ describe('B5: kernel stdio, SIGTERM/SIGHUP to group kills server tree', {
   it('SIGKILL to group: nothing survives', {
     skip: !hasDeathSignal && 'parentDeathSignal requires slicc-kernel >= 1.88.0',
   }, async () => {
+    const pidFile = `/tmp/k-b5-sigkill-${Date.now()}.txt`;
     const sp = await client.spawn(
       ['mcpcat', 'call', 'stdio:mcpcat-test-slow-legacy', 'slow', '-d', '{}'],
-      { stdin: 'pipe', env: {}, onStdout() {}, onStderr() {} }
+      { stdin: 'pipe', env: { PID_RECORD_FILE: pidFile }, onStdout() {}, onStderr() {} }
     );
     const isTest = (p) => p.state !== 'Z' && p.argv.some((a) => a.includes('mcpcat-test'));
-    const isServer = (p) => isTest(p) && p.argv[0] !== 'mcpcat';
-    let end = Date.now() + 10_000;
-    while (Date.now() < end && !(await client.ps()).some(isServer)) await sleep(100);
-    assert.ok((await client.ps()).some(isServer), 'server should be running before SIGKILL');
+    await kernelServerRecorded(pidFile);
     sp.signal('SIGKILL');
     await sp.exited;
     let survivors = [];
-    end = Date.now() + 5_000;
+    const end = Date.now() + 5_000;
     do {
       survivors = (await client.ps()).filter(isTest);
       if (survivors.length > 0) await sleep(100);
