@@ -30,18 +30,17 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - name: Stamp release version
-        run: npm version "${TAG#v}" --no-git-tag-version
-        env:
-          TAG: ${{ inputs.tag }}
-
-      - run: npm ci
-
-      - name: Build and pack
+      - name: Fetch the published npm tarball
         run: |
-          npm run build
-          npm pack
-          mv ai-ecoverse-mcpcat-*.tgz "mcpcat-${TAG#v}.tgz"
+          set -euo pipefail
+          version="${TAG#v}"
+          for i in $(seq 1 30); do
+            npm view "@ai-ecoverse/mcpcat@$version" version >/dev/null 2>&1 && break
+            sleep 10
+          done
+          npm pack "@ai-ecoverse/mcpcat@$version"
+          mv "ai-ecoverse-mcpcat-$version.tgz" "mcpcat-$version.tgz"
+          sha256sum "mcpcat-$version.tgz"
         env:
           TAG: ${{ inputs.tag }}
 
