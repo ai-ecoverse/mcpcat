@@ -30,12 +30,6 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Run cert with kernel ${{ matrix.kernel }}
-        run: |
-          OUTPUT=$(npm run cert -- '--kernel=${{ matrix.kernel }}' 2>&1) || true
-          echo "$OUTPUT"
-          echo "$OUTPUT" | grep -q 'cert: kernel'
-          PASS_COUNT=$(echo "$OUTPUT" | grep -oP 'pass \K\d+' | tail -1)
-          echo "pass count: $PASS_COUNT"
-          test "$PASS_COUNT" -gt 0
+        run: npm run cert -- '--kernel=${{ matrix.kernel }}'
         env:
           NODE_NO_WARNINGS: '1'
