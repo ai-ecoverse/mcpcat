@@ -149,7 +149,7 @@ describe('kernel: codemode timeout', () => {
 
   after(() => kernel?.terminate());
 
-  it('runaway while(true){} is stopped by interrupt budget', async () => {
+  it('runaway while(true){} is stopped by -m', async () => {
     const { status, stderr } = await kernel.run(
       ['mcpcat', 'code', '-s', 'alpha', '-m', '1', '-e', 'while(true){}'],
       runOpts()
