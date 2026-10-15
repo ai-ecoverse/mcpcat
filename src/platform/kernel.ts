@@ -258,6 +258,17 @@ function isConnectionRefused(err: unknown): boolean {
   return typeof e?.message === 'string' && e.message.includes('ECONNREFUSED');
 }
 
+function isFetchRefused(err: unknown): err is TypeError {
+  return err instanceof TypeError && isConnectionRefused((err as { cause?: unknown }).cause);
+}
+
+function loopbackRefused(url: URL, port: number, err: TypeError): TypeError {
+  return new TypeError(
+    `nothing listens on ${url.hostname}:${port} for a kernel program, whose loopback is the kernel's; reach a host server via http://host.slicc.internal:${port}`,
+    { cause: err.cause }
+  );
+}
+
 function collectHeaders(init?: RequestInit): [string, string][] {
   const entries: [string, string][] = [];
   if (!init?.headers) return entries;
@@ -418,7 +429,11 @@ function createKernelFetch(
     if (port !== null) return kernelLoopbackFetch(ctx, url, port, init);
     const plainPort = extractPlainLoopbackPort(url);
     if (plainPort !== null) {
-      return kernelLoopbackFetch(ctx, url, plainPort, init, () => ctx.fetch(input, init));
+      return kernelLoopbackFetch(ctx, url, plainPort, init, () =>
+        ctx.fetch(input, init).catch((err: unknown) => {
+          throw isFetchRefused(err) ? loopbackRefused(url, plainPort, err) : err;
+        })
+      );
     }
     return ctx.fetch(input, init);
   };
