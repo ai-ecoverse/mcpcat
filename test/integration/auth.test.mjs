@@ -762,3 +762,30 @@ describe('auth: OAuth fixture AS endpoints', () => {
     await setIss(as.port, true);
   });
 });
+
+describe('host: a server answering a plain 403', () => {
+  let server;
+  let tempDir;
+
+  before(async () => {
+    server = await startServer('server-403.mjs');
+    tempDir = join(tmpdir(), `mcpcat-e2e-403-${Date.now()}`);
+    mkdirSync(join(tempDir, 'agent'), { recursive: true });
+  });
+
+  after(() => {
+    server?.child.kill('SIGTERM');
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("host: a server's plain 403 exits 4 and names mcpcat login", () => {
+    const url = `http://127.0.0.1:${server.port}/forbidden`;
+    const result = runHost(['call', url, 'whoami'], {
+      env: { PI_CODING_AGENT_DIR: join(tempDir, 'agent'), HOME: tempDir },
+    });
+    assert.equal(result.status, 4, `expected exit 4, got ${result.status}: ${result.stderr}`);
+    assert.ok(result.stderr.includes(`mcpcat login ${url}`), result.stderr);
+    assert.ok(!result.stderr.includes('host.slicc.internal'), result.stderr);
+    assert.ok(!result.stderr.includes('hostLoopback'), result.stderr);
+  });
+});

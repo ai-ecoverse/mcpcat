@@ -1,7 +1,7 @@
 import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -13,6 +13,8 @@ const fixturesDir = join(root, 'test/integration/fixtures');
 const fakePwCli = join(fixturesDir, 'fake-playwright-cli.sh');
 const singleOriginFixture = join(fixturesDir, 'webmcp-tools.json');
 const multiOriginFixture = join(fixturesDir, 'webmcp-tools-multi-origin.json');
+const sharedNameFixture = join(fixturesDir, 'webmcp-tools-shared-name.json');
+const bankOnlyFixture = join(fixturesDir, 'webmcp-tools-bank-only.json');
 
 const testHome = join(tmpdir(), `mcpcat-webmcp-test-${Date.now()}`);
 mkdirSync(join(testHome, '.pi', 'agent'), { recursive: true });
@@ -42,6 +44,7 @@ function runHost(args, opts = {}) {
     const result = execFileSync(cmd, cmdArgs, {
       encoding: 'utf8',
       timeout: 15_000,
+      maxBuffer: 64 * 1024 * 1024,
       env: { ...process.env, NODE_NO_WARNINGS: '1', ...testEnv, ...opts.env },
       input: opts.input,
     });
@@ -570,6 +573,202 @@ describe('serve --webmcp', () => {
       assert.ok(callResult.result.content[0].text.includes('http-test'));
       assert.ok(callResult.result._meta, '_meta must be present over HTTP');
       assert.equal(callResult.result._meta['io.mcpcat/untrusted'], true);
+    });
+  });
+  describe('origin, tab and output safety', () => {
+    const init = rpc('initialize', {
+      protocolVersion: '2025-11-25',
+      capabilities: {},
+      clientInfo: { name: 'test' },
+    });
+    let n = 0;
+    const scratch = () => {
+      const dir = join(testHome, `case-${++n}`);
+      mkdirSync(dir, { recursive: true });
+      return dir;
+    };
+    const readLog = (file) => {
+      try {
+        return readFileSync(file, 'utf8')
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((l) => JSON.parse(l));
+      } catch {
+        return [];
+      }
+    };
+
+    it("a call to <host>__<name> never runs another origin's same-named tool", () => {
+      const log = join(scratch(), 'pw.log');
+      const input =
+        [
+          init,
+          rpc('tools/list', {}, 2),
+          rpc('tools/call', { name: 'bank_example_com__lookup', arguments: { q: 'acct-4242' } }, 3),
+          rpc('tools/call', { name: 'evil_widget_example_net__lookup', arguments: { q: 'x' } }, 4),
+          rpc('tools/call', { name: 'bank_example_com__balance', arguments: {} }, 5),
+        ].join('\n') + '\n';
+      const result = runHost(['serve', '--webmcp', '--playwright-cli', fakePwCli], {
+        input,
+        env: { FAKE_PWCLI_FIXTURE: sharedNameFixture, FAKE_PWCLI_LOG: log },
+      });
+      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+      const byId = new Map(
+        result.stdout
+          .trim()
+          .split('\n')
+          .map((l) => JSON.parse(l))
+          .map((r) => [r.id, r])
+      );
+      const calls = readLog(log).filter((e) => e.command === 'webmcp-call');
+      for (const call of calls) {
+        if (call.tool === 'lookup') {
+          assert.fail(
+            `webmcp-call lookup ran on ${call.executedOrigin} though two origins share it`
+          );
+        }
+      }
+      for (const id of [3, 4]) {
+        const r = byId.get(id);
+        assert.ok(r.error || r.result?.isError, `call ${id} must be refused: ${JSON.stringify(r)}`);
+        assert.match(JSON.stringify(r), /unknown tool|ambiguous/i);
+        assert.ok(!JSON.stringify(r).includes('acct-4242'));
+      }
+      const names = byId.get(2).result.tools.map((t) => t.name);
+      assert.ok(!names.some((nm) => nm.endsWith('__lookup')), `ambiguous tools listed: ${names}`);
+      assert.ok(names.includes('bank_example_com__balance'), `expected balance in ${names}`);
+      const balance = byId.get(5);
+      assert.equal(balance.result?.isError, false, JSON.stringify(balance));
+      assert.equal(balance.result._meta.origin, 'https://bank.example.com');
+      const balanceCall = calls.find((c) => c.tool === 'balance');
+      assert.equal(balanceCall?.executedOrigin, 'https://bank.example.com');
+    });
+
+    it('a call to <host>__<name> is refused when another origin registers the name after tools/list', () => {
+      const log = join(scratch(), 'pw.log');
+      const input =
+        [
+          init,
+          rpc('tools/list', {}, 2),
+          rpc('tools/call', { name: 'bank_example_com__lookup', arguments: { q: 'acct-4242' } }, 3),
+        ].join('\n') + '\n';
+      const result = runHost(
+        ['serve', '--webmcp', '--webmcp-ttl', '60', '--playwright-cli', fakePwCli],
+        {
+          input,
+          env: {
+            FAKE_PWCLI_FIXTURE: bankOnlyFixture,
+            FAKE_PWCLI_FIXTURE_NEXT: sharedNameFixture,
+            FAKE_PWCLI_LOG: log,
+          },
+        }
+      );
+      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+      const [, list, call] = result.stdout
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l));
+      assert.ok(list.result.tools.some((t) => t.name === 'bank_example_com__lookup'));
+      const ran = readLog(log).filter((e) => e.command === 'webmcp-call');
+      assert.deepEqual(
+        ran.map((e) => e.executedOrigin),
+        [],
+        'no webmcp-call may run while two origins share the name'
+      );
+      assert.ok(call.error, JSON.stringify(call));
+      assert.match(call.error.message, /ambiguous/);
+      assert.match(call.error.message, /bank\.example\.com/);
+      assert.match(call.error.message, /evil-widget\.example\.net/);
+    });
+
+    it('serve --webmcp without --tab keeps serving the tab it started on', () => {
+      const dir = scratch();
+      const log = join(dir, 'pw.log');
+      const state = join(dir, 'state');
+      writeFileSync(state, 'TAB1');
+      const input =
+        [
+          init,
+          rpc('tools/list', {}, 2),
+          rpc('tools/call', { name: 'get_price', arguments: { productId: 'a' } }, 3),
+          rpc('tools/call', { name: 'get_price', arguments: { productId: 'b' } }, 4),
+          rpc('tools/list', {}, 5),
+        ].join('\n') + '\n';
+      const result = runHost(
+        ['serve', '--webmcp', '--webmcp-ttl', '0', '--playwright-cli', fakePwCli],
+        {
+          input,
+          env: {
+            FAKE_PWCLI_FIXTURE: singleOriginFixture,
+            FAKE_PWCLI_LOG: log,
+            FAKE_PWCLI_STATE: state,
+            FAKE_PWCLI_TABS: JSON.stringify(['TAB1', 'TAB2', 'TAB3']),
+            FAKE_PWCLI_DRIFT: '1',
+          },
+        }
+      );
+      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+      const entries = readLog(log).filter((e) => e.command !== 'tab-list');
+      assert.ok(entries.filter((e) => e.command === 'webmcp-list').length >= 2);
+      assert.equal(entries.filter((e) => e.command === 'webmcp-call').length, 2);
+      for (const e of entries) {
+        const i = e.argv.indexOf('--tab');
+        assert.ok(i >= 0, `${e.command} must pass --tab: ${e.argv.join(' ')}`);
+        assert.equal(e.argv[i + 1], 'TAB1');
+        assert.equal(e.tab, 'TAB1');
+      }
+    });
+
+    it('serve --webmcp without --tab fails when there is no current tab', () => {
+      const result = runHost(['serve', '--webmcp', '--playwright-cli', fakePwCli], {
+        input: `${init}\n`,
+        env: {
+          FAKE_PWCLI_FIXTURE: singleOriginFixture,
+          FAKE_PWCLI_TABS: JSON.stringify(['TAB1', 'TAB2']),
+          FAKE_PWCLI_NO_CURRENT: '1',
+        },
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /--tab/);
+      assert.equal(result.stdout, '');
+    });
+
+    it('serve --webmcp with --tab passes it on every list and call', () => {
+      const log = join(scratch(), 'pw.log');
+      const input =
+        [init, rpc('tools/call', { name: 'get_price', arguments: { productId: 'a' } }, 2)].join(
+          '\n'
+        ) + '\n';
+      const result = runHost(['serve', '--webmcp', '--tab', 'T7', '--playwright-cli', fakePwCli], {
+        input,
+        env: { FAKE_PWCLI_FIXTURE: singleOriginFixture, FAKE_PWCLI_LOG: log },
+      });
+      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+      const entries = readLog(log);
+      assert.ok(!entries.some((e) => e.command === 'tab-list'));
+      assert.ok(entries.length >= 2);
+      for (const e of entries) assert.equal(e.argv[e.argv.indexOf('--tab') + 1], 'T7');
+    });
+
+    it("serve --webmcp caps a tool's text at --max-output", () => {
+      const input =
+        [init, rpc('tools/call', { name: 'get_price', arguments: { productId: 'a' } }, 2)].join(
+          '\n'
+        ) + '\n';
+      const result = runHost(
+        ['serve', '--webmcp', '--max-output', '1000', '--playwright-cli', fakePwCli],
+        {
+          input,
+          env: { FAKE_PWCLI_FIXTURE: singleOriginFixture, FAKE_PWCLI_BIG: String(4 * 1024 * 1024) },
+        }
+      );
+      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+      const resp = JSON.parse(result.stdout.trim().split('\n')[1]);
+      const text = resp.result.content[0].text;
+      assert.ok(text.length < 1200, `text is ${text.length} characters`);
+      assert.match(text, /characters cut/);
+      assert.ok(NONCE_PATTERN.test(text));
     });
   });
 });

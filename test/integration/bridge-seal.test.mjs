@@ -473,11 +473,38 @@ describe('kernel: transport 403 (loopback refused) exits 3, not 4', {
       stderr: 'pipe',
     });
     assert.equal(status, 3, `expected exit 3, got ${status}; stderr: ${stderr}`);
-    assert.ok(
-      stderr.includes('hostLoopback') || stderr.includes('loopback') || stderr.includes('refused'),
-      `stderr should mention hostLoopback; got: ${stderr}`
-    );
+    assert.ok(stderr.includes('nodeTransport refuses'), `stderr: ${stderr}`);
+    assert.ok(stderr.includes('host.slicc.internal'), `stderr: ${stderr}`);
     assert.ok(!stderr.includes('mcpcat login'), 'should not suggest login for transport refusal');
+  });
+});
+
+describe("kernel: an upstream server's 403 Forbidden exits 4", () => {
+  let kernel;
+  let server;
+
+  before(async () => {
+    server = await startFixtureServer('server-403.mjs');
+    kernel = await createNodeKernel({
+      network: { transport: nodeTransport({ hostLoopback: true }) },
+    });
+    await installMcpcat(kernel);
+  });
+
+  after(() => {
+    server?.child.kill('SIGTERM');
+    kernel?.terminate();
+  });
+
+  it("kernel: an upstream server's 403 Forbidden exits 4", async () => {
+    const url = `${hostUrl(server.port)}/forbidden`;
+    const { status, stderr } = await kernel.run(['mcpcat', 'call', url, 'whoami'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.equal(status, 4, `expected exit 4, got ${status}; stderr: ${stderr}`);
+    assert.ok(stderr.includes(`mcpcat login ${url}`), `stderr: ${stderr}`);
+    assert.ok(!stderr.includes('reach the host via'), `stderr: ${stderr}`);
   });
 });
 

@@ -106,6 +106,7 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
       signal: options.signal,
       verbose: options.verbose,
       authProvider: options.authProvider,
+      transportRefusals: platform.kind === 'kernel',
     });
   } catch (err) {
     const isMethodNotFound =
