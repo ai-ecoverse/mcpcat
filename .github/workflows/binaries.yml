@@ -40,7 +40,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${TAG#v}"
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             npm view "@ai-ecoverse/mcpcat@$version" version >/dev/null 2>&1 && break
             sleep 10
           done
@@ -114,7 +114,7 @@ jobs:
           path: assets
 
       - name: Build SHA256SUMS
-        run: cd assets && shasum -a 256 * > SHA256SUMS
+        run: cd assets && shasum -a 256 -- * > SHA256SUMS
 
       - name: Installer test, macOS with node
         run: sh test/integration/test-install.sh assets "${TAG#v}"
