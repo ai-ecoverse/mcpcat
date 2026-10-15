@@ -1,7 +1,9 @@
 import { toCodemodeIdentifier } from '@earendil-works/pi-codemode';
+import type { CodemodeSandboxBase } from '@earendil-works/pi-codemode/portable';
 import { parseCodemodeSource } from '@earendil-works/pi-codemode/source';
 import type { McpConnection } from '../client/connection.ts';
 import type { Platform } from '../platform/types.ts';
+import { bindDeadline, type Deadline, hookDeadlines } from './deadline.ts';
 import { rankDocuments, type SearchDocument } from './search.ts';
 
 type DeclaredTool = { name: string; jsName: string; description: string };
@@ -251,10 +253,27 @@ export async function runCode(
     ...(options.allowShell ? [buildShellGlobal(platform)] : []),
   ];
 
-  const sandbox = await createSandbox(platform, toolImpls, globals, timeoutMs, memoryLimitBytes);
+  const { sandbox, deadline } = await createSandbox(
+    platform,
+    toolImpls,
+    globals,
+    timeoutMs,
+    memoryLimitBytes
+  );
 
   try {
-    const result = await sandbox.execute(code, { store });
+    deadline?.start();
+    const executed = await sandbox.execute(code, { store });
+    const result =
+      deadline?.tripped && !executed.ok
+        ? {
+            ...executed,
+            error: {
+              kind: 'timeout' as const,
+              message: `Execution timed out after ${timeoutMs} ms`,
+            },
+          }
+        : executed;
 
     if (result.ok) {
       const writes = result.storeWrites;
@@ -318,18 +337,32 @@ async function createSandbox(
   }[],
   timeoutMs: number,
   memoryLimitBytes: number
-) {
+): Promise<{
+  sandbox: Pick<CodemodeSandboxBase, 'execute' | 'close'>;
+  deadline?: Deadline;
+}> {
   const isKernel = platform.packageDir !== undefined;
 
   if (isKernel) {
     const { InlineCodemodeSandbox } = await import('@earendil-works/pi-codemode/portable');
+    const { QuickJS } = await import('quickjs-wasi');
+    hookDeadlines(QuickJS as unknown as Parameters<typeof hookDeadlines>[0]);
     const wasm = await loadWasmKernel(platform);
-    return new InlineCodemodeSandbox({ tools, globals, timeoutMs, wasm, memoryLimitBytes });
+    const deadline = bindDeadline(wasm, timeoutMs);
+    const sandbox = new InlineCodemodeSandbox({
+      tools,
+      globals,
+      timeoutMs,
+      wasm,
+      memoryLimitBytes,
+      interruptBudget: Number.POSITIVE_INFINITY,
+    });
+    return { sandbox, deadline };
   }
 
   const { CodemodeSandbox, loadQuickJSWasm } = await import('@earendil-works/pi-codemode');
   const wasmPath = await resolveWasmPath(platform);
-  return new CodemodeSandbox({
+  const sandbox = new CodemodeSandbox({
     tools,
     globals,
     timeoutMs,
@@ -337,6 +370,7 @@ async function createSandbox(
     wasm: loadQuickJSWasm(wasmPath),
     workerUrl: new URL('./codemode-worker.mjs', import.meta.url),
   });
+  return { sandbox };
 }
 
 async function resolveWasmPath(platform: Platform): Promise<string> {

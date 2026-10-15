@@ -9,6 +9,7 @@ import {
   attachKernel,
   createNodeKernel,
   fetchReachesKernelLoopback,
+  hasSealed,
   hostUrl,
   nodeTransport,
 } from './helpers/kernel.mjs';
@@ -17,12 +18,6 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const kernelBundle = join(root, 'dist/kernel/mcpcat.mjs');
 const fixturesDir = join(root, 'test/integration/fixtures');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-const kernelPkgPath = process.env.MCPCAT_CERT_KERNEL_DIR
-  ? join(process.env.MCPCAT_CERT_KERNEL_DIR, 'package.json')
-  : join(root, 'node_modules/@ai-ecoverse/slicc-kernel/package.json');
-const kernelPkg = JSON.parse(readFileSync(kernelPkgPath, 'utf8'));
-const kernelVersion = kernelPkg.version.split('.').map(Number);
-const hasSealed = kernelVersion[0] > 1 || (kernelVersion[0] === 1 && kernelVersion[1] >= 85);
 
 async function installMcpcat(kernel) {
   const bundleData = readFileSync(kernelBundle);

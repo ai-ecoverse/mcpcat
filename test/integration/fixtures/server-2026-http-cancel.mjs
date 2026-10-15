@@ -15,6 +15,7 @@ const TOOLS = [
 ];
 
 const aborted = [];
+const started = [];
 
 function jsonRpc(id, result) {
   return JSON.stringify({ jsonrpc: '2.0', id, result });
@@ -33,6 +34,12 @@ function handleDiscover(id) {
 }
 
 const server = createServer((req, res) => {
+  if (req.method === 'GET' && req.url === '/__started') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(started));
+    return;
+  }
+
   if (req.method === 'GET' && req.url === '/__aborted') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(aborted));
@@ -80,6 +87,7 @@ const server = createServer((req, res) => {
     }
 
     if (method === 'tools/call' && params?.name === 'slow-cancel') {
+      started.push({ requestId: id, tool: params.name });
       const timer = setTimeout(() => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(jsonRpc(id, { content: [{ type: 'text', text: 'done' }] }));
