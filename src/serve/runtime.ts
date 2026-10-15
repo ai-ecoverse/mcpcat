@@ -1361,12 +1361,13 @@ async function runProxyHttp(
   const listenUrl = address.url;
   let tokenFilePath: string | undefined;
   let shutdownRequested = false;
+  let proxyDone: Promise<void> | undefined;
 
   const shutdown = () => {
     if (shutdownRequested) return;
     shutdownRequested = true;
     listener.close();
-    void proxy.shutdown();
+    proxyDone = proxy.shutdown();
     if (tokenFilePath) {
       platform.fs.unlink?.(tokenFilePath).catch(() => {});
     }
@@ -1432,6 +1433,7 @@ async function runProxyHttp(
     if (!shutdownRequested) throw new Error('listener closed unexpectedly');
   }
 
+  await proxyDone;
   return 0;
 }
 
