@@ -15,7 +15,7 @@ import type {
   ServerInfo,
 } from './connection.ts';
 import { InputRequiredError, McpTimeoutError, StatelessRpcError } from './stateless-connection.ts';
-import { trackStdio } from './stdio-registry.ts';
+import { reapStdio, trackStdio } from './stdio-registry.ts';
 
 const PROTOCOL_VERSION = '2026-07-28';
 
@@ -208,9 +208,7 @@ function buildConnectionMethods(
     },
     async close(): Promise<void> {
       rpc.close();
-      try {
-        await proc.kill('SIGTERM');
-      } catch {}
+      await reapStdio(proc);
     },
   };
 }
