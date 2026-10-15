@@ -17,62 +17,94 @@ permissions:
   contents: write
 
 env:
+  # renovate: datasource=node-version depName=node versioning=node
   NODE_VERSION: '24'
+  # renovate: datasource=docker depName=alpine
+  ALPINE_IMAGE: alpine:3.24.2
 
 jobs:
   package:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
+
+      - name: Shellcheck
+        run: shellcheck -s sh install.sh test/integration/test-install.sh test/integration/hide-node.sh
 
       - name: Fetch the published npm tarball
         run: |
           set -euo pipefail
           version="${TAG#v}"
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             npm view "@ai-ecoverse/mcpcat@$version" version >/dev/null 2>&1 && break
             sleep 10
           done
-          npm pack "@ai-ecoverse/mcpcat@$version"
-          mv "ai-ecoverse-mcpcat-$version.tgz" "mcpcat-$version.tgz"
-          sha256sum "mcpcat-$version.tgz"
+          mkdir assets
+          npm pack "@ai-ecoverse/mcpcat@$version" --pack-destination assets
+          mv "assets/ai-ecoverse-mcpcat-$version.tgz" "assets/mcpcat-$version.tgz"
+          cd assets && sha256sum "mcpcat-$version.tgz" | tee SHA256SUMS
         env:
           TAG: ${{ inputs.tag }}
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: mcpcat-bundle
-          path: "mcpcat-*.tgz"
+          path: "assets/mcpcat-*.tgz"
 
-  test-installer:
+      - name: Installer test, ubuntu with node
+        run: sh test/integration/test-install.sh assets "${TAG#v}"
+        env:
+          TAG: ${{ inputs.tag }}
+          EXPECT_MANAGED_NODE: '0'
+
+      - name: Hide system node
+        run: sh test/integration/hide-node.sh
+
+      - name: Installer test, ubuntu without node
+        run: sh test/integration/test-install.sh assets "${TAG#v}"
+        env:
+          TAG: ${{ inputs.tag }}
+          EXPECT_MANAGED_NODE: '1'
+
+      - name: Installer test, alpine with nodejs
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w -e TAG -e EXPECT_MANAGED_NODE=0 "$ALPINE_IMAGE" sh -euc '
+            apk add --no-cache python3 tar xz nodejs >/dev/null
+            sh test/integration/test-install.sh assets "${TAG#v}"
+          '
+        env:
+          TAG: ${{ inputs.tag }}
+
+      - name: Installer test, alpine without node (musl rejection)
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w "$ALPINE_IMAGE" sh -euc '
+            if SLICC_INSTALL_BASE_URL="http://dummy" sh install.sh 2>/tmp/err.txt; then
+              echo "FAIL: should have exited 1 on musl without node" >&2
+              exit 1
+            fi
+            if grep -q "apk add nodejs" /tmp/err.txt; then
+              echo "OK: musl rejection message shown"
+              cat /tmp/err.txt
+            else
+              echo "FAIL: expected apk hint" >&2
+              cat /tmp/err.txt >&2
+              exit 1
+            fi
+          '
+
+  test-installer-macos:
     needs: package
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: ubuntu-with-node
-            os: ubuntu-latest
-            has_node: true
-          - name: ubuntu-no-node
-            os: ubuntu-latest
-            has_node: false
-          - name: macos-with-node
-            os: macos-latest
-            has_node: true
-          - name: macos-no-node
-            os: macos-latest
-            has_node: false
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        if: matrix.has_node
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -82,100 +114,28 @@ jobs:
           path: assets
 
       - name: Build SHA256SUMS
-        run: cd assets && sha256sum * > SHA256SUMS
+        run: cd assets && shasum -a 256 -- * > SHA256SUMS
+
+      - name: Installer test, macOS with node
+        run: sh test/integration/test-install.sh assets "${TAG#v}"
+        env:
+          TAG: ${{ inputs.tag }}
+          EXPECT_MANAGED_NODE: '0'
 
       - name: Hide system node
-        if: "!matrix.has_node"
-        run: |
-          mkdir -p "$HOME/.local/share/mcpcat"
-          echo "Hiding node from PATH"
-          sudo rm -f /usr/local/bin/node /usr/bin/node 2>/dev/null || true
-          for d in /opt/hostedtoolcache/node /usr/local/n; do
-            sudo rm -rf "$d" 2>/dev/null || true
-          done
-          hash -r 2>/dev/null || true
-          if command -v node >/dev/null 2>&1; then
-            echo "WARNING: node still on PATH at $(command -v node)"
-          else
-            echo "node removed from PATH"
-          fi
+        run: sh test/integration/hide-node.sh
 
-      - name: Run installer test
+      - name: Installer test, macOS without node
         run: sh test/integration/test-install.sh assets "${TAG#v}"
         env:
           TAG: ${{ inputs.tag }}
-
-      - name: Verify node was NOT downloaded when pre-installed
-        if: matrix.has_node
-        run: |
-          if [ -d "$HOME/.local/share/mcpcat/node" ]; then
-            echo "FAIL: node was downloaded even though it was on PATH" >&2
-            exit 1
-          fi
-          echo "OK: used system node, no download"
-
-  test-installer-alpine:
-    needs: package
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: alpine-with-nodejs
-            install_node: true
-          - name: alpine-no-node
-            install_node: false
-    runs-on: ubuntu-latest
-    container: alpine:latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-
-      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
-        with:
-          name: mcpcat-bundle
-          path: assets
-
-      - name: Install dependencies
-        run: apk add --no-cache python3 tar xz
-
-      - name: Install nodejs (alpine)
-        if: matrix.install_node
-        run: apk add --no-cache nodejs
-
-      - name: Build SHA256SUMS
-        run: cd assets && sha256sum * > SHA256SUMS
-
-      - name: Run installer test (with node)
-        if: matrix.install_node
-        run: sh test/integration/test-install.sh assets "${TAG#v}"
-        env:
-          TAG: ${{ inputs.tag }}
-
-      - name: Verify musl rejection (no node)
-        if: "!matrix.install_node"
-        run: |
-          if SLICC_INSTALL_BASE_URL="http://dummy" sh install.sh 2>err.txt; then
-            echo "FAIL: should have exited 1 on musl without node" >&2
-            exit 1
-          fi
-          if grep -q "apk add nodejs" err.txt; then
-            echo "OK: musl rejection message shown"
-            cat err.txt
-          else
-            echo "FAIL: expected apk hint" >&2
-            cat err.txt >&2
-            exit 1
-          fi
-
-  shellcheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - run: shellcheck -s sh install.sh
+          EXPECT_MANAGED_NODE: '1'
 
   create-release:
     if: github.ref == 'refs/heads/main'
-    needs: [package, test-installer, test-installer-alpine, shellcheck]
+    needs: [package, test-installer-macos]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -223,6 +183,7 @@ jobs:
     if: failure() && github.ref == 'refs/heads/main'
     needs: [create-release]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Create prerelease on failure
         env:

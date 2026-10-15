@@ -20,6 +20,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     uses: ai-ecoverse/slicc-shared-web/.github/workflows/node-release.yml@v1.20.0
     with:
+      # renovate: datasource=node-version depName=node versioning=node
       node-version: '24'
       chromium: false
     secrets: inherit
