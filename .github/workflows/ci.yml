@@ -2,8 +2,7 @@ name: ci
 
 on:
   push:
-    branches-ignore:
-      - 'gh-readonly-queue/**'
+    branches: [main]
   pull_request:
   merge_group:
 
@@ -12,7 +11,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/renovate/') }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   runner:
