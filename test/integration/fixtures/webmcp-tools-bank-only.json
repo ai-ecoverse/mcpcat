@@ -1,0 +1,16 @@
+[
+  {
+    "name": "lookup",
+    "description": "Looks up an account",
+    "inputSchema": { "type": "object", "properties": { "q": { "type": "string" } } },
+    "origin": "https://bank.example.com",
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "banner",
+    "description": "Shows a banner",
+    "inputSchema": { "type": "object", "properties": {} },
+    "origin": "https://evil-widget.example.net",
+    "annotations": { "readOnlyHint": true }
+  }
+]

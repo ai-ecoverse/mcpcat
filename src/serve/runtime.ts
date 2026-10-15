@@ -27,7 +27,7 @@ import {
   isLoopbackBind,
 } from './origin.ts';
 import { createProxyHandler } from './proxy.ts';
-import { createWebMcpHandler } from './webmcp.ts';
+import { createWebMcpHandler, resolveWebMcpTab } from './webmcp.ts';
 
 const CALL_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_DEFAULT = 1_048_576;
@@ -1005,9 +1005,30 @@ async function runWebMcpServe(
 
   const cdp = options.webmcpCdp ?? platform.env.SLICC_CDP_URL;
 
+  let tab = options.webmcpTab;
+  if (!tab) {
+    const resolved = await resolveWebMcpTab(platform, {
+      playwrightCli: cliPath,
+      cdp,
+      callTimeoutMs: options.callTimeout,
+    });
+    if (resolved.notFound) {
+      await platform.write(
+        2,
+        'mcpcat serve --webmcp: playwright-cli not found. Install it with: curl -fsSL https://get.sliccy.ai/playwright-cli | sh\n'
+      );
+      return 3;
+    }
+    if (!resolved.tab) {
+      await platform.write(2, `mcpcat serve --webmcp: ${resolved.error}\n`);
+      return 3;
+    }
+    tab = resolved.tab;
+  }
+
   const handler = createWebMcpHandler(platform, {
     playwrightCli: cliPath,
-    tab: options.webmcpTab,
+    tab,
     cdp,
     allowConsequential: options.webmcpAllowConsequential,
     ttlMs: options.webmcpTtl,
