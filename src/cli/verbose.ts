@@ -65,8 +65,8 @@ export function createVerboseLogger(platform: Platform, enabled: boolean): Verbo
     },
     headerOut(name: string, value: string) {
       if (!enabled) return;
-      const display = isSensitiveHeader(name) ? '[REDACTED]' : redact(value, secrets);
-      write(`> ${name}: ${display}`);
+      const display = isSensitiveHeader(name) ? '[REDACTED]' : value;
+      platform.write(2, `> ${name}: ${display}\n`).catch(() => {});
     },
     headerIn(name: string, value: string) {
       if (!enabled) return;
