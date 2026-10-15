@@ -738,7 +738,8 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
         <li>tokens come from <code>jerk mcp:&lt;name&gt; get --reveal --json</code> and are held in memory only;</li>
         <li>a jerk exit 3 becomes mcpcat exit 4;</li>
         <li>every jerk call but <code>create</code> runs with stdin closed, in its own session, under a timeout (15 s, or <code>--timeout</code>); a jerk that does not answer is killed and mcpcat exits 4 with <code>jerk did not answer; run `jerk mcp:&lt;name&gt; get` yourself</code>, so it never hangs or prompts on mcpcat's terminal;</li>
-        <li>without <code>jerk</code> on <code>PATH</code>, mcpcat keeps pi's <code>mcp-auth.json</code>.</li>
+        <li>without <code>jerk</code> on <code>PATH</code>, mcpcat keeps pi's <code>mcp-auth.json</code>;</li>
+        <li>mcpcat uses jerk only for ids that <code>jerk list --json</code> lists with <code>source: "mcp.json"</code> (asked once per process). URL-only targets, and names jerk does not list, keep pi's <code>mcp-auth.json</code> until jerk ships <code>mcp:url:</code> ids, so jerk's “unknown provider” exit 2 never reaches the user.</li>
       </ul></li>
   </ul></dd>
 

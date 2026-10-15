@@ -125,6 +125,10 @@ describe('mcpcat never hangs on jerk', () => {
       join(binDir, 'jerk'),
       `#!/bin/sh
 echo "ARGV: $@" >> "${log}"
+if [ "$1" = "list" ]; then
+  echo '[{"provider":"mcp:locked","source":"mcp.json"}]'
+  exit 0
+fi
 if [ "$1" = "--version" ]; then
   echo $$ >> "${pidFile}"
   ${versionBody}
@@ -214,14 +218,11 @@ exit 2
   it('a silent jerk get times out after 15s by default', async () => {
     reset();
     writeJerk('exec sleep 60');
-    const r = await runAsync(['call', url, 'echo', '-d', '{}'], env(), 28_000);
+    const r = await runAsync(['call', 'locked', 'echo', '-d', '{}'], env(), 28_000);
     assert.equal(r.killed, false, 'mcpcat hung on a silent jerk');
     assert.equal(r.status, 4, r.stderr);
     assert.ok(r.elapsed >= 14_000 && r.elapsed < 25_000, `took ${r.elapsed}ms`);
-    assert.match(
-      r.stderr,
-      /jerk did not answer; run `jerk mcp:url:http:\/\/127\.0\.0\.1:\d+\/mcp get` yourself/
-    );
+    assert.match(r.stderr, /jerk did not answer; run `jerk mcp:locked get` yourself/);
   });
 
   it('a silent jerk --version falls back to pi and is killed', async () => {

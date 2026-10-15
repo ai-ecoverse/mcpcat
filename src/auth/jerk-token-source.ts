@@ -7,9 +7,29 @@ const VERSION_TIMEOUT_MS = 2_000;
 export const JERK_TIMEOUT_MS = 15_000;
 
 let cachedAvailable: boolean | undefined;
+let cachedKnown: Promise<Set<string>> | undefined;
 
 export function resetJerkCache(): void {
   cachedAvailable = undefined;
+  cachedKnown = undefined;
+}
+
+async function listMcpProviders(platform: Platform): Promise<Set<string>> {
+  const known = new Set<string>();
+  try {
+    const result = await runJerk(platform, ['jerk', 'list', '--json'], VERSION_TIMEOUT_MS);
+    if (result.status !== 0) return known;
+    const providers = JSON.parse(result.stdout) as { provider?: unknown; source?: unknown }[];
+    for (const p of providers) {
+      if (p?.source === 'mcp.json' && typeof p.provider === 'string') known.add(p.provider);
+    }
+  } catch {}
+  return known;
+}
+
+export async function jerkKnows(platform: Platform, id: string): Promise<boolean> {
+  cachedKnown ??= listMcpProviders(platform);
+  return (await cachedKnown).has(id);
 }
 
 function parseVersion(raw: string): number[] | undefined {

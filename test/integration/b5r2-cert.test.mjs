@@ -232,6 +232,7 @@ describe('B5r2-3: jerk asked on 401 (no pi-file token)', () => {
 echo "$@" >> ${invocationLog}
 case "$1" in
   --version) echo "jerk 0.14.1"; exit 0;;
+  list) echo '[{"provider":"mcp:jerk-srv","source":"mcp.json"}]'; exit 0;;
 esac
 # mcp:* get --reveal --json
 if echo "$@" | grep -q "get.*--reveal.*--json"; then

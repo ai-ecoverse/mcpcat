@@ -1191,13 +1191,11 @@ async function runInner(platform: Platform, version: string, args: string[]): Pr
   if (discResult !== undefined) return discResult;
 
   if (parsed.verb === 'login') {
-    const source = await createTokenSource(platform, parsed.timeoutMs);
-    return runLogin(platform, withoutVerb(args, 'login'), source);
+    return runLogin(platform, withoutVerb(args, 'login'), parsed.timeoutMs);
   }
 
   if (parsed.verb === 'logout') {
-    const source = await createTokenSource(platform, parsed.timeoutMs);
-    return runLogout(platform, withoutVerb(args, 'logout'), source);
+    return runLogout(platform, withoutVerb(args, 'logout'), parsed.timeoutMs);
   }
 
   if (UNIMPLEMENTED_VERBS.has(parsed.verb)) {
@@ -1323,11 +1321,11 @@ async function resolveAuthProvider(
   { provider: ReturnType<typeof createMcpAuthProvider>; credentialSecrets: string[] } | undefined
 > {
   if (hasAuthHeader || !url) return undefined;
-  const source = await createTokenSource(platform, timeoutMs);
   const entry = config.entry(target);
   const oauth =
     entry && 'url' in entry.config ? (entry.config as { oauth?: McpOAuthConfig }).oauth : undefined;
   const name = entry ? target : `url:${new URL(url).origin}${new URL(url).pathname}`;
+  const source = await createTokenSource(platform, name, timeoutMs);
   const provider = createMcpAuthProvider({
     name,
     serverUrl: url,
