@@ -72,6 +72,13 @@ function waitForStderr(child, pattern, timeoutMs = 10_000) {
   });
 }
 
+function serverStarted(base) {
+  return waitUntil(
+    async () => (await (await fetch(`${base}/__started`)).json()).length > 0,
+    'the server to receive the tools/call request'
+  );
+}
+
 async function installMcpcat(kernel) {
   const bundleData = readFileSync(kernelBundle);
   await kernel.writeFile('/node_modules/@ai-ecoverse/mcpcat/dist/kernel/mcpcat.mjs', bundleData);
@@ -170,7 +177,8 @@ describe('host: SIGINT cancels 2026 HTTP call and exits 130', () => {
   it('SIGINT during slow HTTP call exits 130 and server sees abort', async () => {
     const child = spawnHost(['-v', 'call', url, 'slow-cancel', '-d', '{}']);
 
-    await waitForStderr(child, /Mcp-Method.*tools\/call|tools\/call/);
+    child.stderr.on('data', () => {});
+    await serverStarted(url);
 
     child.kill('SIGINT');
 
@@ -218,7 +226,7 @@ describe('kernel: SIGINT cancels 2026 HTTP call and exits 130', () => {
       },
     });
 
-    await waitUntil(() => /Mcp-Method: tools\/call/i.test(stderr), 'the tools/call request');
+    await serverStarted(`http://127.0.0.1:${server.port}`);
 
     await client.kill(proc.pid, 'SIGINT');
 
