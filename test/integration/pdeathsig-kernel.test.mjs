@@ -91,8 +91,7 @@ const scenarios = [
 ];
 
 function listening(stderr) {
-  const port = /listening on http:\/\/127\.0\.0\.1:(\d+)\//.exec(stderr)?.[1];
-  return port && `http://${port}.kernel.localhost/mcp`;
+  return /listening on (http:\/\/\d+\.kernel\.localhost\/mcp)/.exec(stderr)?.[1];
 }
 
 async function waitFor(fn, what, timeoutMs = 10_000) {
