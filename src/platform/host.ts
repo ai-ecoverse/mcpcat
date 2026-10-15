@@ -79,6 +79,15 @@ function nodeSpawn(options: SpawnOptions): Promise<SpawnResult> {
             child.kill(sig);
           } catch {}
         },
+        async groupAlive() {
+          if (!USE_PROCESS_GROUPS || child.pid === undefined) return false;
+          try {
+            process.kill(-child.pid, 0);
+            return true;
+          } catch {
+            return false;
+          }
+        },
       });
     }
   });

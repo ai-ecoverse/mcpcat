@@ -197,6 +197,15 @@ async function kernelSpawn(ctx: KernelContext, options: SpawnOptions): Promise<S
         await ctx.kill(childPid, signal);
       } catch {}
     },
+    async groupAlive() {
+      if (!useGroupKill) return false;
+      try {
+        await ctx.kill(-childPid, 'SIGCONT');
+        return true;
+      } catch {
+        return false;
+      }
+    },
   };
 }
 

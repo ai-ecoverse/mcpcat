@@ -465,7 +465,7 @@ describe('kernel: stdio process group cleanup', {
     kernel?.terminate();
   });
 
-  it('server and grandchild are gone after mcpcat exits', async () => {
+  it('server and grandchild are gone when mcpcat exits', async () => {
     const pidsResult = await kernel.run(
       ['mcpcat', 'call', 'stdio:mcpcat-test-gc', 'pids', '-d', '{}'],
       { stdout: 'pipe', stderr: 'pipe' }
@@ -477,10 +477,8 @@ describe('kernel: stdio process group cleanup', {
     assert.ok(serverPid > 0, 'server pid should be positive');
     assert.ok(grandchildPid > 0, 'grandchild pid should be positive');
 
-    await sleep(500);
-
     const ps = await client.ps();
-    const alivePids = new Set(ps.map((p) => p.pid));
+    const alivePids = new Set(ps.filter((p) => p.state !== 'Z').map((p) => p.pid));
     assert.ok(!alivePids.has(serverPid), `server pid ${serverPid} should be dead`);
     assert.ok(!alivePids.has(grandchildPid), `grandchild pid ${grandchildPid} should be dead`);
   });

@@ -4,6 +4,7 @@ export interface SpawnResult {
   stderr: ReadableStream<Uint8Array>;
   wait(): Promise<{ status: number; signal?: string }>;
   kill(signal?: string): void | Promise<void>;
+  groupAlive?(): Promise<boolean>;
 }
 
 export interface SpawnOptions {

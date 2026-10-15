@@ -305,6 +305,7 @@ async function installKernelFixtures(kernel) {
     ['mcpcat-test-legacy', 'kernel-stdio-legacy-pidtrack.mjs'],
     ['mcpcat-test-slow-legacy', 'kernel-stdio-legacy-slow-pidtrack.mjs'],
     ['mcpcat-test-sleeper', 'kernel-sleeper.mjs'],
+    ['mcpcat-test-stubborn', 'kernel-sleeper-stubborn.mjs'],
   ]) {
     await installKernelFixture(kernel, name, name, file);
   }
@@ -332,6 +333,14 @@ function kernelServerRecorded(kernel, pidFile) {
     async () => (await readKernelPids(kernel, pidFile)).servers.length > 0,
     `the stdio server to record its pid in ${pidFile}`
   );
+}
+
+async function assertKernelPidsGone(kernel, client, pidFile, label) {
+  const { servers, grandchildren } = await readKernelPids(kernel, pidFile);
+  assert.equal(servers.length, 1, `${label}: exactly one server`);
+  const live = new Set((await client.ps()).filter((p) => p.state !== 'Z').map((p) => p.pid));
+  const alive = [...servers, ...grandchildren].filter((pid) => live.has(pid));
+  assert.deepEqual(alive, [], `${label}: pids still alive when mcpcat exited`);
 }
 
 async function assertKernelPidsDead(kernel, client, pidFile, label) {
@@ -451,4 +460,76 @@ describe('lifecycle: kernel add --bridge', {
     await sp.exited;
     await assertKernelPidsDead(kernel, client, pidFile, 'bridge');
   });
+});
+
+describe('lifecycle: kernel stdio servers whose grandchild ignores TERM, HUP and INT', {
+  skip: !hasPgid && 'pgid requires slicc-kernel >= 1.74.0',
+  timeout: 120_000,
+}, () => {
+  let kernel;
+  let client;
+
+  before(async () => {
+    kernel = await createNodeKernel({});
+    await installKernelFixtures(kernel);
+    const port = await kernel.connect();
+    client = await attachKernel(port);
+  });
+
+  after(() => {
+    client?.close();
+    kernel?.terminate();
+  });
+
+  it('call: server and grandchild are gone when mcpcat exits, 20 times', async () => {
+    for (let round = 0; round < 20; round++) {
+      const pidFile = `/tmp/kpids-stubborn-call-${round}.txt`;
+      const { status, stderr } = await kernel.run(
+        ['mcpcat', 'call', 'stdio:mcpcat-test-legacy', 'echo', '-d', '{"message":"hi"}'],
+        {
+          stdout: 'pipe',
+          stderr: 'pipe',
+          env: { PID_RECORD_FILE: pidFile, GRANDCHILD: 'mcpcat-test-stubborn' },
+        }
+      );
+      assert.equal(status, 0, `round ${round}: ${stderr}`);
+      await assertKernelPidsGone(kernel, client, pidFile, `call round ${round}`);
+    }
+  });
+
+  async function bridgeRound(round) {
+    const pidFile = `/tmp/kpids-stubborn-bridge-${round}.txt`;
+    let output = '';
+    const collect = (chunk) => {
+      output += new TextDecoder().decode(chunk);
+    };
+    const sp = await client.spawn(
+      ['mcpcat', 'add', '--bridge', '--no-auth', `stubborn-${round}`, '--', 'mcpcat-test-legacy'],
+      {
+        stdin: 'pipe',
+        env: { PID_RECORD_FILE: pidFile, GRANDCHILD: 'mcpcat-test-stubborn' },
+        onStdout: collect,
+        onStderr: collect,
+      }
+    );
+    const url = await waitUntil(
+      () => /http:\/\/\d+\.kernel\.localhost\/mcp/.exec(output)?.[0],
+      'the bridge to print its URL'
+    );
+    const call = await kernel.run(['mcpcat', 'call', url, 'echo', '-d', '{"message":"hi"}'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.equal(call.status, 0, `round ${round}: call through the bridge: ${call.stderr}`);
+    await kernelServerRecorded(kernel, pidFile);
+    sp.signal('SIGTERM');
+    await sp.exited;
+    await assertKernelPidsGone(kernel, client, pidFile, `bridge round ${round}`);
+  }
+
+  for (let batch = 0; batch < 4; batch++) {
+    it(`add --bridge: SIGTERM leaves no upstream process behind, rounds ${batch * 5}-${batch * 5 + 4}`, async () => {
+      await Promise.all([0, 1, 2, 3, 4].map((i) => bridgeRound(batch * 5 + i)));
+    });
+  }
 });
