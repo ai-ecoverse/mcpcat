@@ -2,7 +2,10 @@ name: ci
 
 on:
   push:
+    branches-ignore:
+      - 'gh-readonly-queue/**'
   pull_request:
+  merge_group:
 
 permissions:
   contents: read
@@ -33,3 +36,10 @@ jobs:
         run: npm run cert -- '--kernel=${{ matrix.kernel }}'
         env:
           NODE_NO_WARNINGS: '1'
+
+  all-green:
+    if: always()
+    needs: [ci, cert]
+    runs-on: ubuntu-latest
+    steps:
+      - run: '[ "${{ needs.ci.result }}" = success ] && [ "${{ needs.cert.result }}" = success ]'
