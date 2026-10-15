@@ -1,6 +1,8 @@
 name: cert-review
 
 on:
+  pull_request:
+    branches: [bb/mcpcat-cert-review-in-ci-thr_cm7k74e6n9]
   workflow_run:
     workflows: [Release]
     types: [completed]
@@ -31,7 +33,7 @@ jobs:
   plan:
     name: cert-review / plan
     if: >-
-      github.event_name == 'workflow_dispatch' || (
+      github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'cert-review-proof/')) || (
         github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.head_branch == 'main' &&
         github.event.workflow_run.event == 'push' &&
@@ -77,6 +79,10 @@ jobs:
             prev=$(releases | awk -v v="$version" '$0 == v { print last; exit } { last = $0 }')
             [ -n "$prev" ] || skip "v$version has no earlier release tag"
           else
+            if [ "$EVENT" = pull_request ]; then
+              IN_VERSION=$(jq -r .version .github/cert-review-proof.json) IN_PREV=$(jq -r .prev .github/cert-review-proof.json)
+              IN_PLANTED=$(jq -r '.planted // ""' .github/cert-review-proof.json) IN_DRY_RUN=$(jq -r '.dry_run // false' .github/cert-review-proof.json)
+            fi
             version=$IN_VERSION prev=$IN_PREV planted=$IN_PLANTED dry_run=$IN_DRY_RUN
             [[ "$version" =~ $semver ]] || { echo "::error::version '$version' is not x.y.z"; exit 1; }
             [[ "$prev" =~ $semver ]] || { echo "::error::prev '$prev' is not x.y.z"; exit 1; }
