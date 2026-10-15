@@ -712,6 +712,7 @@ async function discoverWithSignal(
   };
   platform.onSignal?.('SIGTERM', onShutdown);
   platform.onSignal?.('SIGINT', onShutdown);
+  platform.onSignal?.('SIGHUP', onShutdown);
   for (const cmd of commands) {
     try {
       const cli = await discoverCli(platform, cmd.path, cmd.name, childEnv, cwd, earlyAbort.signal);
@@ -1139,26 +1140,6 @@ async function runWebMcpHttp(
   const address = serveAddress(platform, options.host, actualPort);
   const listenUrl = address.url;
   let tokenFilePath: string | undefined;
-
-  if (generatedBearer && resolvedBearer) {
-    tokenFilePath = await publishBearer(
-      platform,
-      resolvedBearer,
-      actualPort,
-      address,
-      options.json
-    );
-  } else {
-    if (options.json) {
-      await platform.write(1, `${JSON.stringify(address)}\n`);
-    }
-  }
-  await platform.write(2, `mcpcat serve --webmcp: listening on ${listenUrl}\n`);
-
-  if (options.onListening) {
-    await options.onListening(actualPort);
-  }
-
   let shutdownRequested = false;
 
   const shutdown = () => {
@@ -1174,6 +1155,30 @@ async function runWebMcpHttp(
     platform.onSignal('SIGINT', shutdown);
     platform.onSignal('SIGTERM', shutdown);
     platform.onSignal('SIGHUP', shutdown);
+  }
+
+  if (generatedBearer && resolvedBearer) {
+    tokenFilePath = await publishBearer(
+      platform,
+      resolvedBearer,
+      actualPort,
+      address,
+      options.json
+    );
+    if (shutdownRequested && tokenFilePath) {
+      await platform.fs.unlink?.(tokenFilePath).catch(() => {});
+    }
+  } else {
+    if (options.json) {
+      await platform.write(1, `${JSON.stringify(address)}\n`);
+    }
+  }
+
+  if (!shutdownRequested) {
+    await platform.write(2, `mcpcat serve --webmcp: listening on ${listenUrl}\n`);
+    if (options.onListening) {
+      await options.onListening(actualPort);
+    }
   }
 
   const handler = async (request: HttpRequest): Promise<HttpResponse> => {
@@ -1376,33 +1381,14 @@ async function runProxyHttp(
   const address = serveAddress(platform, options.host, actualPort);
   const listenUrl = address.url;
   let tokenFilePath: string | undefined;
-
-  if (generatedBearer && resolvedBearer) {
-    tokenFilePath = await publishBearer(
-      platform,
-      resolvedBearer,
-      actualPort,
-      address,
-      options.json
-    );
-  } else {
-    if (options.json) {
-      await platform.write(1, `${JSON.stringify(address)}\n`);
-    }
-  }
-  await platform.write(2, `mcpcat serve --proxy: listening on ${listenUrl}\n`);
-
-  if (options.onListening) {
-    await options.onListening(actualPort);
-  }
-
   let shutdownRequested = false;
+  let proxyDone: Promise<void> | undefined;
 
   const shutdown = () => {
     if (shutdownRequested) return;
     shutdownRequested = true;
     listener.close();
-    void proxy.shutdown();
+    proxyDone = proxy.shutdown();
     if (tokenFilePath) {
       platform.fs.unlink?.(tokenFilePath).catch(() => {});
     }
@@ -1412,6 +1398,30 @@ async function runProxyHttp(
     platform.onSignal('SIGINT', shutdown);
     platform.onSignal('SIGTERM', shutdown);
     platform.onSignal('SIGHUP', shutdown);
+  }
+
+  if (generatedBearer && resolvedBearer) {
+    tokenFilePath = await publishBearer(
+      platform,
+      resolvedBearer,
+      actualPort,
+      address,
+      options.json
+    );
+    if (shutdownRequested && tokenFilePath) {
+      await platform.fs.unlink?.(tokenFilePath).catch(() => {});
+    }
+  } else {
+    if (options.json) {
+      await platform.write(1, `${JSON.stringify(address)}\n`);
+    }
+  }
+
+  if (!shutdownRequested) {
+    await platform.write(2, `mcpcat serve --proxy: listening on ${listenUrl}\n`);
+    if (options.onListening) {
+      await options.onListening(actualPort);
+    }
   }
 
   const handler = (request: HttpRequest): Promise<HttpResponse> =>
@@ -1444,6 +1454,7 @@ async function runProxyHttp(
     if (!shutdownRequested) throw new Error('listener closed unexpectedly');
   }
 
+  await proxyDone;
   return 0;
 }
 
@@ -1602,22 +1613,6 @@ async function runHttpServer(
   const address = serveAddress(platform, options.host, actualPort);
   const listenUrl = address.url;
   let tokenFilePath: string | undefined;
-
-  if (generatedBearer && resolvedBearer) {
-    tokenFilePath = await publishBearer(
-      platform,
-      resolvedBearer,
-      actualPort,
-      address,
-      options.json
-    );
-  } else {
-    if (options.json) {
-      await platform.write(1, `${JSON.stringify(address)}\n`);
-    }
-  }
-  await platform.write(2, `mcpcat serve: listening on ${listenUrl}\n`);
-
   let shutdownRequested = false;
   let inflightDone: Promise<void> | undefined;
 
@@ -1635,6 +1630,27 @@ async function runHttpServer(
     platform.onSignal('SIGINT', shutdown);
     platform.onSignal('SIGTERM', shutdown);
     platform.onSignal('SIGHUP', shutdown);
+  }
+
+  if (generatedBearer && resolvedBearer) {
+    tokenFilePath = await publishBearer(
+      platform,
+      resolvedBearer,
+      actualPort,
+      address,
+      options.json
+    );
+    if (shutdownRequested && tokenFilePath) {
+      await platform.fs.unlink?.(tokenFilePath).catch(() => {});
+    }
+  } else {
+    if (options.json) {
+      await platform.write(1, `${JSON.stringify(address)}\n`);
+    }
+  }
+
+  if (!shutdownRequested) {
+    await platform.write(2, `mcpcat serve: listening on ${listenUrl}\n`);
   }
 
   const handler = (request: HttpRequest): Promise<HttpResponse> =>

@@ -23,7 +23,7 @@ export default async function main(ctx) {
     return JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } });
   }
 
-  function handleLine(line) {
+  async function handleLine(line) {
     if (!line.trim()) return null;
     let parsed;
     try {
@@ -50,6 +50,15 @@ export default async function main(ctx) {
         const args = params?.arguments ?? {};
         if (toolName === 'slow') {
           const ms = args.ms ?? 30000;
+          const progressToken = params?._meta?.progressToken;
+          if (progressToken !== undefined) {
+            const note = {
+              jsonrpc: '2.0',
+              method: 'notifications/progress',
+              params: { progressToken, progress: 0, message: 'started' },
+            };
+            await writer.write(encoder.encode(`${JSON.stringify(note)}\n`));
+          }
           return new Promise((resolve) => {
             setTimeout(() => {
               resolve(jsonRpc(id, { content: [{ type: 'text', text: 'done' }] }));

@@ -33,8 +33,14 @@ const kernelPkgVersion = JSON.parse(
 
 export const kernelVersion = kernelPkgVersion.split('.').map(Number);
 
-export const fetchReachesKernelLoopback =
-  kernelVersion[0] > 1 || (kernelVersion[0] === 1 && kernelVersion[1] >= 91);
+export function kernelAtLeast(minor) {
+  return kernelVersion[0] > 1 || (kernelVersion[0] === 1 && kernelVersion[1] >= minor);
+}
+
+export const fetchReachesKernelLoopback = kernelAtLeast(91);
+export const hasPgid = kernelAtLeast(74);
+export const hasDeathSignal = kernelAtLeast(88);
+export const hasSealed = kernelAtLeast(85);
 
 export function hostUrl(port) {
   return fetchReachesKernelLoopback
