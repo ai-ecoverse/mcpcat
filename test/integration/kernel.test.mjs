@@ -7,18 +7,18 @@ import { after, before, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { mcpcatArgs } from './helpers/bin.mjs';
-import { attachKernel, createNodeKernel, hostUrl, nodeTransport } from './helpers/kernel.mjs';
+import {
+  attachKernel,
+  createNodeKernel,
+  hasPgid,
+  hostUrl,
+  nodeTransport,
+} from './helpers/kernel.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const kernelBundle = join(root, 'dist/kernel/mcpcat.mjs');
 const fixturesDir = join(root, 'test/integration/fixtures');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-const kernelPkgPath = process.env.MCPCAT_CERT_KERNEL_DIR
-  ? join(process.env.MCPCAT_CERT_KERNEL_DIR, 'package.json')
-  : join(root, 'node_modules/@ai-ecoverse/slicc-kernel/package.json');
-const kernelPkg = JSON.parse(readFileSync(kernelPkgPath, 'utf8'));
-const kernelVersion = kernelPkg.version.split('.').map(Number);
-const hasPgid = kernelVersion[0] > 1 || (kernelVersion[0] === 1 && kernelVersion[1] >= 74);
 
 async function startFixtureServer(script, extraArgs = []) {
   const child = spawn('node', [join(fixturesDir, script), ...extraArgs], {

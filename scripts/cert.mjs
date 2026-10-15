@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { kernelTestFiles } from './kernel-test-files.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const countReporter = pathToFileURL(join(root, 'scripts/cert-count-reporter.mjs')).href;
@@ -78,7 +79,9 @@ if (!kernelDir) finish(base.exitCode);
 const kernelVersion = readKernelVersion(kernelDir);
 if (kernelVersion) console.log(`cert: kernel ${kernelVersion} at ${kernelDir}`);
 
-const kernel = runTests(['test/integration/*kernel*.test.mjs']);
+const kernelFiles = kernelTestFiles();
+console.log(`cert: kernel test files: ${kernelFiles.join(' ')}`);
+const kernel = runTests(kernelFiles);
 
 if (kernel.passCount === 0) {
   console.error(`cert: FAIL — kernel dir ${kernelDir} was given but no kernel tests passed`);
