@@ -18,7 +18,7 @@ concurrency:
 jobs:
   release:
     if: github.ref == 'refs/heads/main'
-    uses: ai-ecoverse/slicc-shared-web/.github/workflows/node-release.yml@v1.18.1
+    uses: ai-ecoverse/slicc-shared-web/.github/workflows/node-release.yml@v1.20.0
     with:
       node-version: '24'
       chromium: false
