@@ -21,3 +21,23 @@ const kernelNodeMod = certKernelDir
 export const kernelDir = certKernelDir;
 export const { attachKernel } = kernelMod;
 export const { createNodeKernel, nodeTransport } = kernelNodeMod;
+
+const kernelPkgVersion = JSON.parse(
+  readFileSync(
+    certKernelDir
+      ? join(certKernelDir, 'package.json')
+      : new URL('../../../node_modules/@ai-ecoverse/slicc-kernel/package.json', import.meta.url),
+    'utf8'
+  )
+).version;
+
+export const kernelVersion = kernelPkgVersion.split('.').map(Number);
+
+export const fetchReachesKernelLoopback =
+  kernelVersion[0] > 1 || (kernelVersion[0] === 1 && kernelVersion[1] >= 91);
+
+export function hostUrl(port) {
+  return fetchReachesKernelLoopback
+    ? `http://host.slicc.internal:${port}`
+    : `http://127.0.0.1:${port}`;
+}

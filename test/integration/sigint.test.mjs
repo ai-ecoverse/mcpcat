@@ -5,8 +5,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { attachKernel } from '@ai-ecoverse/slicc-kernel';
-import { createNodeKernel, nodeTransport } from '@ai-ecoverse/slicc-kernel/node';
+import { attachKernel, createNodeKernel, hostUrl, nodeTransport } from './helpers/kernel.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const hostBin = join(root, 'dist/host/mcpcat.mjs');
@@ -193,7 +192,7 @@ describe('kernel: SIGINT cancels 2026 HTTP call and exits 130', () => {
 
   before(async () => {
     server = await startFixtureServer('server-2026-http-cancel.mjs');
-    url = `http://127.0.0.1:${server.port}`;
+    url = hostUrl(server.port);
     kernel = await createNodeKernel({
       network: { transport: nodeTransport({ hostLoopback: true }) },
     });

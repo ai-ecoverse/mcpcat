@@ -7,7 +7,7 @@ import { after, before, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { mcpcatArgs } from './helpers/bin.mjs';
-import { attachKernel, createNodeKernel, nodeTransport } from './helpers/kernel.mjs';
+import { attachKernel, createNodeKernel, hostUrl, nodeTransport } from './helpers/kernel.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const kernelBundle = join(root, 'dist/kernel/mcpcat.mjs');
@@ -233,7 +233,7 @@ describe('kernel: HTTP client via transport', () => {
   });
 
   it('info shows server details', async () => {
-    const url = `http://127.0.0.1:${server.port}`;
+    const url = hostUrl(server.port);
     const { status, stdout, stderr } = await kernel.run(['mcpcat', 'info', url], {
       stdout: 'pipe',
       stderr: 'pipe',
@@ -244,7 +244,7 @@ describe('kernel: HTTP client via transport', () => {
   });
 
   it('tools lists tools', async () => {
-    const url = `http://127.0.0.1:${server.port}`;
+    const url = hostUrl(server.port);
     const { status, stdout, stderr } = await kernel.run(['mcpcat', 'tools', url], {
       stdout: 'pipe',
       stderr: 'pipe',
@@ -255,7 +255,7 @@ describe('kernel: HTTP client via transport', () => {
   });
 
   it('call invokes a tool', async () => {
-    const url = `http://127.0.0.1:${server.port}`;
+    const url = hostUrl(server.port);
     const { status, stdout, stderr } = await kernel.run(
       ['mcpcat', 'call', url, 'echo', '-d', '{"message":"kernel hello"}'],
       { stdout: 'pipe', stderr: 'pipe' }
@@ -265,7 +265,7 @@ describe('kernel: HTTP client via transport', () => {
   });
 
   it('call with add tool', async () => {
-    const url = `http://127.0.0.1:${server.port}`;
+    const url = hostUrl(server.port);
     const { status, stdout, stderr } = await kernel.run(
       ['mcpcat', 'call', url, 'add', '-d', '{"a":10,"b":20}'],
       { stdout: 'pipe', stderr: 'pipe' }
@@ -275,7 +275,7 @@ describe('kernel: HTTP client via transport', () => {
   });
 
   it('describe shows tool schema', async () => {
-    const url = `http://127.0.0.1:${server.port}`;
+    const url = hostUrl(server.port);
     const { status, stdout, stderr } = await kernel.run(['mcpcat', 'describe', url, 'echo'], {
       stdout: 'pipe',
       stderr: 'pipe',
@@ -286,7 +286,7 @@ describe('kernel: HTTP client via transport', () => {
   });
 
   it('input_required exits 6 without prompting in kernel', async () => {
-    const url = `http://127.0.0.1:${server.port}`;
+    const url = hostUrl(server.port);
     const { status, stdout, stderr } = await kernel.run(
       ['mcpcat', 'call', url, 'needs-input', '-d', '{}'],
       { stdout: 'pipe', stderr: 'pipe' }
@@ -318,7 +318,7 @@ describe('kernel: legacy HTTP via transport', () => {
   });
 
   it('info shows server details via fallback', async () => {
-    const url = `http://127.0.0.1:${server.port}`;
+    const url = hostUrl(server.port);
     const { status, stdout, stderr } = await kernel.run(['mcpcat', 'info', url], {
       stdout: 'pipe',
       stderr: 'pipe',
@@ -329,7 +329,7 @@ describe('kernel: legacy HTTP via transport', () => {
   });
 
   it('tools lists tools', async () => {
-    const url = `http://127.0.0.1:${server.port}`;
+    const url = hostUrl(server.port);
     const { status, stdout, stderr } = await kernel.run(['mcpcat', 'tools', url], {
       stdout: 'pipe',
       stderr: 'pipe',
@@ -340,7 +340,7 @@ describe('kernel: legacy HTTP via transport', () => {
   });
 
   it('call invokes a tool', async () => {
-    const url = `http://127.0.0.1:${server.port}`;
+    const url = hostUrl(server.port);
     const { status, stdout, stderr } = await kernel.run(
       ['mcpcat', 'call', url, 'echo', '-d', '{"message":"legacy kernel hello"}'],
       { stdout: 'pipe', stderr: 'pipe' }
@@ -368,7 +368,7 @@ describe('kernel: legacy HTTP SSE via transport', () => {
   });
 
   it('info works over SSE', async () => {
-    const url = `http://127.0.0.1:${server.port}`;
+    const url = hostUrl(server.port);
     const { status, stdout, stderr } = await kernel.run(['mcpcat', 'info', url], {
       stdout: 'pipe',
       stderr: 'pipe',
@@ -378,7 +378,7 @@ describe('kernel: legacy HTTP SSE via transport', () => {
   });
 
   it('call works over SSE', async () => {
-    const url = `http://127.0.0.1:${server.port}`;
+    const url = hostUrl(server.port);
     const { status, stdout, stderr } = await kernel.run(
       ['mcpcat', 'call', url, 'echo', '-d', '{"message":"sse kernel hello"}'],
       { stdout: 'pipe', stderr: 'pipe' }
@@ -652,7 +652,7 @@ describe('kernel: discover', () => {
   });
 
   it('discovers MCP server via kernel fetch', async () => {
-    const url = `http://127.0.0.1:${server.port}`;
+    const url = hostUrl(server.port);
     const { status, stdout, stderr } = await kernel.run(['mcpcat', 'discover', url], {
       stdout: 'pipe',
       stderr: 'pipe',

@@ -5,7 +5,13 @@ import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { attachKernel, createNodeKernel, nodeTransport } from './helpers/kernel.mjs';
+import {
+  attachKernel,
+  createNodeKernel,
+  fetchReachesKernelLoopback,
+  hostUrl,
+  nodeTransport,
+} from './helpers/kernel.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const kernelBundle = join(root, 'dist/kernel/mcpcat.mjs');
@@ -466,7 +472,7 @@ describe('kernel: transport 403 (loopback refused) exits 3, not 4', {
   });
 
   it('exits 3 with transport reason, not exit 4 auth', async () => {
-    const url = `http://127.0.0.1:${server.port}`;
+    const url = hostUrl(server.port);
     const { status, stderr } = await kernel.run(['mcpcat', 'info', url], {
       stdout: 'pipe',
       stderr: 'pipe',
@@ -500,12 +506,48 @@ describe('kernel: transport 403 with hostLoopback enabled connects fine', {
   });
 
   it('connects to loopback with hostLoopback enabled', async () => {
-    const url = `http://127.0.0.1:${server.port}`;
+    const url = hostUrl(server.port);
     const { status, stdout, stderr } = await kernel.run(['mcpcat', 'info', url], {
       stdout: 'pipe',
       stderr: 'pipe',
     });
     assert.equal(status, 0, `expected exit 0, got ${status}; stderr: ${stderr}`);
     assert.ok(stdout.includes('test-2026'));
+  });
+});
+
+describe('kernel: 127.0.0.1 with no kernel listener exits 3 and names host.slicc.internal', {
+  skip: !hasSealed && 'requires slicc-kernel >= 1.85.0',
+}, () => {
+  let kernel;
+  let server;
+
+  before(async () => {
+    server = await startFixtureServer('server-2026-http.mjs');
+    kernel = await createNodeKernel({
+      network: { transport: nodeTransport({ hostLoopback: !fetchReachesKernelLoopback }) },
+    });
+    await installMcpcat(kernel);
+  });
+
+  after(() => {
+    server?.child.kill('SIGTERM');
+    kernel?.terminate();
+  });
+
+  it("a kernel program's 127.0.0.1 is the kernel, so the hint points at the host name", async () => {
+    const url = fetchReachesKernelLoopback
+      ? `http://127.0.0.1:${server.port}`
+      : 'http://127.0.0.1:1';
+    const { status, stderr } = await kernel.run(['mcpcat', 'info', url], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.equal(status, 3, `expected exit 3, got ${status}; stderr: ${stderr}`);
+    assert.ok(
+      stderr.includes('host.slicc.internal'),
+      `stderr should name host.slicc.internal; got: ${stderr}`
+    );
+    assert.ok(!stderr.includes('mcpcat login'), 'should not suggest login');
   });
 });
