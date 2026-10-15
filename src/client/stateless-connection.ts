@@ -66,8 +66,9 @@ export class McpTimeoutError extends Error {
 export class McpAuthError extends Error {
   readonly status: number;
   readonly target: string;
-  constructor(status: number, target: string) {
-    super(`HTTP ${status}: authentication required. Run: mcpcat login ${target}`);
+  constructor(status: number, target: string, reason?: string) {
+    const why = reason ? ` (${reason})` : '';
+    super(`HTTP ${status}: authentication required${why}. Run: mcpcat login ${target}`);
     this.name = 'McpAuthError';
     this.status = status;
     this.target = target;
@@ -87,11 +88,25 @@ export class TransportRefusalError extends Error {
 
 class AuthRetryableError extends Error {
   readonly response: Response;
-  constructor(response: Response) {
+  readonly reason: string | undefined;
+  constructor(response: Response, reason: string | undefined) {
     super(`HTTP ${response.status}: auth retry`);
     this.name = 'AuthRetryableError';
     this.response = response;
+    this.reason = reason;
   }
+}
+
+const KERNEL_REFUSAL = 'nodeTransport refuses ';
+
+function firstLine(text: string): string {
+  return text.trim().split('\n')[0].trim().slice(0, 200);
+}
+
+async function authReason(res: Response): Promise<string | undefined> {
+  const type = res.headers.get('content-type') ?? '';
+  if (!type.toLowerCase().startsWith('text/plain')) return undefined;
+  return firstLine(await res.text()) || undefined;
 }
 
 function selectSseFrame(body: Uint8Array, targetId: number): JsonRpcResponse {
@@ -177,6 +192,7 @@ export interface StatelessConnectionOptions {
   signal?: AbortSignal;
   verbose?: VerboseLogger;
   authProvider?: AuthProvider;
+  transportRefusals?: boolean;
 }
 
 type RequestFn = (method: string, params: Record<string, unknown>) => Promise<unknown>;
@@ -271,6 +287,7 @@ export async function createStatelessConnection(
     signal: externalSignal,
     verbose,
     authProvider,
+    transportRefusals,
   } = options;
 
   let nextId = 1;
@@ -295,18 +312,19 @@ export async function createStatelessConnection(
   }
 
   async function handleErrorStatus(res: Response, method: string): Promise<never> {
-    if (res.status === 403) {
-      const wwwAuth = res.headers.get('www-authenticate') ?? '';
-      if (!wwwAuth) {
-        const body = await res.text();
-        if (body && !body.includes('insufficient_scope')) {
-          throw new TransportRefusalError(403, body.split('\n')[0].slice(0, 200));
-        }
+    if (res.status === 401 || res.status === 403) {
+      const reason = await authReason(res);
+      if (
+        transportRefusals &&
+        res.status === 403 &&
+        !res.headers.has('www-authenticate') &&
+        reason?.startsWith(KERNEL_REFUSAL)
+      ) {
+        throw new TransportRefusalError(403, reason);
       }
+      if (authProvider) throw new AuthRetryableError(res, reason);
+      throw new McpAuthError(res.status, url, reason);
     }
-    if ((res.status === 401 || res.status === 403) && authProvider)
-      throw new AuthRetryableError(res);
-    if (res.status === 401 || res.status === 403) throw new McpAuthError(res.status, url);
     const text = await res.text();
     let rpc: { code: number; message: string; data?: unknown } | undefined;
     try {
@@ -370,7 +388,7 @@ export async function createStatelessConnection(
     err: AuthRetryableError,
     token: string | undefined
   ): Promise<void> {
-    if (!authProvider?.onUnauthorized) throw new McpAuthError(err.response.status, url);
+    if (!authProvider?.onUnauthorized) throw new McpAuthError(err.response.status, url, err.reason);
     try {
       await authProvider.onUnauthorized({
         response: err.response,
@@ -380,7 +398,7 @@ export async function createStatelessConnection(
       });
     } catch (authErr) {
       if (authErr instanceof AuthStepUpError || authErr instanceof JerkTimeoutError) throw authErr;
-      throw new McpAuthError(err.response.status, url);
+      throw new McpAuthError(err.response.status, url, err.reason);
     }
   }
 
