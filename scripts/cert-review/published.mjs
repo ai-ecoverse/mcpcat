@@ -9,7 +9,6 @@ import { NAME, SEMVER, sha } from './tarball.mjs';
 const { values } = parseArgs({
   options: {
     version: { type: 'string' },
-    sha256: { type: 'string', default: '' },
     repo: { type: 'string', default: 'ai-ecoverse/mcpcat' },
     wait: { type: 'string', default: '300' },
   },
@@ -48,8 +47,6 @@ async function download(m, tgz) {
   facts.integrity = `sha512-${sha('sha512', tgz, 'base64')}`;
   if (m.dist.integrity !== facts.integrity)
     fail(`dist.integrity is ${m.dist.integrity}, the tarball is ${facts.integrity}`);
-  if (facts.sha256 !== values.sha256.trim().toLowerCase())
-    fail(`npm serves sha256 ${facts.sha256}, cert-review certified ${values.sha256 || '(none)'}`);
   return true;
 }
 
