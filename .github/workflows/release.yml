@@ -97,8 +97,8 @@ jobs:
           exit 1
 
   binaries:
-    needs: detect-tag
-    if: github.ref == 'refs/heads/main' && needs.detect-tag.outputs.tag != ''
+    needs: [detect-tag, verify]
+    if: github.ref == 'refs/heads/main' && needs.detect-tag.outputs.tag != '' && needs.verify.result == 'success'
     permissions:
       contents: write
     uses: ./.github/workflows/binaries.yml
