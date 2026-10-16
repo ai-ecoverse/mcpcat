@@ -582,7 +582,7 @@ jobs:
           fi
 
   verdict:
-    name: cert-review / ${{ needs.plan.outputs.label || 'verdict' }}
+    name: cert-review / ${{ (needs.guard.result != 'success' && needs.guard.result != 'skipped') && 'needs coordinator review' || needs.plan.outputs.label || 'verdict' }}
     needs: [guard, plan, record]
     if: always()
     runs-on: ubuntu-latest
