@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   runner:
-    runs-on: ${{ vars.CERT_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CERT_LIGHT_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -102,7 +102,7 @@ jobs:
   all-green:
     if: always()
     needs: [runner, ci, cert, cert-review]
-    runs-on: ${{ vars.CERT_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CERT_LIGHT_RUNNER || 'ubuntu-latest' }}
     steps:
       - run: '[ "${{ needs.runner.result }}" = success ] && [ "${{ needs.ci.result }}" = success ] && [ "${{ needs.cert.result }}" = success ] && [ "${{ needs.cert-review.result }}" = success ]'
       - run: 'echo "cert-review: ${{ needs.cert-review.outputs.verdict }}"'
