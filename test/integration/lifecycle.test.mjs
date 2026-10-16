@@ -8,7 +8,7 @@ import { after, before, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { mcpcatArgs } from './helpers/bin.mjs';
-import { attachKernel, createNodeKernel, hasPgid } from './helpers/kernel.mjs';
+import { attachKernel, createNodeKernel, hasDeathSignal, hasPgid } from './helpers/kernel.mjs';
 import { waitUntil } from './helpers/wait.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -306,6 +306,7 @@ async function installKernelFixtures(kernel) {
     ['mcpcat-test-slow-legacy', 'kernel-stdio-legacy-slow-pidtrack.mjs'],
     ['mcpcat-test-sleeper', 'kernel-sleeper.mjs'],
     ['mcpcat-test-stubborn', 'kernel-sleeper-stubborn.mjs'],
+    ['mcpcat-test-crash', 'kernel-stdio-crash-pidtrack.mjs'],
   ]) {
     await installKernelFixture(kernel, name, name, file);
   }
@@ -481,7 +482,11 @@ describe('lifecycle: kernel stdio servers whose grandchild ignores TERM, HUP and
     kernel?.terminate();
   });
 
-  it('call: server and grandchild are gone when mcpcat exits, 20 times', async () => {
+  it('call: server and grandchild are gone when mcpcat exits, 20 times', {
+    skip:
+      hasDeathSignal &&
+      "slicc-kernel >= 1.88.0 SIGKILLs the stdio server's process group when mcpcat exits (parentDeathSignal on a pgid 0 spawn), so the grandchild cannot outlive a call; the bridge reconnect test below covers the reap",
+  }, async () => {
     for (let round = 0; round < 20; round++) {
       const pidFile = `/tmp/kpids-stubborn-call-${round}.txt`;
       const { status, stderr } = await kernel.run(
@@ -526,6 +531,60 @@ describe('lifecycle: kernel stdio servers whose grandchild ignores TERM, HUP and
     await sp.exited;
     await assertKernelPidsGone(kernel, client, pidFile, `bridge round ${round}`);
   }
+
+  it('add --bridge: reconnecting after the upstream crashed reaps the old grandchild while the bridge keeps running', async () => {
+    const pidFile = '/tmp/kpids-crash-bridge.txt';
+    let output = '';
+    const collect = (chunk) => {
+      output += new TextDecoder().decode(chunk);
+    };
+    const sp = await client.spawn(
+      ['mcpcat', 'add', '--bridge', '--no-auth', 'crash', '--', 'mcpcat-test-crash'],
+      {
+        stdin: 'pipe',
+        env: { PID_RECORD_FILE: pidFile, GRANDCHILD: 'mcpcat-test-stubborn' },
+        onStdout: collect,
+        onStderr: collect,
+      }
+    );
+    let bridgeExited = false;
+    void sp.exited.then(() => {
+      bridgeExited = true;
+    });
+    const url = await waitUntil(
+      () => /http:\/\/\d+\.kernel\.localhost\/mcp/.exec(output)?.[0],
+      'the bridge to print its URL'
+    );
+    const run = (args) => kernel.run(['mcpcat', ...args], { stdout: 'pipe', stderr: 'pipe' });
+    const crash = await run(['call', url, 'crash']);
+    assert.equal(crash.status, 0, `call crash through the bridge: ${crash.stderr}`);
+    const first = await readKernelPids(kernel, pidFile);
+    assert.equal(first.servers.length, 1, 'one upstream before the crash');
+    const live = async () =>
+      new Set((await client.ps()).filter((p) => p.state !== 'Z').map((p) => p.pid));
+    await waitUntil(
+      async () => !(await live()).has(first.servers[0]),
+      'the first upstream to exit'
+    );
+    assert.ok(
+      (await live()).has(first.grandchildren[0]),
+      'the crashed upstream left its grandchild'
+    );
+    const tools = await run(['tools', url]);
+    assert.equal(tools.status, 0, `tools after the crash: ${tools.stderr}`);
+    assert.equal(
+      (await readKernelPids(kernel, pidFile)).servers.length,
+      2,
+      'the bridge reconnected'
+    );
+    assert.ok(!bridgeExited, `the bridge should still be running: ${output}`);
+    assert.ok(
+      !(await live()).has(first.grandchildren[0]),
+      `grandchild ${first.grandchildren[0]} of the crashed upstream outlived the reconnect`
+    );
+    sp.signal('SIGTERM');
+    await sp.exited;
+  });
 
   for (let batch = 0; batch < 4; batch++) {
     it(`add --bridge: SIGTERM leaves no upstream process behind, rounds ${batch * 5}-${batch * 5 + 4}`, async () => {
