@@ -126,6 +126,15 @@ describe("kernel: an expired token refreshes against an authorization server on 
       'dist/as.mjs',
       readFileSync(join(fixturesDir, 'kernel-oauth-as.mjs'))
     );
+    for (const name of ['kernel-cert-put', 'kernel-cert-stat']) {
+      await installPackage(
+        kernel,
+        `@ai-ecoverse/mcpcat-test-${name}`,
+        name,
+        'dist/main.mjs',
+        readFileSync(join(fixturesDir, `${name}.mjs`))
+      );
+    }
     client = await attachKernel(await kernel.connect());
     hostDir = mkdtempSync(join(tmpdir(), 'mcpcat-kernel-as-'));
   });
@@ -170,6 +179,35 @@ describe("kernel: an expired token refreshes against an authorization server on 
     const { seed, port, log } = await kernelAs();
     const href = `http://127.0.0.1:${port}/mcp`;
     await refreshesOnce({ href, state: expiredState(href, seed) }, log);
+  });
+
+  it('the token store is 0600 in a 0700 directory after a refresh', async (t) => {
+    const { seed, port, log } = await kernelAs();
+    const href = `http://127.0.0.1:${port}/mcp`;
+    const agentDir = `${AGENT_DIR}/mode`;
+    const store = `${agentDir}/mcp-auth.json`;
+    const modes = async () =>
+      (
+        await kernel.run(['kernel-cert-stat', store, agentDir], { stdout: 'pipe', stderr: 'pipe' })
+      ).stdout
+        .trim()
+        .split('\n')
+        .map((l) => l.split('\t')[1]);
+    const put = await kernel.run(['kernel-cert-put', store, '0o644', '0o755'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      stdin: JSON.stringify(expiredState(href, seed)),
+    });
+    assert.equal(put.status, 0, put.stderr);
+    if (put.stdout.trim() === 'no-chmod') return t.skip('this kernel has no ctx.fs.chmod');
+    assert.deepEqual(await modes(), ['644', '755']);
+    const { status, stderr } = await kernel.run(
+      ['mcpcat', 'call', href, 'echo', '-d', '{"message":"after refresh"}'],
+      { stdout: 'pipe', stderr: 'pipe', env: { PI_CODING_AGENT_DIR: agentDir } }
+    );
+    assert.equal(status, 0, `stderr: ${stderr}; AS: ${log()}`);
+    assert.deepEqual(await modes(), ['600', '700']);
+    assert.ok(refreshes(log()) >= 1, `AS log: ${log()}`);
   });
 
   it('at the host 127.0.0.1:<port> with hostLoopback on', {

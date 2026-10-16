@@ -1,6 +1,6 @@
 import { type JsonRpcMessage, parseJsonRpcMessage } from '@earendil-works/pi-mcp';
 import type { Platform, SpawnResult } from '../platform/types.ts';
-import { trackStdio } from './stdio-registry.ts';
+import { reapStdio, trackStdio } from './stdio-registry.ts';
 
 type MessageListener = (message: JsonRpcMessage) => void;
 type ErrorListener = (error: Error) => void;
@@ -142,17 +142,8 @@ export class PlatformStdioTransport {
       await proc.stdin.close();
     } catch {}
 
-    const exited = await Promise.race([done, delay(grace)]);
-    if (!exited) {
-      await proc.kill('SIGTERM');
-      const exitedAfterTerm = await Promise.race([done, delay(closeTimeoutMs)]);
-      if (!exitedAfterTerm) {
-        await proc.kill('SIGKILL');
-        await done;
-      }
-    }
-
-    await proc.kill('SIGTERM');
+    await Promise.race([done, delay(grace)]);
+    await reapStdio(proc, closeTimeoutMs);
 
     this.emitClose();
   }

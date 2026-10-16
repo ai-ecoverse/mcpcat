@@ -5,7 +5,7 @@ export default async function main(ctx) {
   const pidFile = ctx.env.PID_RECORD_FILE;
 
   const child = await ctx.spawn({
-    argv: ['mcpcat-test-sleeper'],
+    argv: [ctx.env.GRANDCHILD ?? 'mcpcat-test-sleeper'],
     stdin: 'null',
     stdout: 'null',
     stderr: 'null',

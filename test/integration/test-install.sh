@@ -35,8 +35,14 @@ s.serve_forever()
 " 2>/dev/null &
 SERVER_PID=$!
 
-sleep 1
-SERVER_PORT=$(cat "$PORT_FILE")
+SERVER_PORT=""
+i=0
+while [ -z "$SERVER_PORT" ] && [ "$i" -lt 100 ]; do
+  kill -0 "$SERVER_PID" 2>/dev/null || break
+  SERVER_PORT=$(cat "$PORT_FILE")
+  [ -n "$SERVER_PORT" ] || sleep 0.1
+  i=$((i + 1))
+done
 rm -f "$PORT_FILE"
 
 if [ -z "$SERVER_PORT" ]; then
@@ -55,6 +61,10 @@ test -n "$VERSION" || fail "no version output"
 if [ -n "$EXPECTED_VERSION" ]; then
   test "$VERSION" = "$EXPECTED_VERSION" || fail "version mismatch: got $VERSION, expected $EXPECTED_VERSION"
 fi
+case "${EXPECT_MANAGED_NODE:-}" in
+  1) test -x "$DATA_DIR/mcpcat/node/bin/node" || fail "expected the installer to download node into $DATA_DIR/mcpcat/node" ;;
+  0) test ! -e "$DATA_DIR/mcpcat/node" || fail "node was downloaded even though it was on PATH" ;;
+esac
 
 printf 'Test 2: idempotent reinstall\n'
 XDG_DATA_HOME="$DATA_DIR" SLICC_INSTALL_BASE_URL="$BASE" INSTALL_DIR="$INSTALL_DIR" sh "$ROOT/install.sh"

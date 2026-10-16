@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { mcpcatArgs } from './helpers/bin.mjs';
-import { attachKernel, createNodeKernel } from './helpers/kernel.mjs';
+import { attachKernel, createNodeKernel, syncSignals } from './helpers/kernel.mjs';
 import { waitUntil } from './helpers/wait.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -129,6 +129,23 @@ describe('add --bridge: a signal right after "listening" shuts the bridge down',
         slicc: { commands: { 'mcpcat-test-stdio': { abi: 'js', module: 'dist/server.mjs' } } },
       })
     );
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat-test-signal-at-listening/dist/main.mjs',
+      readFileSync(join(fixturesDir, 'kernel-signal-at-listening.mjs'))
+    );
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat-test-signal-at-listening/package.json',
+      JSON.stringify({
+        name: '@ai-ecoverse/mcpcat-test-signal-at-listening',
+        version: '1.0.0',
+        type: 'module',
+        slicc: {
+          commands: {
+            'mcpcat-test-signal-at-listening': { abi: 'js', module: 'dist/main.mjs' },
+          },
+        },
+      })
+    );
     client = await attachKernel(await kernel.connect());
   });
 
@@ -174,6 +191,163 @@ describe('add --bridge: a signal right after "listening" shuts the bridge down',
         await waitUntil(() => fire() || sent, 'the listening line');
         assert.equal(await sp.exited, 0, `round ${i}: bridge did not shut down cleanly: ${stderr}`);
       }
+    });
+  }
+
+  for (const sig of ['SIGHUP', 'SIGTERM', 'SIGINT']) {
+    it(`${sig} from inside the kernel the moment "listening" appears: the bridge exits cleanly, 40 bridges`, {
+      skip:
+        syncSignals &&
+        'slicc-kernel >= 1.69.0 installs a js program\'s signal handler before ctx.signals.on returns (slicc-kernel#421), so a handler mcpcat installs before "listening" cannot miss the signal; the race only exists on 1.65.2-1.68.x',
+    }, async () => {
+      const runs = await Promise.all(
+        Array.from({ length: 40 }, (_, i) =>
+          kernel.run(
+            [
+              'mcpcat-test-signal-at-listening',
+              sig,
+              'add',
+              '--bridge',
+              '--no-auth',
+              '--config',
+              `/tmp/bridge-in-kernel-${sig}-${i}.json`,
+              `k${i}`,
+              '--',
+              'mcpcat-test-stdio',
+            ],
+            { stdout: 'pipe', stderr: 'pipe' }
+          )
+        )
+      );
+      const outcomes = runs.map((r) => JSON.parse(r.stdout.trim() || '{}'));
+      assert.ok(
+        outcomes.every((o) => o.sent),
+        `every bridge should print "listening": ${JSON.stringify(outcomes)}`
+      );
+      const unclean = outcomes.map((o, i) => [i, o.status]).filter(([, status]) => status !== 0);
+      assert.deepEqual(unclean, [], `bridges that died of ${sig} instead of shutting down`);
+    });
+  }
+});
+
+const discoveryExit = { SIGHUP: 129, SIGTERM: 143, SIGINT: 130 };
+
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+describe('serve <cmd>: a signal during CLI discovery kills the discovery child and exits', () => {
+  for (const sig of ['SIGHUP', 'SIGTERM', 'SIGINT']) {
+    it(`${sig} on the host`, async () => {
+      const pidFile = join(home, `discovery-${sig}.pid`);
+      const { cmd, args } = mcpcatArgs([
+        'serve',
+        '--env',
+        'PID_RECORD_FILE',
+        `slow=${join(fixturesDir, 'serve-slow-discovery-cli.mjs')}`,
+      ]);
+      const child = spawn(cmd, args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, NODE_NO_WARNINGS: '1', HOME: home, PID_RECORD_FILE: pidFile },
+      });
+      let stderr = '';
+      child.stderr.on('data', (c) => {
+        stderr += c.toString();
+      });
+      const exited = new Promise((resolve) => {
+        child.on('exit', (code, signal) => resolve({ code, signal }));
+      });
+      const pid = await waitUntil(
+        () => existsSync(pidFile) && Number(readFileSync(pidFile, 'utf8').trim()),
+        'the discovery child to record its pid'
+      );
+      child.kill(sig);
+      const { code, signal } = await exited;
+      assert.equal(signal, null, `mcpcat died of ${signal} during discovery: ${stderr}`);
+      assert.equal(code, discoveryExit[sig], `exit code after ${sig}: ${stderr}`);
+      await waitUntil(() => !pidAlive(pid), `discovery child ${pid} to be gone`, 5_000);
+    });
+  }
+});
+
+describe('serve <cmd> in the kernel: a signal during CLI discovery kills the discovery child and exits', () => {
+  let kernel;
+  let client;
+
+  before(async () => {
+    kernel = await createNodeKernel({});
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat/dist/kernel/mcpcat.mjs',
+      readFileSync(kernelBundle)
+    );
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat/package.json',
+      JSON.stringify({
+        name: '@ai-ecoverse/mcpcat',
+        version: '0.0.0',
+        type: 'module',
+        slicc: { commands: { mcpcat: { abi: 'js', module: 'dist/kernel/mcpcat.mjs' } } },
+      })
+    );
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat-test-slow-discovery/dist/main.mjs',
+      readFileSync(join(fixturesDir, 'kernel-slow-discovery-cli.mjs'))
+    );
+    await kernel.writeFile(
+      '/node_modules/@ai-ecoverse/mcpcat-test-slow-discovery/package.json',
+      JSON.stringify({
+        name: '@ai-ecoverse/mcpcat-test-slow-discovery',
+        version: '1.0.0',
+        type: 'module',
+        slicc: {
+          commands: {
+            'mcpcat-test-slow-discovery': { abi: 'js', module: 'dist/main.mjs' },
+          },
+        },
+      })
+    );
+    client = await attachKernel(await kernel.connect());
+  });
+
+  after(() => {
+    client?.close();
+    kernel?.terminate();
+  });
+
+  for (const sig of ['SIGHUP', 'SIGTERM', 'SIGINT']) {
+    it(sig, async () => {
+      const pidFile = `/tmp/discovery-${sig}.pid`;
+      let stderr = '';
+      const sp = await client.spawn(
+        ['mcpcat', 'serve', '--env', 'PID_RECORD_FILE', 'mcpcat-test-slow-discovery'],
+        {
+          stdin: 'pipe',
+          env: { PID_RECORD_FILE: pidFile },
+          onStdout() {},
+          onStderr(chunk) {
+            stderr += new TextDecoder().decode(chunk);
+          },
+        }
+      );
+      const pid = await waitUntil(async () => {
+        try {
+          return Number(new TextDecoder().decode(await kernel.readFile(pidFile)).trim());
+        } catch {
+          return 0;
+        }
+      }, 'the discovery child to record its pid');
+      sp.signal(sig);
+      assert.equal(await sp.exited, discoveryExit[sig], `exit code after ${sig}: ${stderr}`);
+      await waitUntil(
+        async () => !(await client.ps()).some((p) => p.pid === pid && p.state !== 'Z'),
+        `discovery child ${pid} to be gone`,
+        5_000
+      );
     });
   }
 });

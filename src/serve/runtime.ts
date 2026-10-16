@@ -429,6 +429,19 @@ function concat(chunks: Uint8Array[]): Uint8Array {
 
 const KILL_GRACE_MS = 2000;
 
+const SIGNAL_EXIT = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const;
+
+async function trapShutdown(
+  platform: Platform,
+  handler: (sig: keyof typeof SIGNAL_EXIT) => void
+): Promise<void> {
+  await Promise.all(
+    (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map((sig) =>
+      platform.onSignal?.(sig, () => handler(sig))
+    )
+  );
+}
+
 async function killInflight(): Promise<void> {
   const procs = [...inflightProcs];
   if (procs.length === 0) return;
@@ -704,27 +717,28 @@ async function discoverWithSignal(
 ): Promise<{ clis: PublishedCli[] } | { exitCode: number; inflightDone?: Promise<void> }> {
   const clis: PublishedCli[] = [];
   let earlyShutdown = false;
+  let shutdownExit: number = SIGNAL_EXIT.SIGTERM;
   let inflightDone: Promise<void> | undefined;
   const earlyAbort = new AbortController();
-  const onShutdown = () => {
+  const onShutdown = (sig: keyof typeof SIGNAL_EXIT) => {
+    if (earlyShutdown) return;
     earlyShutdown = true;
+    shutdownExit = SIGNAL_EXIT[sig];
     earlyAbort.abort();
     inflightDone = killInflight();
   };
-  platform.onSignal?.('SIGTERM', onShutdown);
-  platform.onSignal?.('SIGINT', onShutdown);
-  platform.onSignal?.('SIGHUP', onShutdown);
+  await trapShutdown(platform, onShutdown);
   for (const cmd of commands) {
     try {
       const cli = await discoverCli(platform, cmd.path, cmd.name, childEnv, cwd, earlyAbort.signal);
       clis.push(cli);
     } catch (err) {
-      if (earlyShutdown) return { exitCode: 143, inflightDone };
+      if (earlyShutdown) return { exitCode: shutdownExit, inflightDone };
       await platform.write(2, `mcpcat serve: ${(err as Error).message}\n`);
       return { exitCode: 2 };
     }
   }
-  if (earlyShutdown) return { exitCode: 143, inflightDone };
+  if (earlyShutdown) return { exitCode: shutdownExit, inflightDone };
   return { clis };
 }
 
@@ -1152,11 +1166,7 @@ async function runWebMcpHttp(
     }
   };
 
-  if (platform.onSignal) {
-    platform.onSignal('SIGINT', shutdown);
-    platform.onSignal('SIGTERM', shutdown);
-    platform.onSignal('SIGHUP', shutdown);
-  }
+  await trapShutdown(platform, shutdown);
 
   if (generatedBearer && resolvedBearer) {
     tokenFilePath = await publishBearer(
@@ -1395,11 +1405,7 @@ async function runProxyHttp(
     }
   };
 
-  if (platform.onSignal) {
-    platform.onSignal('SIGINT', shutdown);
-    platform.onSignal('SIGTERM', shutdown);
-    platform.onSignal('SIGHUP', shutdown);
-  }
+  await trapShutdown(platform, shutdown);
 
   if (generatedBearer && resolvedBearer) {
     tokenFilePath = await publishBearer(
@@ -1627,11 +1633,7 @@ async function runHttpServer(
     }
   };
 
-  if (platform.onSignal) {
-    platform.onSignal('SIGINT', shutdown);
-    platform.onSignal('SIGTERM', shutdown);
-    platform.onSignal('SIGHUP', shutdown);
-  }
+  await trapShutdown(platform, shutdown);
 
   if (generatedBearer && resolvedBearer) {
     tokenFilePath = await publishBearer(
