@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { mcpcatArgs } from './helpers/bin.mjs';
-import { attachKernel, createNodeKernel } from './helpers/kernel.mjs';
+import { attachKernel, createNodeKernel, syncSignals } from './helpers/kernel.mjs';
 import { waitUntil } from './helpers/wait.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -195,7 +195,11 @@ describe('add --bridge: a signal right after "listening" shuts the bridge down',
   }
 
   for (const sig of ['SIGHUP', 'SIGTERM', 'SIGINT']) {
-    it(`${sig} from inside the kernel the moment "listening" appears: the bridge exits cleanly, 40 bridges`, async () => {
+    it(`${sig} from inside the kernel the moment "listening" appears: the bridge exits cleanly, 40 bridges`, {
+      skip:
+        syncSignals &&
+        'slicc-kernel >= 1.69.0 installs a js program\'s signal handler before ctx.signals.on returns (slicc-kernel#421), so a handler mcpcat installs before "listening" cannot miss the signal; the race only exists on 1.65.2-1.68.x',
+    }, async () => {
       const runs = await Promise.all(
         Array.from({ length: 40 }, (_, i) =>
           kernel.run(
