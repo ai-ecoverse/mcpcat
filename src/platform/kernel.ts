@@ -182,11 +182,12 @@ async function kernelSpawn(ctx: KernelContext, options: SpawnOptions): Promise<S
   }
 
   const useGroupKill = groupSpawnSupported;
+  let waited: ReturnType<typeof result.wait> | undefined;
   return {
     stdin: result.stdin ?? new WritableStream<Uint8Array>(),
     stdout: result.stdout!,
     stderr: result.stderr!,
-    wait: () => result.wait(),
+    wait: () => (waited ??= result.wait()),
     kill: async (signal?: string) => {
       if (useGroupKill) {
         try {
