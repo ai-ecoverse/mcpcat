@@ -300,7 +300,7 @@ jobs:
     name: cert-review / review
     needs: [plan, pack]
     if: needs.plan.outputs.go == 'true' && needs.pack.result == 'success'
-    runs-on: ${{ vars.CERT_RUNNER || 'cloud-run-bench' }}
+    runs-on: ${{ vars.CERT_RUNNER }}
     timeout-minutes: 75
     concurrency:
       group: cert-review-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
