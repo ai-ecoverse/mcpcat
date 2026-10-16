@@ -62,19 +62,20 @@ jobs:
     uses: ai-ecoverse/slicc-shared-web/.github/workflows/node-ci.yml@v1.20.0
     with:
       runs-on: ${{ needs.runner.outputs.runner }}
+      # renovate: datasource=node-version depName=node versioning=node
       node-version: '24'
       chromium: false
 
   cert:
     runs-on: ${{ needs.runner.outputs.runner }}
-    needs: [runner, ci]
+    needs: runner
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
+          # renovate: datasource=node-version depName=node versioning=node
           node-version: '24'
       - run: npm ci
-      - run: npm run build
       - name: Run cert with the kernel slicc-bios ships
         run: |
           kernel=$(node -p "require('@ai-ecoverse/slicc-bios/src/packages/package.json').dependencies['@ai-ecoverse/slicc-kernel']")

@@ -1,20 +1,18 @@
 #!/usr/bin/env node
-import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import {
   cpSync,
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import * as esbuild from 'esbuild';
+import { fetchPlanted, NAME, packTree, SEMVER, sh, sha, sri, worktree } from './tarball.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const { values } = parseArgs({
@@ -22,57 +20,18 @@ const { values } = parseArgs({
     version: { type: 'string' },
     prev: { type: 'string' },
     work: { type: 'string' },
+    tarball: { type: 'string' },
     planted: { type: 'string', default: '' },
   },
 });
 const { version, prev } = values;
 const work = resolve(values.work);
-const SEMVER = /^\d+\.\d+\.\d+$/;
-if (!SEMVER.test(version ?? '') || !SEMVER.test(prev ?? '')) {
-  console.error('stage: --version and --prev must be x.y.z');
+if (!SEMVER.test(version ?? '') || !SEMVER.test(prev ?? '') || !values.tarball) {
+  console.error('stage: --version and --prev must be x.y.z, and --tarball is required');
   process.exit(2);
 }
-const NAME = '@ai-ecoverse/mcpcat';
 const KERNEL = '@ai-ecoverse/slicc-kernel';
 const npmFlags = ['--no-audit', '--no-fund'];
-
-function sh(cmd, args, opts = {}) {
-  console.log(`stage: ${opts.cwd ? `(${opts.cwd}) ` : ''}${cmd} ${args.join(' ')}`);
-  return execFileSync(cmd, args, {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'inherit'],
-    ...opts,
-  });
-}
-
-const sha = (algo, file, enc = 'hex') => createHash(algo).update(readFileSync(file)).digest(enc);
-const sri = (file) => `sha512-${sha('sha512', file, 'base64')}`;
-
-function packOne(cwd) {
-  const before = new Set(readdirSync(cwd));
-  sh('npm', ['pack', '--silent'], { cwd, env: { ...process.env, MCPCAT_STRIP_SCRIPTS: '1' } });
-  const made = readdirSync(cwd).filter((f) => f.endsWith('.tgz') && !before.has(f));
-  if (made.length !== 1) throw new Error(`npm pack in ${cwd} made ${made.length} tarballs`);
-  return join(cwd, made[0]);
-}
-
-function worktree(dir, ref) {
-  rmSync(dir, { recursive: true, force: true });
-  sh('git', ['worktree', 'add', '--force', '--detach', dir, ref], { cwd: root });
-  return sh('git', ['rev-parse', 'HEAD'], { cwd: dir }).trim();
-}
-
-function buildFrom(dir, ref) {
-  const commit = worktree(dir, ref);
-  sh('npm', ['ci', ...npmFlags], { cwd: dir });
-  sh('npm', ['version', version, '--no-git-tag-version', '--allow-same-version'], { cwd: dir });
-  const tgz = packOne(dir);
-  sh('git', ['checkout', '--', 'package.json'], { cwd: dir });
-  if (existsSync(join(dir, 'package-lock.json')))
-    sh('git', ['checkout', '--', 'package-lock.json'], { cwd: dir });
-  sh('npm', ['version', version, '--no-git-tag-version', '--allow-same-version'], { cwd: dir });
-  return { commit, tgz };
-}
 
 function untar(tgz, dir) {
   rmSync(dir, { recursive: true, force: true });
@@ -217,44 +176,21 @@ function stageKernel(pin) {
 
 mkdirSync(work, { recursive: true });
 const planted = values.planted;
-const subjectRef = planted ? `origin/${planted}` : `v${version}`;
-if (planted)
-  sh(
-    'git',
-    ['fetch', '--no-tags', 'origin', `+refs/heads/${planted}:refs/remotes/origin/${planted}`],
-    { cwd: root }
-  );
+const subjectRef = planted ? fetchPlanted(root, planted) : `v${version}`;
 
 const kernels = kernelPins().map(stageKernel);
 
-let pub;
-let pubCommit;
-if (planted) {
-  const built = buildFrom(join(work, 'planted'), subjectRef);
-  pub = join(work, 'pub', `planted-${version}.tgz`);
-  mkdirSync(dirname(pub), { recursive: true });
-  cpSync(built.tgz, pub);
-  pubCommit = built.commit;
-} else {
-  mkdirSync(join(work, 'pub'), { recursive: true });
-  const file = sh('npm', [
-    'pack',
-    `${NAME}@${version}`,
-    '--silent',
-    '--pack-destination',
-    join(work, 'pub'),
-  ])
-    .trim()
-    .split('\n')
-    .at(-1);
-  pub = join(work, 'pub', file);
-}
+mkdirSync(join(work, 'pub'), { recursive: true });
+const pub = join(work, 'pub', basename(values.tarball));
+cpSync(resolve(values.tarball), pub);
 const pubDir = untar(pub, join(work, 'pub/x'));
 
-const tag = buildFrom(join(work, 'tag'), subjectRef);
+const tagTree = join(work, 'tag');
+worktree(root, tagTree, subjectRef);
+const tag = packTree(tagTree, version, join(work, 'rebuilt-tmp'));
 const rebuilt = join(work, `rebuilt-${version}.tgz`);
 cpSync(tag.tgz, rebuilt);
-rmSync(tag.tgz);
+rmSync(join(work, 'rebuilt-tmp'), { recursive: true, force: true });
 const rebuiltDir = untar(rebuilt, join(work, 'rebuilt/x'));
 const pubFiles = listTar(pub);
 const rebuiltFiles = listTar(rebuilt);
@@ -266,7 +202,7 @@ const fileDiff = [...new Set([...pubFiles, ...rebuiltFiles].map((f) => f.path))]
 swapDist(join(work, 'tag'), pubDir);
 
 const prevTree = join(work, 'prev');
-const prevCommit = worktree(prevTree, `v${prev}`);
+const prevCommit = worktree(root, prevTree, `v${prev}`);
 sh('npm', ['ci', ...npmFlags], { cwd: prevTree });
 if (!existsSync(join(prevTree, 'dist/kernel/mcpcat.mjs')))
   sh('npm', ['run', 'build'], { cwd: prevTree });
@@ -298,11 +234,10 @@ const stage = {
   tools: sh('git', ['rev-parse', 'HEAD'], { cwd: root }).trim(),
   node: process.version,
   npm: sh('npm', ['--version']).trim(),
-  published: {
+  artifact: {
     tarball: pub,
     sha256: sha('sha256', pub),
     integrity: sri(pub),
-    commit: pubCommit ?? null,
     files: pubFiles,
   },
   rebuilt: {
@@ -331,11 +266,11 @@ const stage = {
     neg: join(work, 'neg'),
     prev: prevTree,
     rows: join(work, 'rows'),
-    published: pubDir,
+    artifact: pubDir,
     previousPublished: prevPub,
   },
 };
 writeFileSync(join(work, 'stage.json'), `${JSON.stringify(stage, null, 2)}\n`);
 console.log(
-  `stage: ${NAME}@${version} published ${stage.published.sha256}, rebuilt ${stage.rebuilt.sha256} (${stage.reproducible ? 'same' : `differs: ${fileDiff.join(', ')}`})`
+  `stage: ${NAME}@${version} artifact ${stage.artifact.sha256}, rebuilt ${stage.rebuilt.sha256} (${stage.reproducible ? 'same' : `differs: ${fileDiff.join(', ')}`})`
 );

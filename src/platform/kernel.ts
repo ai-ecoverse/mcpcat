@@ -99,7 +99,7 @@ interface KernelContext {
     }>;
   };
   signals: {
-    on(signal: string | number, handler: () => void): void;
+    on(signal: string | number, handler: () => void): void | Promise<void>;
     ignore(signal: string | number): void;
     reset(signal: string | number): void;
   };
@@ -196,6 +196,15 @@ async function kernelSpawn(ctx: KernelContext, options: SpawnOptions): Promise<S
       try {
         await ctx.kill(childPid, signal);
       } catch {}
+    },
+    async groupAlive() {
+      if (!useGroupKill) return false;
+      try {
+        await ctx.kill(-childPid, 'SIGCONT');
+        return true;
+      } catch {
+        return false;
+      }
     },
   };
 }
@@ -480,8 +489,8 @@ export function createKernelPlatform(
     exit(code: number): never {
       ctx.exit(code);
     },
-    onSignal(signal: 'SIGINT' | 'SIGTERM' | 'SIGHUP', handler: () => void) {
-      ctx.signals.on(signal, handler);
+    async onSignal(signal: 'SIGINT' | 'SIGTERM' | 'SIGHUP', handler: () => void) {
+      await ctx.signals.on(signal, handler);
     },
     async seal(request: string): Promise<string> {
       return kernelSeal(ctx, request);
