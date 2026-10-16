@@ -163,7 +163,7 @@ Options:
   -v, --verbose              Trace on stderr
   -s, --silent               Suppress progress
   -o, --output <path>        Write result to file
-  -V, --version              Print version
+  -V, --version              Print the version
   -h, --help                 Show this help
 `;
 }
