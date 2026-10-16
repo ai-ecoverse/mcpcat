@@ -12,6 +12,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import * as esbuild from 'esbuild';
+import { compareTarballs } from './compare.mjs';
 import { fetchPlanted, NAME, packTree, SEMVER, sh, sha, sri, worktree } from './tarball.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -248,6 +249,7 @@ const stage = {
   },
   reproducible: sha('sha256', pub) === sha('sha256', rebuilt),
   differingFiles: fileDiff,
+  rebuildDiff: compareTarballs(pub, rebuilt),
   kernels: kernels.map(({ version: v, names, tgz, dir, integrity }) => ({
     version: v,
     names,

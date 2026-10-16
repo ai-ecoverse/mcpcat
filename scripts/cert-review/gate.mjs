@@ -23,6 +23,7 @@ function decide() {
   const refuse = (why) => ({ subject, line, why });
   if (!SEMVER.test(version)) return refuse(`the record's version is "${version}"`);
   if (record.planted) return refuse(`the record is for a planted build of ${record.planted}`);
+  if (record.source === 'npm') return refuse('the record replays bytes already on npm');
   if (record.certified !== true || !line.startsWith(`certified ${subject} `))
     return refuse('the verdict is not certified');
   if (record.sha256 !== actual)
