@@ -502,6 +502,22 @@ describe('cert-review shipped: which changes are behaviour', () => {
     });
   }
 
+  it('reviews a package.json change to scripts alone, whatever dist does', () => {
+    git('checkout', '-q', '-b', 'pkg-base', root0);
+    const manifest = {
+      name: '@ai-ecoverse/mcpcat',
+      version: '0.0.0',
+      scripts: { build: 'node scripts/build.mjs' },
+    };
+    const base = commit({ 'package.json': `${JSON.stringify(manifest, null, 2)}\n` });
+    const head = commit({
+      'package.json': `${JSON.stringify({ ...manifest, scripts: { ...manifest.scripts, postinstall: 'node x.mjs' } }, null, 2)}\n`,
+    });
+    const r = tool('shipped.mjs', ['--repo', repo, '--base', base, '--head', head]);
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /^behaviour: 1 shipped file changed: package\.json/);
+  });
+
   it('reads the change from the merge base, not from a base that moved on', () => {
     const head = branch('moved-head', { 'README.md': '4' });
     git('checkout', '-q', '-b', 'moved-main', root0);
