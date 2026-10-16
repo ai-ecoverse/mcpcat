@@ -11,6 +11,7 @@ import type {
 } from '../config/types.ts';
 import { checkAgentWarnings, literalSecret, urlHasSecret } from '../config/warnings.ts';
 import type { Platform } from '../platform/types.ts';
+import { sanitizeTerminal } from '../render/sanitize.ts';
 import { parseServeFlags, runServe } from '../serve/runtime.ts';
 import { sealErrorMessage, sealExitCode, sealSecret } from '../serve/seal.ts';
 
@@ -229,7 +230,7 @@ export async function runAdd(platform: Platform, args: string[], probe?: ProbeFn
   if (!flags.noProbe && probe) {
     const reason = await probe(name, config, platform);
     if (reason) {
-      await platform.write(2, `mcpcat add: probe failed: ${reason}\n`);
+      await platform.write(2, sanitizeTerminal(`mcpcat add: probe failed: ${reason}\n`));
       return 3;
     }
   }

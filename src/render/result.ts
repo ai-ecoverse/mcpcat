@@ -7,6 +7,7 @@ import type {
 } from '@earendil-works/pi-mcp';
 import type { GetPromptResult, PromptInfo } from '../client/connection.ts';
 import type { Platform } from '../platform/types.ts';
+import { sanitizeTerminal } from './sanitize.ts';
 
 export type Redactor = (text: string) => string;
 
@@ -108,7 +109,7 @@ export async function renderCallResult(
 
   const text = renderCallResultText(result, options);
   if (result.isError) {
-    await platform.write(2, r(`${text || '(tool reported error)'}\n`));
+    await platform.write(2, sanitizeTerminal(r(`${text || '(tool reported error)'}\n`)));
     return 1;
   }
   if (text) {

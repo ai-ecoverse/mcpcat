@@ -14,6 +14,7 @@ import { isKernel } from '../auth/token-source.ts';
 import { MergedConfigSource } from '../config/index.ts';
 import type { McpOAuthConfig } from '../config/types.ts';
 import type { Platform } from '../platform/types.ts';
+import { sanitizeTerminal } from '../render/sanitize.ts';
 
 export async function createTokenSource(
   platform: Platform,
@@ -249,7 +250,7 @@ export async function runLogin(
       await platform.write(2, 'mcpcat: sign-in cancelled\n');
       return 1;
     }
-    await platform.write(2, `mcpcat: login failed: ${(err as Error).message}\n`);
+    await platform.write(2, sanitizeTerminal(`mcpcat: login failed: ${(err as Error).message}\n`));
     return 4;
   }
 }

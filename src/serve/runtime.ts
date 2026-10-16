@@ -2,6 +2,7 @@ import { containsPlaceholders, expandPlaceholdersStrict } from '../config/expand
 import { MergedConfigSource } from '../config/index.ts';
 import { stateDir } from '../config/paths.ts';
 import type { Platform, SpawnResult } from '../platform/types.ts';
+import { sanitizeTerminal } from '../render/sanitize.ts';
 import {
   argvForCommand,
   attachGlobalFlags,
@@ -1021,7 +1022,7 @@ async function runWebMcpServe(
       return 3;
     }
     if (!resolved.tab) {
-      await platform.write(2, `mcpcat serve --webmcp: ${resolved.error}\n`);
+      await platform.write(2, sanitizeTerminal(`mcpcat serve --webmcp: ${resolved.error}\n`));
       return 3;
     }
     tab = resolved.tab;

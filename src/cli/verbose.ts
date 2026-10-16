@@ -1,4 +1,5 @@
 import type { Platform } from '../platform/types.ts';
+import { sanitizeTerminal } from '../render/sanitize.ts';
 
 const SENSITIVE_HEADER_RE = /^(authorization|cookie|proxy-authorization)$/i;
 const SENSITIVE_NAME_RE = /token|key|secret|password|session/i;
@@ -35,7 +36,7 @@ export function createVerboseLogger(platform: Platform, enabled: boolean): Verbo
   const secrets = new Set<string>();
 
   function write(line: string): void {
-    const safe = redact(line, secrets);
+    const safe = sanitizeTerminal(redact(line, secrets));
     platform.write(2, `${safe}\n`).catch(() => {});
   }
 

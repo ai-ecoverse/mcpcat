@@ -1,4 +1,5 @@
 import type { Platform } from '../platform/types.ts';
+import { sanitizeTerminal } from '../render/sanitize.ts';
 
 interface SchemaProperty {
   type?: string;
@@ -80,7 +81,7 @@ export async function promptForSchema(
     const desc = prop.description ? ` - ${prop.description}` : '';
     const def = prop.default !== undefined ? ` [${String(prop.default)}]` : '';
     const choices = prop.enum ? ` (${prop.enum.join('|')})` : '';
-    await platform.write(2, `${key}${req}${desc}${choices}${def}: `);
+    await platform.write(2, sanitizeTerminal(`${key}${req}${desc}${choices}${def}: `));
     const line = await readLine(platform);
     const value = line.trim();
     if (value === '' && prop.default !== undefined) {
@@ -109,7 +110,7 @@ export async function handleElicitation(
 ): Promise<{ answers: Record<string, unknown> } | { exitCode: number }> {
   if (inputRequest.url) {
     if (isTty) {
-      await platform.write(2, `Open this URL to continue: ${inputRequest.url}\n`);
+      await platform.write(2, sanitizeTerminal(`Open this URL to continue: ${inputRequest.url}\n`));
       await platform.write(2, 'Press Enter when done...');
       await readLine(platform);
       return { answers: {} };
@@ -127,7 +128,7 @@ export async function handleElicitation(
 
   const schema = inputRequest.schema ?? { type: 'object', properties: {} };
   if (inputRequest.message) {
-    await platform.write(2, `${inputRequest.message}\n`);
+    await platform.write(2, sanitizeTerminal(`${inputRequest.message}\n`));
   }
   const answers = await promptForSchema(platform, schema);
   return { answers };
