@@ -548,18 +548,29 @@ describe('lifecycle: kernel stdio servers whose grandchild ignores TERM, HUP and
       }
     );
     let bridgeExited = false;
-    void sp.exited.then(() => {
-      bridgeExited = true;
-    });
+    void sp.exited.then(
+      () => {
+        bridgeExited = true;
+      },
+      () => {}
+    );
     const url = await waitUntil(
       () => /http:\/\/\d+\.kernel\.localhost\/mcp/.exec(output)?.[0],
       'the bridge to print its URL'
     );
     const run = (args) => kernel.run(['mcpcat', ...args], { stdout: 'pipe', stderr: 'pipe' });
-    const crash = await run(['call', url, 'crash']);
-    assert.equal(crash.status, 0, `call crash through the bridge: ${crash.stderr}`);
+    const started = await run(['tools', url]);
+    assert.equal(started.status, 0, `tools through the bridge: ${started.stderr}`);
     const first = await readKernelPids(kernel, pidFile);
     assert.equal(first.servers.length, 1, 'one upstream before the crash');
+    const sigterm = 1 << 15;
+    await waitUntil(
+      async () =>
+        (await client.ps()).some((p) => p.pid === first.grandchildren[0] && p.sigCgt & sigterm),
+      'the grandchild to trap SIGTERM'
+    );
+    const crash = await run(['call', url, 'crash']);
+    assert.equal(crash.status, 0, `call crash through the bridge: ${crash.stderr}`);
     const live = async () =>
       new Set((await client.ps()).filter((p) => p.state !== 'Z').map((p) => p.pid));
     await waitUntil(
