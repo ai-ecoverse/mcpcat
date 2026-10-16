@@ -130,7 +130,15 @@ describe('cert-review record --source npm: the bytes already on npm', () => {
 
   function registry(
     name,
-    { gitHead = COMMIT, gitCommit = COMMIT, dist = integrity, signed = true } = {}
+    {
+      gitHead = COMMIT,
+      gitCommit = COMMIT,
+      dist = integrity,
+      signed = true,
+      served = onNpm.tgz,
+      path = '.github/workflows/release.yml',
+      ref = 'refs/heads/main',
+    } = {}
   ) {
     const statement = {
       subject: [
@@ -144,8 +152,8 @@ describe('cert-review record --source npm: the bytes already on npm', () => {
           externalParameters: {
             workflow: {
               repository: `https://github.com/${REPO}`,
-              path: '.github/workflows/release.yml',
-              ref: 'refs/heads/main',
+              path,
+              ref,
             },
           },
           resolvedDependencies: [{ digest: { gitCommit } }],
@@ -179,6 +187,7 @@ describe('cert-review record --source npm: the bytes already on npm', () => {
         [`repos/${REPO}/compare/main...${COMMIT}`]: { status: 'behind' },
       },
       signed,
+      served,
     };
     const bin = join(work, `${name}-bin`);
     mkdirSync(bin, { recursive: true });
@@ -193,6 +202,7 @@ describe('cert-review record --source npm: the bytes already on npm', () => {
           `const spec = '${NAME}@${VERSION}';`,
           "if (a[0] === 'view' && a[1] === spec && a[2] === '--json') process.stdout.write(JSON.stringify(f.npm));",
           "else if (a[0] === 'install' && a.at(-1) === spec) process.exit(0);",
+          "else if (a[0] === 'pack' && a[1] === spec) require('node:fs').copyFileSync(f.served, require('node:path').join(a[a.indexOf('--pack-destination') + 1], 'served.tgz'));",
           "else if (a[0] === 'audit' && a[1] === 'signatures' && f.signed) process.stdout.write('1 package has a verified attestation\\n');",
           "else if (a[0] === 'audit' && a[1] === 'signatures') { process.stderr.write('1 package has an invalid attestation\\n'); process.exit(1); }",
           'else process.exit(1);',
@@ -315,6 +325,55 @@ describe('cert-review record --source npm: the bytes already on npm', () => {
     assert.equal(r.code, 1, r.out);
     assert.match(r.rec.line, /package\/package\.json: differs in more than gitHead/);
   });
+  function published(env) {
+    const r = tool('published.mjs', ['--version', VERSION, '--repo', REPO, '--wait', '0'], env);
+    return { ...r, line: r.out.trim().split('\n').at(-1) };
+  }
+
+  it('verify: the registry bytes are the SLSA subject, built by release.yml on main from the tag', () => {
+    const r = published(registry('pub-ok'));
+    assert.equal(r.code, 0, r.out);
+    assert.equal(
+      r.line,
+      `verified ${NAME}@${VERSION} sha256=${onNpm.sha256} on npm: ${integrity}, provenance .github/workflows/release.yml@refs/heads/main commit ${COMMIT} = gitHead = tag v${VERSION}, on main`
+    );
+  });
+
+  for (const [what, opts, why] of [
+    [
+      'bytes other than the SLSA subject',
+      { served: rebuilt.tgz },
+      /dist\.integrity is .*, the tarball is/,
+    ],
+    [
+      'a provenance from another workflow',
+      { path: '.github/workflows/ci.yml' },
+      /provenance workflow is \.github\/workflows\/ci\.yml/,
+    ],
+    [
+      'a provenance from another ref',
+      { ref: 'refs/heads/evil' },
+      /provenance ref is refs\/heads\/evil/,
+    ],
+    [
+      'a gitHead other than the provenance commit',
+      { gitHead: 'e'.repeat(40) },
+      /isn't the package's gitHead/,
+    ],
+    [
+      'a provenance commit other than the tag',
+      { gitCommit: 'e'.repeat(40), gitHead: 'e'.repeat(40) },
+      new RegExp(`tag v${VERSION} is ${COMMIT}, provenance says ${'e'.repeat(40)}`),
+    ],
+    ['unverified attestation signatures', { signed: false }, /npm audit signatures failed/],
+  ]) {
+    it(`verify: fails loudly on ${what}`, () => {
+      const r = published(registry(`pub-${what.replace(/\W+/g, '-')}`, opts));
+      assert.equal(r.code, 1, r.out);
+      assert.match(r.line, /^cert-ci: FAIL published /);
+      assert.match(r.line, why);
+    });
+  }
 });
 
 describe('cert-review record --commit: a pull request or merge group under review', () => {
