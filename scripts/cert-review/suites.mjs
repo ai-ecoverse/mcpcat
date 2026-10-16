@@ -102,6 +102,21 @@ for (const k of stage.kernels) {
   );
 }
 
+const negative = (stage.changedTests ?? [])
+  .map((file) => {
+    const args = ['--test', '--test-concurrency=1', '--test-timeout=120000', file];
+    const head = suite(`negative head ${file}`, tag, process.execPath, args);
+    const base = suite(`negative base ${file}`, neg, process.execPath, args);
+    if (!head || !base) return undefined;
+    return {
+      file,
+      head: { ok: head.ok, pass: head.pass, fail: head.fail, log: head.log },
+      base: { ok: base.ok, pass: base.pass, fail: base.fail, failed: base.failed, log: base.log },
+      bites: head.ok && !base.ok,
+    };
+  })
+  .filter(Boolean);
+
 const summary = {
   version: stage.version,
   prev: stage.prev,
@@ -109,6 +124,8 @@ const summary = {
   hostRows,
   kernelRows,
   negTree: neg,
+  negative,
+  negativeOk: negative.every((n) => n.bites),
   ok: results.every((r) => r.ok),
   results,
 };
