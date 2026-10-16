@@ -28,9 +28,17 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'The tagged version to replay, x.y.z (tag v<version>), packed again from its tag'
+        description: 'The tagged version to replay, x.y.z (tag v<version>), packed again from its tag or, with source npm, its bytes on npm'
         required: true
         type: string
+      source:
+        description: 'tag: pack v<version> again from its tag; npm: review the exact bytes already on npm (never published, no gate)'
+        required: false
+        type: choice
+        options:
+          - tag
+          - npm
+        default: tag
       prev:
         description: 'The previous version the delta is read from, x.y.z (tag v<prev>), never resolved from npm'
         required: true
@@ -63,6 +71,7 @@ jobs:
       planted: ${{ steps.plan.outputs.planted }}
       dry_run: ${{ steps.plan.outputs.dry_run }}
       mode: ${{ steps.plan.outputs.mode }}
+      source: ${{ steps.plan.outputs.source }}
       artifact: ${{ steps.plan.outputs.artifact }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -84,12 +93,13 @@ jobs:
           IN_PREV: ${{ inputs.prev }}
           IN_PLANTED: ${{ inputs.planted }}
           IN_DRY_RUN: ${{ inputs.dry_run }}
+          IN_SOURCE: ${{ inputs.source }}
         run: |
           set -euo pipefail
           skip() { echo "::notice::$1"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; }
           semver='^[0-9]+\.[0-9]+\.[0-9]+$'
           releases() { git tag --list 'v*' | sed 's/^v//' | grep -E "$semver" | sort -V; }
-          planted='' dry_run=false
+          planted='' dry_run=false source=tag
           if [ -n "$IN_TARBALL" ]; then
             mode=release version=$IN_VERSION artifact=$IN_TARBALL
             [[ "$version" =~ $semver ]] || { echo "::error::version '$version' is not x.y.z"; exit 1; }
@@ -97,7 +107,9 @@ jobs:
             prev=$(releases | awk -v v="$version" '$0 == v { exit } { print }' | grep -Fxf <(printf '%s\n' "$published") | tail -1 || true)
             [ -n "$prev" ] || { echo "::error::v$version has no earlier tag that is on npm"; exit 1; }
           else
-            mode=dispatch version=$IN_VERSION prev=$IN_PREV planted=$IN_PLANTED dry_run=$IN_DRY_RUN
+            mode=dispatch version=$IN_VERSION prev=$IN_PREV planted=$IN_PLANTED dry_run=$IN_DRY_RUN source=${IN_SOURCE:-tag}
+            [ "$source" = tag ] || [ "$source" = npm ] || { echo "::error::source '$source' is neither tag nor npm"; exit 1; }
+            if [ "$source" = npm ] && [ -n "$planted" ]; then echo "::error::source npm reviews the registry's bytes, never a planted branch"; exit 1; fi
             [[ "$version" =~ $semver ]] || { echo "::error::version '$version' is not x.y.z"; exit 1; }
             [[ "$prev" =~ $semver ]] || { echo "::error::prev '$prev' is not x.y.z"; exit 1; }
             [ "$(printf '%s\n%s\n' "$prev" "$version" | sort -V | head -1)" = "$prev" ] && [ "$prev" != "$version" ] \
@@ -108,6 +120,7 @@ jobs:
               dry_run=true
             fi
             artifact="mcpcat-tarball-$version${planted:+-planted}"
+            [ "$source" = npm ] && artifact="mcpcat-npm-tarball-$version"
           fi
           git rev-parse -q --verify "refs/tags/v$version^{commit}" > /dev/null || { echo "::error::no tag v$version"; exit 1; }
           commit=$(git rev-parse "v$version^{commit}")
@@ -119,6 +132,7 @@ jobs:
             echo "planted=$planted"
             echo "dry_run=$dry_run"
             echo "mode=$mode"
+            echo "source=$source"
             echo "artifact=$artifact"
           } | tee -a "$GITHUB_OUTPUT"
 
@@ -146,12 +160,13 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Pack v${{ needs.plan.outputs.version }} from ${{ needs.plan.outputs.planted || 'its tag' }}, as the release does
+      - name: Pack v${{ needs.plan.outputs.version }} from ${{ needs.plan.outputs.source == 'npm' && 'npm, and rebuild it from its tag' || needs.plan.outputs.planted || 'its tag, as the release does' }}
         id: pack
         env:
           VERSION: ${{ needs.plan.outputs.version }}
           PLANTED: ${{ needs.plan.outputs.planted }}
-        run: node scripts/cert-review/pack.mjs --version "$VERSION" --out "$RUNNER_TEMP/pack" ${PLANTED:+--planted "$PLANTED"}
+          SOURCE: ${{ needs.plan.outputs.source }}
+        run: node scripts/cert-review/pack.mjs --version "$VERSION" --out "$RUNNER_TEMP/pack" --source "$SOURCE" ${PLANTED:+--planted "$PLANTED"}
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -160,6 +175,7 @@ jobs:
             ${{ runner.temp }}/pack/*.tgz
             ${{ runner.temp }}/pack/*.tgz.sha256
             ${{ runner.temp }}/pack/pack.json
+            ${{ runner.temp }}/pack/rebuilt/*.tgz
           if-no-files-found: error
 
   review:
@@ -180,6 +196,7 @@ jobs:
       VERSION: ${{ needs.plan.outputs.version }}
       PREV: ${{ needs.plan.outputs.prev }}
       PLANTED: ${{ needs.plan.outputs.planted }}
+      SOURCE: ${{ needs.plan.outputs.source }}
       GH_REPO: ${{ github.repository }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
@@ -254,7 +271,8 @@ jobs:
             WHAT'S SET UP
             - The current directory is mcpcat's main at ${{ github.sha }} (the cert tools in `scripts/cert-review/` and the committed integration tests). `${{ env.WORK }}/stage.json` describes everything below with paths, shas and commits; read it first.
             - `artifact`: the tarball under review, packed from tag `v${{ env.VERSION }}` by the release's pack job. It is not on npm yet: only if you certify it are these exact bytes published, as `latest`, and nothing else ever is (mcpcat: certified = latest). A later job on a fresh runner re-hashes it and checks, in code, its sha256 against the pack job's, its manifest, gitHead = tag `v${{ env.VERSION }}` and that the tag is on main; after the publish, another checks npm's integrity and the SLSA provenance (release.yml on refs/heads/main) against the certified sha256: don't repeat those. When `planted` is set, the tarball is a pack of that branch instead of the tag; review it exactly as you would a release.
-            - `rebuilt`: `trees.tag` is the subject's tree (tag `v${{ env.VERSION }}`), where `npm ci; npm version ${{ env.VERSION }} --no-git-tag-version; npm pkg set gitHead=<commit>; MCPCAT_STRIP_SCRIPTS=1 npm pack` ran, as the pack job does. `reproducible` and `differingFiles` compare it with `artifact`; both are unpacked in `${{ env.WORK }}/pub/x/package` and `${{ env.WORK }}/rebuilt/x/package`. After the rebuild, `trees.tag/dist` was replaced by the artifact's dist, so the subject's own tests run on the bytes that would be published.
+            - `rebuilt`: `trees.tag` is the subject's tree (tag `v${{ env.VERSION }}`), where `npm ci; npm version ${{ env.VERSION }} --no-git-tag-version; npm pkg set gitHead=<commit>; MCPCAT_STRIP_SCRIPTS=1 npm pack` ran, as the pack job does. `reproducible` and `differingFiles` compare it with `artifact`; both are unpacked in `${{ env.WORK }}/pub/x/package` and `${{ env.WORK }}/rebuilt/x/package`. After the rebuild, `trees.tag/dist` was replaced by the artifact's dist, so the subject's own tests run on the bytes that would be published. `rebuildDiff` compares the two file by file: `identical`, `explained` (package.json differing only in `gitHead`) and `unexplained` (everything else).
+            - **Source: `${{ env.SOURCE }}`.** When it is `npm`, the artifact is not a fresh pack: it is `npm pack @ai-ecoverse/mcpcat@${{ env.VERSION }}`, the exact bytes already on npm, published by the old release path without a cert review. This run never publishes and has no publish gate; it certifies (or fails) those bytes. Their package.json has no `gitHead`, while the rebuild writes the tag's commit, so `reproducible` is false and `rebuildDiff.explained` lists package.json's gitHead: that one difference is explained. Any entry in `rebuildDiff.unexplained` is an unexplained non-reproducible build. A later job checks, in code, the registry's gitHead, the SLSA provenance commit and npm's `dist.integrity` against tag `v${{ env.VERSION }}` and the artifact, and repeats the rebuild comparison: don't repeat those. Where this prompt says the artifact is not on npm yet or would be published, read it as already on npm.
             - `trees.prev` is `v${{ env.PREV }}` built from source; `trees.neg` is the subject's tree with `v${{ env.PREV }}`'s dist (the NEGATIVE: the subject's tests on the previous code); `trees.previousPublished` is `v${{ env.PREV }}`'s npm tarball, unpacked.
             - `trees.rows` is main's tests with the artifact's dist: the security rows, listed in `scripts/cert-review/rows.json` (row → test files in `test/integration/`). They are committed integration tests; you review and run them, you never design probes.
             - `kernels`: the pinned slicc-kernels (the `kernel-cert-*` devDependencies and slicc-bios's kernel), each with its `tgz` and an installed `dir`.
@@ -264,7 +282,7 @@ jobs:
             - `gh` reads this repository: `gh api repos/${{ github.repository }}/compare/v${{ env.PREV }}...v${{ env.VERSION }}`, `gh pr view <n>`, `gh issue list --state all --search …`, and `gh issue create`.
 
             WHAT TO CHECK
-            1. **Rebuild.** `reproducible` must be true. Otherwise explain every differing file from the two unpacked trees; an unexplained non-reproducible build is a FAIL.
+            1. **Rebuild.** `reproducible` must be true, or `rebuildDiff.unexplained` must be empty with only package.json's `gitHead` in `rebuildDiff.explained`. Otherwise explain every differing file from the two unpacked trees; an unexplained non-reproducible build is a FAIL. With source `npm`, only the `gitHead` field counts as explained: any other difference is a FAIL.
             2. **Surface.** The kernel bundle has no imports and no `eval` or `new Function`/`Function(` that runs code (show any hit is inert). Every `ctx.*` added or removed since `v${{ env.PREV }}` is explained by the delta. LICENSE and dist/THIRD_PARTY_NOTICES are there, and the notices cover what the delta bundles. The manifest has 0 dependencies and no install scripts.
             3. **Suites.** Every entry in suites.json passed on every pinned kernel and on the host. For each failure, read its log and re-run that file alone in the same tree. A row that fails only because main's test checks behaviour added after `v${{ env.VERSION }}` (see `git log` of the test file, and the subject's own suite) is not a regression of this release: it is a known issue of this release if it is a bug that was fixed later, which you cite.
             4. **The delta.** Read every commit and pull request in `compare/v${{ env.PREV }}...v${{ env.VERSION }}`. For each fix, name the committed test that covers it, show that it passes on the subject (`trees.tag`) and that it **fails in `trees.neg`** (the NEGATIVE). A fix without such a test, or whose test also passes in `trees.neg`, is a test gap.
@@ -325,6 +343,7 @@ jobs:
     env:
       VERSION: ${{ needs.plan.outputs.version }}
       PLANTED: ${{ needs.plan.outputs.planted }}
+      SOURCE: ${{ needs.plan.outputs.source }}
       DRY_RUN: ${{ needs.plan.outputs.dry_run }}
       PLAN_COMMIT: ${{ needs.plan.outputs.commit }}
       PACKED: ${{ needs.plan.outputs.mode == 'release' && inputs.sha256 || needs.pack.outputs.sha256 }}
@@ -379,8 +398,10 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/cert-review" "$RUNNER_TEMP/tarball"
           tgz=$(ls "$RUNNER_TEMP"/tarball/*.tgz 2> /dev/null | head -1 || true)
+          rebuilt=$(ls "$RUNNER_TEMP"/tarball/rebuilt/*.tgz 2> /dev/null | head -1 || true)
           if node scripts/cert-review/record.mjs --version "$VERSION" --review "$RUNNER_TEMP/cert-review" \
             --out "$RUNNER_TEMP/record" --run "$RUN_URL" --repo "$GH_REPO" ${PLANTED:+--planted "$PLANTED"} \
+            --source "$SOURCE" ${rebuilt:+--rebuilt "$rebuilt"} \
             --tarball "$tgz" --sha256 "$PACKED" --upstream "$UPSTREAM"; then
             echo "conclusion=success" >> "$GITHUB_OUTPUT"
           else
@@ -438,7 +459,7 @@ jobs:
   gate:
     name: cert-review / publish gate (dry run)
     needs: [plan, pack, record]
-    if: always() && needs.plan.outputs.mode == 'dispatch' && needs.pack.result == 'success' && needs.record.result != 'skipped' && needs.record.result != 'cancelled'
+    if: always() && needs.plan.outputs.mode == 'dispatch' && needs.plan.outputs.source != 'npm' && needs.pack.result == 'success' && needs.record.result != 'skipped' && needs.record.result != 'cancelled'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
