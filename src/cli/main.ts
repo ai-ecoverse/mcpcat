@@ -33,6 +33,7 @@ import {
   renderResourcesJson,
   renderToolsJson,
 } from '../render/result.ts';
+import { sanitizeTerminal } from '../render/sanitize.ts';
 import { parseServeFlags, runServe } from '../serve/runtime.ts';
 import { createTokenSource, runLogin, runLogout } from './auth-verbs.ts';
 import {
@@ -986,7 +987,10 @@ async function connectTargets(
       const info = await conn.info();
       targets.push({ name, conn, instructions: info.instructions });
     } catch (err) {
-      await platform.write(2, `mcpcat: connection to ${name} failed: ${(err as Error).message}\n`);
+      await platform.write(
+        2,
+        sanitizeTerminal(`mcpcat: connection to ${name} failed: ${(err as Error).message}\n`)
+      );
     }
   }
   return {
@@ -1505,7 +1509,7 @@ async function runClientVerb(
     if (!showProgress) return;
     const pct = total ? ` ${Math.round((progress / total) * 100)}%` : '';
     const msg = message ? ` ${message}` : '';
-    platform.write(2, `* progress:${pct}${msg}\n`).catch(() => {});
+    platform.write(2, sanitizeTerminal(`* progress:${pct}${msg}\n`)).catch(() => {});
   };
 
   const config = await MergedConfigSource.load(platform);
@@ -1637,7 +1641,7 @@ async function closeAndKillStdio(conn: McpConnection): Promise<void> {
 
 async function writeErr(p: Platform, json: boolean, kind: string, msg: string): Promise<void> {
   if (json) await renderErrorJson(p, kind, msg);
-  else await p.write(2, `mcpcat: ${msg}\n`);
+  else await p.write(2, sanitizeTerminal(`mcpcat: ${msg}\n`));
 }
 
 async function writeErrRedacted(
@@ -1648,7 +1652,7 @@ async function writeErrRedacted(
   redact: Redactor
 ): Promise<void> {
   if (json) await renderErrorJson(p, kind, msg, undefined, undefined, redact);
-  else await p.write(2, `mcpcat: ${redact(msg)}\n`);
+  else await p.write(2, sanitizeTerminal(`mcpcat: ${redact(msg)}\n`));
 }
 
 function collectConfigSecrets(

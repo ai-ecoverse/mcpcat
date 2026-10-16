@@ -3,6 +3,7 @@ import type { CodemodeSandboxBase } from '@earendil-works/pi-codemode/portable';
 import { parseCodemodeSource } from '@earendil-works/pi-codemode/source';
 import type { McpConnection } from '../client/connection.ts';
 import type { Platform } from '../platform/types.ts';
+import { sanitizeTerminal } from '../render/sanitize.ts';
 import { bindDeadline, type Deadline, hookDeadlines } from './deadline.ts';
 import { rankDocuments, type SearchDocument } from './search.ts';
 
@@ -319,7 +320,10 @@ async function formatOutput(
       await platform.write(1, `${val}\n`);
     }
     if (!result.ok) {
-      await platform.write(2, `mcpcat: script failed: ${result.error!.message}\n`);
+      await platform.write(
+        2,
+        sanitizeTerminal(`mcpcat: script failed: ${result.error!.message}\n`)
+      );
     }
   }
   const isTimeout = !result.ok && result.error && result.error.kind === 'timeout';
