@@ -2,29 +2,10 @@ name: cert-review
 
 on:
   workflow_call:
-    inputs:
-      version:
-        description: 'The tagged, unpublished version to certify, x.y.z (tag v<version>)'
-        required: true
-        type: string
-      tarball:
-        description: 'The name of the artifact in this run that holds the packed tarball'
-        required: true
-        type: string
-      sha256:
-        description: "The pack job's sha256 of the tarball"
-        required: true
-        type: string
     outputs:
       verdict:
-        description: 'certified or fail, from the record'
-        value: ${{ jobs.record.outputs.verdict }}
-      sha256:
-        description: 'The sha256 record computed from the artifact, empty unless certified'
-        value: ${{ jobs.record.outputs.sha256 }}
-      line:
-        description: 'The verdict line'
-        value: ${{ jobs.record.outputs.line }}
+        description: 'certified, fail, not-behaviour, fork or none'
+        value: ${{ jobs.verdict.outputs.verdict }}
   workflow_dispatch:
     inputs:
       version:
@@ -32,7 +13,7 @@ on:
         required: true
         type: string
       source:
-        description: 'tag: pack v<version> again from its tag; npm: review the exact bytes already on npm (never published, no gate)'
+        description: 'tag: pack v<version> again from its tag; npm: review the exact bytes already on npm'
         required: false
         type: choice
         options:
@@ -44,11 +25,11 @@ on:
         required: true
         type: string
       planted:
-        description: 'Proofs only: a branch to pack and review instead of the tag (never certified, never published)'
+        description: 'Proofs only: a branch to pack and review instead of the tag (never certified)'
         required: false
         type: string
       dry_run:
-        description: 'Write the record artifact only: no commit status, no release notes (the publish gate is always a dry run here)'
+        description: 'Write the record artifact only: no commit status, no release notes'
         required: false
         type: boolean
         default: false
@@ -59,20 +40,29 @@ permissions:
 jobs:
   plan:
     name: cert-review / plan
-    runs-on: ${{ vars.CERT_RUNNER || 'cloud-run-bench' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
+      pull-requests: read
     outputs:
       go: ${{ steps.plan.outputs.go }}
+      reason: ${{ steps.plan.outputs.reason }}
+      label: ${{ steps.plan.outputs.label }}
+      mode: ${{ steps.plan.outputs.mode }}
       version: ${{ steps.plan.outputs.version }}
       prev: ${{ steps.plan.outputs.prev }}
+      base: ${{ steps.plan.outputs.base }}
       commit: ${{ steps.plan.outputs.commit }}
+      pr: ${{ steps.plan.outputs.pr }}
+      change: ${{ steps.plan.outputs.change }}
       planted: ${{ steps.plan.outputs.planted }}
       dry_run: ${{ steps.plan.outputs.dry_run }}
-      mode: ${{ steps.plan.outputs.mode }}
       source: ${{ steps.plan.outputs.source }}
       artifact: ${{ steps.plan.outputs.artifact }}
+      subject: ${{ steps.plan.outputs.subject }}
+      against: ${{ steps.plan.outputs.against }}
+      stakes: ${{ steps.plan.outputs.stakes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -85,10 +75,19 @@ jobs:
         with:
           node-version: '24'
 
-      - name: The version, its previous tag and its commit
+      - name: What is under review, against what, and whether it changes shipped behaviour
         id: plan
         env:
-          IN_TARBALL: ${{ inputs.tarball }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          MG_HEAD: ${{ github.event.merge_group.head_sha }}
+          MG_BASE: ${{ github.event.merge_group.base_sha }}
+          MG_REF: ${{ github.event.merge_group.head_ref }}
           IN_VERSION: ${{ inputs.version }}
           IN_PREV: ${{ inputs.prev }}
           IN_PLANTED: ${{ inputs.planted }}
@@ -96,50 +95,97 @@ jobs:
           IN_SOURCE: ${{ inputs.source }}
         run: |
           set -euo pipefail
-          skip() { echo "::notice::$1"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          emit() { printf '%s\n' "$@" | tee -a "$GITHUB_OUTPUT"; }
+          skip() {
+            emit "go=false" "reason=$1" "label=$2" "mode=${mode:-none}" "commit=${commit:-}" "pr=${pr:-}"
+            echo "::notice title=cert-review: $2::$3"
+            { echo "### cert-review: $2"; echo; echo "$3"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
           semver='^[0-9]+\.[0-9]+\.[0-9]+$'
-          releases() { git tag --list 'v*' | sed 's/^v//' | grep -E "$semver" | sort -V; }
-          planted='' dry_run=false source=tag
-          if [ -n "$IN_TARBALL" ]; then
-            mode=release version=$IN_VERSION artifact=$IN_TARBALL
-            [[ "$version" =~ $semver ]] || { echo "::error::version '$version' is not x.y.z"; exit 1; }
-            published=$(npm view @ai-ecoverse/mcpcat versions --json | jq -r '.[]')
-            prev=$(releases | awk -v v="$version" '$0 == v { exit } { print }' | grep -Fxf <(printf '%s\n' "$published") | tail -1 || true)
-            [ -n "$prev" ] || { echo "::error::v$version has no earlier tag that is on npm"; exit 1; }
-          else
-            mode=dispatch version=$IN_VERSION prev=$IN_PREV planted=$IN_PLANTED dry_run=$IN_DRY_RUN source=${IN_SOURCE:-tag}
-            [ "$source" = tag ] || [ "$source" = npm ] || { echo "::error::source '$source' is neither tag nor npm"; exit 1; }
-            if [ "$source" = npm ] && [ -n "$planted" ]; then echo "::error::source npm reviews the registry's bytes, never a planted branch"; exit 1; fi
-            [[ "$version" =~ $semver ]] || { echo "::error::version '$version' is not x.y.z"; exit 1; }
-            [[ "$prev" =~ $semver ]] || { echo "::error::prev '$prev' is not x.y.z"; exit 1; }
-            [ "$(printf '%s\n%s\n' "$prev" "$version" | sort -V | head -1)" = "$prev" ] && [ "$prev" != "$version" ] \
-              || { echo "::error::prev $prev is not before $version"; exit 1; }
-            git rev-parse -q --verify "refs/tags/v$prev^{commit}" > /dev/null || { echo "::error::no tag v$prev"; exit 1; }
-            if [ -n "$planted" ]; then
-              [[ "$planted" =~ ^[A-Za-z0-9._/-]+$ ]] && [ "$planted" != main ] || { echo "::error::planted '$planted' is not a branch name"; exit 1; }
-              dry_run=true
+          sha='^[0-9a-f]{40}$'
+          case "$EVENT" in
+            pull_request)
+              mode=pr pr=$PR_NUMBER commit=$PR_HEAD base_in=$PR_BASE
+              [ "$PR_HEAD_REPO" = "$REPO" ] && fork=false || fork=true
+              ;;
+            merge_group)
+              mode=queue commit=$MG_HEAD base_in=$MG_BASE fork=false
+              pr=$(printf '%s' "$MG_REF" | sed -nE 's#.*/pr-([0-9]+)-[0-9a-f]+$#\1#p')
+              [ -n "$pr" ] || { echo "::error::no pull request number in $MG_REF"; exit 1; }
+              for m in $(git rev-list --merges --first-parent "$MG_BASE..$MG_HEAD"); do
+                head=$(git rev-parse "$m^2")
+                repos=$(gh api "repos/$REPO/commits/$head/pulls" --jq '.[].head.repo.full_name' || echo unknown)
+                if [ -z "$repos" ] || printf '%s\n' "$repos" | grep -qvFx "$REPO"; then fork=true; fi
+              done
+              ;;
+            workflow_dispatch)
+              mode=dispatch
+              ;;
+            *)
+              skip none "not a pull request or merge group" "cert-review runs on pull requests, merge groups and dispatch, not on $EVENT."
+              ;;
+          esac
+          if [ "$mode" != dispatch ]; then
+            [[ "$commit" =~ $sha ]] && [[ "$base_in" =~ $sha ]] || { echo "::error::no head or base sha"; exit 1; }
+            git cat-file -e "$commit^{commit}" 2> /dev/null || git fetch --no-tags origin "$commit"
+            git cat-file -e "$base_in^{commit}" 2> /dev/null || git fetch --no-tags origin "$base_in"
+            node scripts/cert-review/shipped.mjs --base "$base_in" --head "$commit" | tee "$RUNNER_TEMP/shipped.txt"
+            base=$(git merge-base "$base_in" "$commit")
+            if ! head -1 "$RUNNER_TEMP/shipped.txt" | grep -q '^behaviour:'; then
+              skip not-behaviour "not behaviour (skipped)" "$(head -1 "$RUNNER_TEMP/shipped.txt") ($(git diff --name-only "$base" "$commit" | wc -l | tr -d ' ') files against ${base:0:7}); no review is needed."
             fi
-            artifact="mcpcat-tarball-$version${planted:+-planted}"
-            [ "$source" = npm ] && artifact="mcpcat-npm-tarball-$version"
+            if [ "$fork" = true ]; then
+              skip fork "fork: no cert review" "This change touches shipped behaviour and comes from a fork, which gets no secrets and no review. Push the branch to ${REPO} and open the pull request from there."
+            fi
+            prev=$(npm view @ai-ecoverse/mcpcat version)
+            [[ "$prev" =~ $semver ]] || { echo "::error::npm latest is '$prev'"; exit 1; }
+            version="0.0.0-$mode.$pr"
+            if [ "$mode" = pr ]; then
+              change="pull request #$pr"
+              subject="pull request #$pr at its head $commit, packed from that head"
+            else
+              change="the merge group of #$pr"
+              subject="the merge group of #$pr at $commit: the exact tree that lands on main"
+            fi
+            against="main at $base (the merge base), whose build is npm latest $prev or its successor on main"
+            stakes="Every merge to main is published to npm as latest by semantic-release, with no review after the merge, so only certified changes merge (mcpcat: certified = latest). A FAIL blocks this merge."
+            emit "go=true" "reason=review" "label=review" "mode=$mode" "version=$version" "prev=$prev" "base=$base" "commit=$commit" "pr=$pr" \
+              "change=$change" "planted=" "dry_run=false" "source=tag" "artifact=mcpcat-tarball-$version" \
+              "subject=$subject" "against=$against" "stakes=$stakes"
+            exit 0
           fi
+          version=$IN_VERSION prev=$IN_PREV planted=$IN_PLANTED dry_run=$IN_DRY_RUN source=${IN_SOURCE:-tag}
+          [ "$source" = tag ] || [ "$source" = npm ] || { echo "::error::source '$source' is neither tag nor npm"; exit 1; }
+          if [ "$source" = npm ] && [ -n "$planted" ]; then echo "::error::source npm reviews the registry's bytes, never a planted branch"; exit 1; fi
+          [[ "$version" =~ $semver ]] || { echo "::error::version '$version' is not x.y.z"; exit 1; }
+          [[ "$prev" =~ $semver ]] || { echo "::error::prev '$prev' is not x.y.z"; exit 1; }
+          [ "$(printf '%s\n%s\n' "$prev" "$version" | sort -V | head -1)" = "$prev" ] && [ "$prev" != "$version" ] \
+            || { echo "::error::prev $prev is not before $version"; exit 1; }
+          git rev-parse -q --verify "refs/tags/v$prev^{commit}" > /dev/null || { echo "::error::no tag v$prev"; exit 1; }
           git rev-parse -q --verify "refs/tags/v$version^{commit}" > /dev/null || { echo "::error::no tag v$version"; exit 1; }
+          if [ -n "$planted" ]; then
+            [[ "$planted" =~ ^[A-Za-z0-9._/-]+$ ]] && [ "$planted" != main ] || { echo "::error::planted '$planted' is not a branch name"; exit 1; }
+            dry_run=true
+          fi
+          artifact="mcpcat-tarball-$version${planted:+-planted}"
+          [ "$source" = npm ] && artifact="mcpcat-npm-tarball-$version"
           commit=$(git rev-parse "v$version^{commit}")
-          {
-            echo "go=true"
-            echo "version=$version"
-            echo "prev=$prev"
-            echo "commit=$commit"
-            echo "planted=$planted"
-            echo "dry_run=$dry_run"
-            echo "mode=$mode"
-            echo "source=$source"
-            echo "artifact=$artifact"
-          } | tee -a "$GITHUB_OUTPUT"
+          if [ "$source" = npm ]; then
+            subject="tag v$version as already published: the exact bytes on npm, rebuilt from the tag for comparison"
+            stakes="A replay of a version already on npm: it publishes nothing and records a verdict on those bytes."
+          else
+            subject="tag v$version${planted:+, replaced by a pack of the planted branch $planted}, packed again from the tag"
+            stakes="A replay: it publishes nothing and records a verdict on v$version."
+          fi
+          emit "go=true" "reason=review" "label=review" "mode=dispatch" "version=$version" "prev=$prev" "base=" "commit=$commit" "pr=" \
+            "change=" "planted=$planted" "dry_run=$dry_run" "source=$source" "artifact=$artifact" \
+            "subject=$subject" "against=v$prev" "stakes=$stakes"
 
   pack:
-    name: cert-review / pack (replay)
+    name: cert-review / pack
     needs: plan
-    if: needs.plan.outputs.go == 'true' && needs.plan.outputs.mode == 'dispatch'
+    if: needs.plan.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -160,13 +206,20 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Pack v${{ needs.plan.outputs.version }} from ${{ needs.plan.outputs.source == 'npm' && 'npm, and rebuild it from its tag' || needs.plan.outputs.planted || 'its tag, as the release does' }}
+      - name: Pack ${{ needs.plan.outputs.subject }}
         id: pack
         env:
+          MODE: ${{ needs.plan.outputs.mode }}
           VERSION: ${{ needs.plan.outputs.version }}
+          COMMIT: ${{ needs.plan.outputs.commit }}
           PLANTED: ${{ needs.plan.outputs.planted }}
           SOURCE: ${{ needs.plan.outputs.source }}
-        run: node scripts/cert-review/pack.mjs --version "$VERSION" --out "$RUNNER_TEMP/pack" --source "$SOURCE" ${PLANTED:+--planted "$PLANTED"}
+        run: |
+          if [ "$MODE" = dispatch ]; then
+            node scripts/cert-review/pack.mjs --version "$VERSION" --out "$RUNNER_TEMP/pack" --source "$SOURCE" ${PLANTED:+--planted "$PLANTED"}
+          else
+            node scripts/cert-review/pack.mjs --version "$VERSION" --out "$RUNNER_TEMP/pack" --commit "$COMMIT"
+          fi
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -181,9 +234,9 @@ jobs:
   review:
     name: cert-review / review
     needs: [plan, pack]
-    if: always() && needs.plan.outputs.go == 'true' && contains(fromJSON('["success","skipped"]'), needs.pack.result)
+    if: needs.plan.outputs.go == 'true' && needs.pack.result == 'success'
     runs-on: ${{ vars.CERT_RUNNER || 'cloud-run-bench' }}
-    timeout-minutes: 120
+    timeout-minutes: 75
     concurrency:
       group: cert-review-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
       cancel-in-progress: false
@@ -191,12 +244,22 @@ jobs:
       actions: read
       contents: read
       issues: write
+      pull-requests: read
     env:
       LEFTHOOK: '0'
+      NODE_VERSION: '24'
+      MODE: ${{ needs.plan.outputs.mode }}
       VERSION: ${{ needs.plan.outputs.version }}
       PREV: ${{ needs.plan.outputs.prev }}
+      BASE: ${{ needs.plan.outputs.base }}
+      COMMIT: ${{ needs.plan.outputs.commit }}
       PLANTED: ${{ needs.plan.outputs.planted }}
       SOURCE: ${{ needs.plan.outputs.source }}
+      SUBJECT: ${{ needs.plan.outputs.subject }}
+      AGAINST: ${{ needs.plan.outputs.against }}
+      STAKES: ${{ needs.plan.outputs.stakes }}
+      FROM: ${{ needs.plan.outputs.base || format('v{0}', needs.plan.outputs.prev) }}
+      TO: ${{ needs.plan.outputs.mode == 'dispatch' && format('v{0}', needs.plan.outputs.version) || needs.plan.outputs.commit }}
       GH_REPO: ${{ github.repository }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
@@ -239,26 +302,28 @@ jobs:
           name: ${{ needs.plan.outputs.artifact }}
           path: ${{ runner.temp }}/tarball
 
-      - name: Stage the release artifact, the rebuild, the previous release and the pinned kernels (no secrets in this step)
+      - name: Stage the artifact, the rebuild, the base, the previous npm release and the pinned kernels (no secrets in this step)
         run: |
           npm ci --no-audit --no-fund
           tgz=$(ls "$RUNNER_TEMP"/tarball/*.tgz)
-          node scripts/cert-review/stage.mjs --version "$VERSION" --prev "$PREV" --work "$WORK" --tarball "$tgz" ${PLANTED:+--planted "$PLANTED"}
+          if [ "$MODE" = dispatch ]; then
+            node scripts/cert-review/stage.mjs --version "$VERSION" --prev "$PREV" --work "$WORK" --tarball "$tgz" ${PLANTED:+--planted "$PLANTED"}
+          else
+            node scripts/cert-review/stage.mjs --version "$VERSION" --prev "$PREV" --work "$WORK" --tarball "$tgz" --commit "$COMMIT" --base "$BASE"
+          fi
 
-      - name: Suites and security rows (no secrets in this step)
+      - name: Suites, NEGATIVE and security rows (no secrets in this step)
         run: node scripts/cert-review/suites.mjs --work "$WORK" || echo "::warning::some suites failed; the review reads suites.json"
 
       - name: Review
         id: review
-        uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8
+        uses: anthropics/claude-code-action/base-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8
         env:
           AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
           AWS_REGION: ${{ vars.CERT_AWS_REGION || 'us-west-2' }}
           GH_TOKEN: ${{ github.token }}
         with:
           use_bedrock: 'true'
-          allowed_bots: 'github-merge-queue'
-          github_token: ${{ github.token }}
           show_full_output: ${{ github.event_name == 'workflow_dispatch' }}
           claude_args: |
             --model ${{ vars.CERT_BEDROCK_MODEL || 'global.anthropic.claude-opus-5-5' }}
@@ -266,34 +331,40 @@ jobs:
             --permission-mode bypassPermissions
             --max-turns 300
           prompt: |
-            You certify `@ai-ecoverse/mcpcat@${{ env.VERSION }}` before it is published, a curl for the Model Context Protocol: a host CLI (`dist/host/mcpcat.mjs`) and a slicc-kernel `abi: "js"` command (`dist/kernel/mcpcat.mjs`) that seven (seven.sliccy.ai) runs in the browser. mcpcat releases from main on every merge. Decide, from evidence, whether this release is fit for seven. The delta is read from `v${{ env.PREV }}`. Run: ${{ env.RUN_URL }}.
+            You certify `@ai-ecoverse/mcpcat`, a curl for the Model Context Protocol: a host CLI (`dist/host/mcpcat.mjs`) and a slicc-kernel `abi: "js"` command (`dist/kernel/mcpcat.mjs`) that seven (seven.sliccy.ai) runs in the browser. Decide, from evidence, whether this change is fit for seven. Run: ${{ env.RUN_URL }}.
+
+            THE SUBJECT: ${{ env.SUBJECT }}. It is packed as version `${{ env.VERSION }}`.
+            THE BASE: ${{ env.AGAINST }}. The delta is `${{ env.FROM }}...${{ env.TO }}`.
+            WHAT RIDES ON IT: ${{ env.STAKES }}
 
             WHAT'S SET UP
-            - The current directory is mcpcat's main at ${{ github.sha }} (the cert tools in `scripts/cert-review/` and the committed integration tests). `${{ env.WORK }}/stage.json` describes everything below with paths, shas and commits; read it first.
-            - `artifact`: the tarball under review, packed from tag `v${{ env.VERSION }}` by the release's pack job. It is not on npm yet: only if you certify it are these exact bytes published, as `latest`, and nothing else ever is (mcpcat: certified = latest). A later job on a fresh runner re-hashes it and checks, in code, its sha256 against the pack job's, its manifest, gitHead = tag `v${{ env.VERSION }}` and that the tag is on main; after the publish, another checks npm's integrity and the SLSA provenance (release.yml on refs/heads/main) against the certified sha256: don't repeat those. When `planted` is set, the tarball is a pack of that branch instead of the tag; review it exactly as you would a release.
-            - `rebuilt`: `trees.tag` is the subject's tree (tag `v${{ env.VERSION }}`), where `npm ci; npm version ${{ env.VERSION }} --no-git-tag-version; npm pkg set gitHead=<commit>; MCPCAT_STRIP_SCRIPTS=1 npm pack` ran, as the pack job does. `reproducible` and `differingFiles` compare it with `artifact`; both are unpacked in `${{ env.WORK }}/pub/x/package` and `${{ env.WORK }}/rebuilt/x/package`. After the rebuild, `trees.tag/dist` was replaced by the artifact's dist, so the subject's own tests run on the bytes that would be published. `rebuildDiff` compares the two file by file: `identical`, `explained` (package.json differing only in `gitHead`) and `unexplained` (everything else).
-            - **Source: `${{ env.SOURCE }}`.** When it is `npm`, the artifact is not a fresh pack: it is `npm pack @ai-ecoverse/mcpcat@${{ env.VERSION }}`, the exact bytes already on npm, published by the old release path without a cert review. This run never publishes and has no publish gate; it certifies (or fails) those bytes. Their package.json has no `gitHead`, while the rebuild writes the tag's commit, so `reproducible` is false and `rebuildDiff.explained` lists package.json's gitHead: that one difference is explained. Any entry in `rebuildDiff.unexplained` is an unexplained non-reproducible build. A later job checks, in code, the registry's gitHead, the SLSA provenance commit and npm's `dist.integrity` against tag `v${{ env.VERSION }}` and the artifact, and repeats the rebuild comparison: don't repeat those. Where this prompt says the artifact is not on npm yet or would be published, read it as already on npm.
-            - `trees.prev` is `v${{ env.PREV }}` built from source; `trees.neg` is the subject's tree with `v${{ env.PREV }}`'s dist (the NEGATIVE: the subject's tests on the previous code); `trees.previousPublished` is `v${{ env.PREV }}`'s npm tarball, unpacked.
-            - `trees.rows` is main's tests with the artifact's dist: the security rows, listed in `scripts/cert-review/rows.json` (row → test files in `test/integration/`). They are committed integration tests; you review and run them, you never design probes.
+            - The current directory is the checkout at ${{ github.sha }} (the cert tools in `scripts/cert-review/` and the committed integration tests). `${{ env.WORK }}/stage.json` describes everything below with paths, shas and commits; read it first.
+            - `artifact`: the tarball under review. `subject.commit` is the commit it was packed from, which is also its `gitHead`. A later job on a fresh runner re-hashes it and checks its sha256, manifest and gitHead in code: don't repeat those.
+            - `rebuilt`: `trees.tag` is the subject's tree, where `npm ci; npm version ${{ env.VERSION }} --no-git-tag-version; npm pkg set gitHead=<commit>; MCPCAT_STRIP_SCRIPTS=1 npm pack` ran, as the pack job does. `reproducible` and `differingFiles` compare it with `artifact`; both are unpacked in `${{ env.WORK }}/pub/x/package` and `${{ env.WORK }}/rebuilt/x/package`. After the rebuild, `trees.tag/dist` was replaced by the artifact's dist, so the subject's own tests run on the bytes under review. `rebuildDiff` compares the two file by file: `identical`, `explained` (package.json differing only in `gitHead`) and `unexplained` (everything else).
+            - **Source: `${{ env.SOURCE }}`.** When it is `npm`, the artifact is `npm pack @ai-ecoverse/mcpcat@${{ env.VERSION }}`, the exact bytes already on npm. Their package.json has no `gitHead`, while the rebuild writes the tag's commit, so `reproducible` is false and `rebuildDiff.explained` lists package.json's gitHead: that one difference is explained. A later job checks, in code, the registry's gitHead, the SLSA provenance commit and npm's `dist.integrity` against the tag and the artifact: don't repeat those.
+            - `base.commit` (`trees.prev`) is the base built from source; `trees.neg` is the subject's tree with the base's dist (the NEGATIVE: the subject's tests on the base's code); `trees.previousPublished` is npm's `${{ env.PREV }}`, unpacked. `surface.base` is the base's build, `surface.published` is npm's `${{ env.PREV }}`.
+            - `changedTests`: the integration test files the delta adds or changes. `suites.json` → `negative` ran each of them on the subject (`head`) and on the base's code (`base`, in `trees.neg`): `bites` is true when it passes on the head and fails on the base.
+            - `trees.rows` is the checkout's tests with the artifact's dist: the security rows, listed in `scripts/cert-review/rows.json` (row → test files in `test/integration/`). They are committed integration tests; you review and run them, you never design probes.
             - `kernels`: the pinned slicc-kernels (the `kernel-cert-*` devDependencies and slicc-bios's kernel), each with its `tgz` and an installed `dir`.
-            - `surface`: per version, the kernel bundle's imports (from esbuild's metafile), `eval(` and `Function` hits (comments stripped), the `ctx.*` set (and `ctxAdded`/`ctxRemoved`), LICENSE and THIRD_PARTY_NOTICES, and the manifest's dependencies, scripts, engines, bin and `slicc.commands`.
-            - **Already run, with no secrets** (`${{ env.WORK }}/suites.json`, logs in `${{ env.WORK }}/logs/`): the subject's host suite (`npm run test:integration` in `trees.tag`), `npm run cert -- --kernel=<tgz>` on every pinned kernel in `trees.tag`, and the rows on the host and on every pinned kernel in `trees.rows`. Don't run them again; re-run single files only to tell a flake from a failure.
+            - `surface`: the kernel bundle's imports (from esbuild's metafile), `eval(` and `Function` hits (comments stripped), the `ctx.*` set (and `ctxAdded`/`ctxRemoved` against the base), LICENSE and THIRD_PARTY_NOTICES, and the manifest's dependencies, scripts, engines, bin and `slicc.commands`.
+            - **Already run, with no secrets** (`${{ env.WORK }}/suites.json`, logs in `${{ env.WORK }}/logs/`): the subject's host suite (`npm run test:integration` in `trees.tag`), `npm run cert -- --kernel=<tgz>` on every pinned kernel in `trees.tag`, the NEGATIVE, and the rows on the host and on every pinned kernel in `trees.rows`. Don't run them again; re-run single files only to tell a flake from a failure.
             - **Run every command that executes mcpcat, a test or a fixture through `cert-run`**, which drops the Bedrock key and the GitHub token from its environment: for example `cd <trees.neg> && cert-run node --test --test-timeout=120000 test/integration/<file>.test.mjs`, and for a kernel test `cert-run env MCPCAT_CERT_KERNEL_DIR=<kernels[i].dir> node --test …`. Never touch ports 9222–9229.
-            - `gh` reads this repository: `gh api repos/${{ github.repository }}/compare/v${{ env.PREV }}...v${{ env.VERSION }}`, `gh pr view <n>`, `gh issue list --state all --search …`, and `gh issue create`.
+            - `gh` reads this repository: `gh api repos/${{ github.repository }}/compare/${{ env.FROM }}...${{ env.TO }}`, `gh pr view <n>`, `gh issue list --state all --search …`, and `gh issue create`.
 
             WHAT TO CHECK
             1. **Rebuild.** `reproducible` must be true, or `rebuildDiff.unexplained` must be empty with only package.json's `gitHead` in `rebuildDiff.explained`. Otherwise explain every differing file from the two unpacked trees; an unexplained non-reproducible build is a FAIL. With source `npm`, only the `gitHead` field counts as explained: any other difference is a FAIL.
-            2. **Surface.** The kernel bundle has no imports and no `eval` or `new Function`/`Function(` that runs code (show any hit is inert). Every `ctx.*` added or removed since `v${{ env.PREV }}` is explained by the delta. LICENSE and dist/THIRD_PARTY_NOTICES are there, and the notices cover what the delta bundles. The manifest has 0 dependencies and no install scripts.
-            3. **Suites.** Every entry in suites.json passed on every pinned kernel and on the host. For each failure, read its log and re-run that file alone in the same tree. A row that fails only because main's test checks behaviour added after `v${{ env.VERSION }}` (see `git log` of the test file, and the subject's own suite) is not a regression of this release: it is a known issue of this release if it is a bug that was fixed later, which you cite.
-            4. **The delta.** Read every commit and pull request in `compare/v${{ env.PREV }}...v${{ env.VERSION }}`. For each fix, name the committed test that covers it, show that it passes on the subject (`trees.tag`) and that it **fails in `trees.neg`** (the NEGATIVE). A fix without such a test, or whose test also passes in `trees.neg`, is a test gap.
+            2. **Surface.** The kernel bundle has no imports and no `eval` or `new Function`/`Function(` that runs code (show any hit is inert). Every `ctx.*` added or removed against the base is explained by the delta. LICENSE and dist/THIRD_PARTY_NOTICES are there, and the notices cover what the delta bundles. The manifest has 0 dependencies and no install scripts.
+            3. **Suites.** Every entry in `results` passed on every pinned kernel and on the host. For each failure, read its log and re-run that file alone in the same tree. A row that fails only because the checkout's test checks behaviour added after the subject is not a regression of the subject: it is a known issue if it is a bug that was fixed later, which you cite.
+            4. **The delta and the NEGATIVE.** Read every commit and pull request in `compare/${{ env.FROM }}...${{ env.TO }}`. Every new or changed test in `changedTests` must fail on the base and pass on the head (`negative[].bites`); for one that doesn't, read both logs and say why. For each fix, name the committed test that covers it and show it bites. A fix without such a test, or whose test also passes in `trees.neg`, is a test gap. A change that alters shipped behaviour with no committed test is a test gap.
             5. **Security rows**, from rows.json and its suites: secrets redaction (`${VAR}` in headers and mcp.json, error paths, `-v`, `--json`); OAuth (DCR, PKCE, state, redirect, rotation, redaction, the store at 0600); serve and proxy (loopback bind, bearer, Origin and Host, no CORS, the proxy pinned to its upstream); webmcp (no tool shared between origins, issue `#96`); DAC under users enforce (alice and bob); lifecycle (no orphans, including SIGKILL on kernels ≥ 1.88); the code-mode sandbox (the globals, import and Function blocked, the wall-time bound); the discovery canary (0 hits). Say for each row whether its tests ran and passed on the host and on every kernel. When the delta touches a row's surface and no committed test covers the change, that is a test gap: report it, don't improvise a probe. If a provider safety filter stops you, don't rephrase or work around it: stop, say so in comment.md and answer `fail` with that reason.
+            6. **Release path.** When the delta changes `.github/workflows/release.yml`, `binaries.yml`, `.releaserc.json` or `package.json`'s `publishConfig`/`fledgling`, check that main still publishes with provenance through trusted publishing from `release.yml` on `refs/heads/main`, and that nothing else can publish.
 
             SEVERITY (Lars, 2026-10-14: roll forward, don't reject over minor issues)
-            FAIL only for: a security or secret exposure; data loss or corruption; a supply-chain integrity problem (a sha mismatch, an unexplained non-reproducible build); a license violation; a crash or boot failure; or a regression that breaks a common workflow with no workaround. A FAIL leaves this version tagged and unpublished, and npm `latest` stays on the last certified version. Everything else is "certified with known issues": answer `certified` and list them, each filed as a GitHub issue with a repro and the test that would catch it. **File every known issue that isn't filed yet**, with a repro and the behaviour-level integration test that would catch it. Search first, open and closed: `gh issue list -R ${{ github.repository }} --state all --search …` and `gh issue list -R ai-ecoverse/slicc-kernel --state all --search …`, and cite a match as `#<n>` or `ai-ecoverse/slicc-kernel#<n>` instead of filing again. Then `gh issue create -R ${{ github.repository }}` with the repro, the version and kernel it fails on, and the test; for a slicc-kernel problem, say so in the title.
+            FAIL only for: a security or secret exposure; data loss or corruption; a supply-chain integrity problem (a sha mismatch, an unexplained non-reproducible build, a release path that publishes something unreviewed); a license violation; a crash or boot failure; or a regression that breaks a common workflow with no workaround. Everything else is "certified with known issues": answer `certified` and list them, each filed as a GitHub issue with a repro and the test that would catch it. **File every known issue that isn't filed yet**, with a repro and the behaviour-level integration test that would catch it. Search first, open and closed: `gh issue list -R ${{ github.repository }} --state all --search …` and `gh issue list -R ai-ecoverse/slicc-kernel --state all --search …`, and cite a match as `#<n>` or `ai-ecoverse/slicc-kernel#<n>` instead of filing again. Then `gh issue create -R ${{ github.repository }}` with the repro, the subject and kernel it fails on, and the test; for a slicc-kernel problem, say so in the title.
 
             YOUR ANSWER, in `${{ runner.temp }}/cert-review/`
             - `verdict.json`: `{ "verdict": "certified" | "fail", "known": ["#<n>" or "<owner>/<repo>#<n>", …], "reason": "<one line, for a fail>" }`. Every known issue is a filed issue. Don't write shas or versions: a later job computes the line from the artifact.
-            - `comment.md`: **Cert review: @ai-ecoverse/mcpcat@${{ env.VERSION }}** (from ${{ env.PREV }}), then a table `| Check | Result |` with the rows Rebuild, Surface, Suites (host and each kernel), Delta and NEGATIVE (one line per fix), one row per security row, and Known issues; then a few sentences on what changed and what a human should look at. Say that the kernel floor (slicc-kernel 1.65.2, the `engines` minimum) is not covered by this run. Mention anything in this setup that got in your way.
+            - `comment.md`: **Cert review: ${{ env.SUBJECT }}** (against ${{ env.FROM }}), then a table `| Check | Result |` with the rows Rebuild, Surface, Suites (host and each kernel), Delta and NEGATIVE (one line per changed test and per fix), one row per security row, and Known issues; then a few sentences on what changed and what a human should look at. Say that the kernel floor (slicc-kernel 1.65.2, the `engines` minimum) is not covered by this run. Mention anything in this setup that got in your way.
             Don't edit, commit or push anything, and don't comment on issues or pull requests other than the ones you file.
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -327,11 +398,10 @@ jobs:
     name: cert-review / record
     needs: [plan, pack, review]
     if: always() && needs.plan.outputs.go == 'true' && needs.review.result != 'cancelled'
-    runs-on: ${{ vars.CERT_RUNNER || 'cloud-run-bench' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
       verdict: ${{ steps.record.outputs.verdict }}
-      sha256: ${{ steps.record.outputs.sha256 }}
       line: ${{ steps.record.outputs.line }}
     concurrency:
       group: cert-review-record-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
@@ -339,16 +409,20 @@ jobs:
     permissions:
       actions: read
       contents: write
+      issues: write
+      pull-requests: write
       statuses: write
     env:
+      MODE: ${{ needs.plan.outputs.mode }}
       VERSION: ${{ needs.plan.outputs.version }}
+      PR: ${{ needs.plan.outputs.pr }}
+      CHANGE: ${{ needs.plan.outputs.change }}
       PLANTED: ${{ needs.plan.outputs.planted }}
       SOURCE: ${{ needs.plan.outputs.source }}
       DRY_RUN: ${{ needs.plan.outputs.dry_run }}
       PLAN_COMMIT: ${{ needs.plan.outputs.commit }}
-      PACKED: ${{ needs.plan.outputs.mode == 'release' && inputs.sha256 || needs.pack.outputs.sha256 }}
+      PACKED: ${{ needs.pack.outputs.sha256 }}
       UPSTREAM: ${{ needs.review.result }}
-      SUFFIX: ${{ needs.plan.outputs.planted && '-planted' || '' }}
       GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -375,33 +449,17 @@ jobs:
           name: ${{ needs.plan.outputs.artifact }}
           path: ${{ runner.temp }}/tarball
 
-      - name: gh
-        run: |
-          if ! command -v gh > /dev/null; then
-            case "$(uname -m)" in
-              x86_64) arch=amd64 ;;
-              aarch64 | arm64) arch=arm64 ;;
-              *) echo "::error::no gh release for $(uname -m)"; exit 1 ;;
-            esac
-            mkdir -p "$RUNNER_TEMP/bin"
-            v=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/cli/cli/releases/latest | jq -r '.tag_name | ltrimstr("v")')
-            (cd "$RUNNER_TEMP/bin" \
-              && curl -fsSL -O "https://github.com/cli/cli/releases/download/v$v/gh_${v}_linux_$arch.tar.gz" \
-                -O "https://github.com/cli/cli/releases/download/v$v/gh_${v}_checksums.txt" \
-              && sha256sum -c "gh_${v}_checksums.txt" --ignore-missing \
-              && tar -xzf "gh_${v}_linux_$arch.tar.gz" --strip-components=2 "gh_${v}_linux_$arch/bin/gh")
-            echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-          fi
-
       - name: The line, from the artifact and the verdict (this job's tools, from ${{ github.sha }})
         id: record
         run: |
           mkdir -p "$RUNNER_TEMP/cert-review" "$RUNNER_TEMP/tarball"
-          tgz=$(ls "$RUNNER_TEMP"/tarball/*.tgz 2> /dev/null | head -1 || true)
-          rebuilt=$(ls "$RUNNER_TEMP"/tarball/rebuilt/*.tgz 2> /dev/null | head -1 || true)
+          tgz=$(find "$RUNNER_TEMP/tarball" -maxdepth 1 -name '*.tgz' | head -1)
+          rebuilt=$(find "$RUNNER_TEMP/tarball/rebuilt" -maxdepth 1 -name '*.tgz' 2> /dev/null | head -1 || true)
+          change=()
+          [ "$MODE" = dispatch ] || change=(--commit "$PLAN_COMMIT" --change "$CHANGE")
           if node scripts/cert-review/record.mjs --version "$VERSION" --review "$RUNNER_TEMP/cert-review" \
             --out "$RUNNER_TEMP/record" --run "$RUN_URL" --repo "$GH_REPO" ${PLANTED:+--planted "$PLANTED"} \
-            --source "$SOURCE" ${rebuilt:+--rebuilt "$rebuilt"} \
+            --source "$SOURCE" ${rebuilt:+--rebuilt "$rebuilt"} "${change[@]}" \
             --tarball "$tgz" --sha256 "$PACKED" --upstream "$UPSTREAM"; then
             echo "conclusion=success" >> "$GITHUB_OUTPUT"
           else
@@ -409,7 +467,7 @@ jobs:
           fi
           commit=$(jq -r '.commit // empty' "$RUNNER_TEMP/record/record.json")
           echo "commit=${commit:-$PLAN_COMMIT}" >> "$GITHUB_OUTPUT"
-          jq -r '"verdict=\(if .certified then "certified" else "fail" end)", "sha256=\(.sha256 // "")", "line=\(.line | split("\n")[0])"' \
+          jq -r '"verdict=\(if .certified then "certified" else "fail" end)", "line=\(.line | split("\n")[0])"' \
             "$RUNNER_TEMP/record/record.json" >> "$GITHUB_OUTPUT"
           { echo '```'; cat "$RUNNER_TEMP/record/line.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
@@ -423,7 +481,7 @@ jobs:
             ${{ runner.temp }}/record/body.md
           if-no-files-found: error
 
-      - name: The cert-review status on the release commit, and the line in the release notes
+      - name: The cert-review status on the commit, and the line on the pull request or the release
         if: needs.plan.outputs.dry_run != 'true' && needs.plan.outputs.planted == ''
         env:
           CONCLUSION: ${{ steps.record.outputs.conclusion }}
@@ -435,7 +493,17 @@ jobs:
             -f state="$CONCLUSION" -f context=cert-review -f target_url="$RUN_URL/artifacts/$ARTIFACT" \
             -f description="$(printf '%s' "$line" | cut -c1-140)" \
             --jq '"status \(.id) \(.state) on \(.url)"'
-          if gh release view "v$VERSION" --json body --jq .body > "$RUNNER_TEMP/notes.md" 2> /dev/null; then
+          if [ "$MODE" != dispatch ]; then
+            marker="<!-- cert-review-comment:$MODE -->"
+            { echo "$marker"; [ "$MODE" = queue ] && echo "_The merge group: the tree that lands on main, at $COMMIT._" && echo; cat "$RUNNER_TEMP/record/body.md"; } > "$RUNNER_TEMP/comment.md"
+            id=$(gh api "repos/$GH_REPO/issues/$PR/comments" --paginate \
+              --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | tail -1)
+            if [ -n "$id" ]; then
+              gh api -X PATCH "repos/$GH_REPO/issues/comments/$id" -F body=@"$RUNNER_TEMP/comment.md" --jq '"comment \(.html_url)"'
+            else
+              gh api "repos/$GH_REPO/issues/$PR/comments" -F body=@"$RUNNER_TEMP/comment.md" --jq '"comment \(.html_url)"'
+            fi
+          elif gh release view "v$VERSION" --json body --jq .body > "$RUNNER_TEMP/notes.md" 2> /dev/null; then
             node -e '
               const fs = require("node:fs");
               const [notes, body] = process.argv.slice(1).map((f) => fs.readFileSync(f, "utf8"));
@@ -448,46 +516,61 @@ jobs:
             echo "::warning::no GitHub release for v$VERSION, so the line is only in the status and the artifact"
           fi
 
-      - name: The verdict
-        env:
-          CONCLUSION: ${{ steps.record.outputs.conclusion }}
-          LINE: ${{ steps.record.outputs.line }}
-        run: |
-          echo "$LINE"
-          [ "$CONCLUSION" = success ] || { echo "::error title=cert-review v$VERSION::$LINE"; exit 1; }
-
-  gate:
-    name: cert-review / publish gate (dry run)
-    needs: [plan, pack, record]
-    if: always() && needs.plan.outputs.mode == 'dispatch' && needs.plan.outputs.source != 'npm' && needs.pack.result == 'success' && needs.record.result != 'skipped' && needs.record.result != 'cancelled'
+  verdict:
+    name: cert-review / ${{ needs.plan.outputs.label || 'verdict' }}
+    needs: [plan, record]
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     permissions:
-      contents: read
+      statuses: write
+    outputs:
+      verdict: ${{ steps.verdict.outputs.verdict }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PLAN: ${{ needs.plan.result }}
+      GO: ${{ needs.plan.outputs.go }}
+      REASON: ${{ needs.plan.outputs.reason }}
+      LABEL: ${{ needs.plan.outputs.label }}
+      MODE: ${{ needs.plan.outputs.mode }}
+      COMMIT: ${{ needs.plan.outputs.commit }}
+      RECORD: ${{ needs.record.result }}
+      VERDICT: ${{ needs.record.outputs.verdict }}
+      LINE: ${{ needs.record.outputs.line }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.sha }}
-          sparse-checkout: scripts/cert-review
-          persist-credentials: false
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: '24'
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        with:
-          name: ${{ needs.plan.outputs.artifact }}
-          path: ${{ runner.temp }}/tarball
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        with:
-          name: cert-review-record-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
-          path: ${{ runner.temp }}/record
-
-      - name: The publish job's gate and npm publish, as a dry run
-        env:
-          PACKED: ${{ needs.pack.outputs.sha256 }}
+      - name: The outcome all-green reads
+        id: verdict
         run: |
-          tgz=$(ls "$RUNNER_TEMP"/tarball/*.tgz)
-          node scripts/cert-review/publish.mjs --dry-run --tarball "$tgz" --record "$RUNNER_TEMP/record/record.json" --sha256 "$PACKED"
+          say() { echo "verdict=$1" >> "$GITHUB_OUTPUT"; { echo '```'; echo "$2"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; echo "$2"; }
+          [ "$PLAN" = success ] || { say fail "cert-review: the plan job ended $PLAN"; exit 1; }
+          if [ "$GO" != true ]; then
+            case "$REASON" in
+              not-behaviour)
+                say not-behaviour "cert-review: not behaviour, skipped: no shipped file changed"
+                if [ "$MODE" != dispatch ] && [ -n "$COMMIT" ]; then
+                  gh api "repos/$GH_REPO/statuses/$COMMIT" -f state=success -f context=cert-review -f target_url="$RUN_URL" \
+                    -f description="not behaviour: no shipped file changed, so no review (skipped)" --jq '"status \(.state) on \(.url)"' \
+                    || echo "::warning::no cert-review status on $COMMIT (a read-only token)"
+                fi
+                exit 0 ;;
+              fork)
+                say fork "cert-ci: FAIL a fork's change to shipped behaviour gets no cert review; push the branch to $GH_REPO"
+                echo "::error title=cert-review: fork::a fork's change to shipped behaviour gets no review (no secrets), so it cannot merge"
+                exit 1 ;;
+              none)
+                say none "cert-review: $LABEL"
+                exit 0 ;;
+              *)
+                say fail "cert-review: the plan gave no reason ($REASON)"
+                exit 1 ;;
+            esac
+          fi
+          if [ "$RECORD" = success ] && [ "$VERDICT" = certified ]; then
+            say certified "$LINE"
+            exit 0
+          fi
+          say fail "${LINE:-cert-ci: FAIL no cert-review line (record $RECORD)}"
+          echo "::error title=cert-review::${LINE:-no cert-review line (record $RECORD)}"
+          exit 1

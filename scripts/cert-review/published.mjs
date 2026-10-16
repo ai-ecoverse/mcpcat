@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -9,7 +9,6 @@ import { NAME, SEMVER, sha } from './tarball.mjs';
 const { values } = parseArgs({
   options: {
     version: { type: 'string' },
-    sha256: { type: 'string', default: '' },
     repo: { type: 'string', default: 'ai-ecoverse/mcpcat' },
     wait: { type: 'string', default: '300' },
   },
@@ -37,19 +36,21 @@ async function meta() {
   }
 }
 
-async function download(m, tgz) {
-  const url = new URL(m.dist.tarball);
-  if (url.origin !== 'https://registry.npmjs.org') return fail(`the tarball is at ${url.origin}`);
-  const res = await fetch(url);
-  if (!res.ok) return fail(`downloading ${url} answered ${res.status}`);
-  writeFileSync(tgz, Buffer.from(await res.arrayBuffer()));
+function download(dir) {
+  const dest = join(dir, 'pack');
+  mkdirSync(dest);
+  run('npm', ['pack', `${NAME}@${version}`, '--silent', '--pack-destination', dest]);
+  const made = readdirSync(dest).filter((f) => f.endsWith('.tgz'));
+  if (made.length !== 1) return fail(`npm pack ${NAME}@${version} made ${made.length} tarballs`);
+  return join(dest, made[0]);
+}
+
+function hashes(m, tgz) {
   facts.sha256 = sha('sha256', tgz);
   facts.sha512 = sha('sha512', tgz);
   facts.integrity = `sha512-${sha('sha512', tgz, 'base64')}`;
   if (m.dist.integrity !== facts.integrity)
     fail(`dist.integrity is ${m.dist.integrity}, the tarball is ${facts.integrity}`);
-  if (facts.sha256 !== values.sha256.trim().toLowerCase())
-    fail(`npm serves sha256 ${facts.sha256}, cert-review certified ${values.sha256 || '(none)'}`);
   return true;
 }
 
@@ -106,8 +107,8 @@ if (!SEMVER.test(version ?? '')) {
 const dir = mkdtempSync(join(tmpdir(), 'cert-published-'));
 try {
   const m = await meta();
-  const tgz = join(dir, 'package.tgz');
-  if (await download(m, tgz)) {
+  const tgz = download(dir);
+  if (tgz && hashes(m, tgz)) {
     checkManifest(tgz, version, fail, facts);
     if (m.hasInstallScript) fail('npm says hasInstallScript');
     const commit = await provenance(m);

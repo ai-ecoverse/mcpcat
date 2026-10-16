@@ -5,6 +5,8 @@ import { join } from 'node:path';
 
 export const NAME = '@ai-ecoverse/mcpcat';
 export const SEMVER = /^\d+\.\d+\.\d+$/;
+export const CHANGE = /^0\.0\.0-(pr|queue)\.\d+$/;
+export const COMMIT = /^[0-9a-f]{40}$/;
 const npmFlags = ['--no-audit', '--no-fund'];
 
 export function sh(cmd, args, opts = {}) {
@@ -27,6 +29,15 @@ export function fetchPlanted(root, planted) {
     { cwd: root }
   );
   return `origin/${planted}`;
+}
+
+export function fetchCommit(root, commit) {
+  try {
+    sh('git', ['cat-file', '-e', `${commit}^{commit}`], { cwd: root });
+  } catch {
+    sh('git', ['fetch', '--no-tags', 'origin', commit], { cwd: root });
+  }
+  return commit;
 }
 
 export function worktree(root, dir, ref) {

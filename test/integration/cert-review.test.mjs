@@ -36,105 +36,8 @@ function tool(script, args, extra = {}) {
   return { code: r.status, out: `${r.stdout}${r.stderr}` };
 }
 
-function recordFile(name, record) {
-  const file = join(work, `${name}.record.json`);
-  writeFileSync(file, JSON.stringify(record));
-  return file;
-}
-
 const good = tarball('good', { name: NAME, version: VERSION });
 const other = tarball('other', { name: NAME, version: VERSION, description: 'other bytes' });
-const certifiedRecord = (sha256) => ({
-  name: NAME,
-  version: VERSION,
-  planted: null,
-  certified: true,
-  sha256,
-  line: `certified ${NAME}@${VERSION} sha256=${sha256} (ci: local; known: none)`,
-});
-
-describe('cert-review gate: publish only certified bytes', () => {
-  it('allows the tarball whose sha256 the verdict certified', () => {
-    const r = tool('gate.mjs', [
-      '--tarball',
-      good.tgz,
-      '--record',
-      recordFile('ok', certifiedRecord(good.sha256)),
-      '--sha256',
-      good.sha256,
-    ]);
-    assert.equal(r.code, 0, r.out);
-    assert.match(r.out, new RegExp(`publish ${NAME}@${VERSION} sha256=${good.sha256}`));
-  });
-
-  it('refuses a FAIL verdict and prints its line', () => {
-    const line = `cert-ci: FAIL ${NAME}@${VERSION}: the reviewer: leaks a header (ci: local)`;
-    const r = tool('gate.mjs', [
-      '--tarball',
-      good.tgz,
-      '--record',
-      recordFile('fail', { name: NAME, version: VERSION, certified: false, sha256: null, line }),
-      '--sha256',
-      good.sha256,
-    ]);
-    assert.equal(r.code, 2, r.out);
-    assert.match(r.out, /refuse to publish .*the verdict is not certified/);
-    assert.ok(r.out.includes(line), r.out);
-  });
-
-  it('refuses bytes other than the certified ones', () => {
-    const r = tool('gate.mjs', [
-      '--tarball',
-      other.tgz,
-      '--record',
-      recordFile('swap', certifiedRecord(good.sha256)),
-      '--sha256',
-      other.sha256,
-    ]);
-    assert.equal(r.code, 2, r.out);
-    assert.match(r.out, /refuse to publish .*verdict's sha256/);
-  });
-
-  it("refuses when the pack job's sha256 is not the tarball's", () => {
-    const r = tool('gate.mjs', [
-      '--tarball',
-      good.tgz,
-      '--record',
-      recordFile('pack', certifiedRecord(good.sha256)),
-      '--sha256',
-      other.sha256,
-    ]);
-    assert.equal(r.code, 2, r.out);
-    assert.match(r.out, /refuse to publish .*pack job's sha256/);
-  });
-
-  it('refuses a certified line for another version', () => {
-    const rec = certifiedRecord(good.sha256);
-    rec.line = rec.line.replace(VERSION, '9.8.6');
-    const r = tool('gate.mjs', [
-      '--tarball',
-      good.tgz,
-      '--record',
-      recordFile('ver', rec),
-      '--sha256',
-      good.sha256,
-    ]);
-    assert.equal(r.code, 2, r.out);
-  });
-
-  it('refuses a planted build even when certified', () => {
-    const r = tool('gate.mjs', [
-      '--tarball',
-      good.tgz,
-      '--record',
-      recordFile('planted', { ...certifiedRecord(good.sha256), planted: 'proof/planted' }),
-      '--sha256',
-      good.sha256,
-    ]);
-    assert.equal(r.code, 2, r.out);
-    assert.match(r.out, /planted/);
-  });
-});
 
 describe('cert-review record: the line comes from the artifact, not the reviewer', () => {
   function review(name, verdict) {
@@ -227,7 +130,15 @@ describe('cert-review record --source npm: the bytes already on npm', () => {
 
   function registry(
     name,
-    { gitHead = COMMIT, gitCommit = COMMIT, dist = integrity, signed = true } = {}
+    {
+      gitHead = COMMIT,
+      gitCommit = COMMIT,
+      dist = integrity,
+      signed = true,
+      served = onNpm.tgz,
+      path = '.github/workflows/release.yml',
+      ref = 'refs/heads/main',
+    } = {}
   ) {
     const statement = {
       subject: [
@@ -241,8 +152,8 @@ describe('cert-review record --source npm: the bytes already on npm', () => {
           externalParameters: {
             workflow: {
               repository: `https://github.com/${REPO}`,
-              path: '.github/workflows/release.yml',
-              ref: 'refs/heads/main',
+              path,
+              ref,
             },
           },
           resolvedDependencies: [{ digest: { gitCommit } }],
@@ -276,6 +187,7 @@ describe('cert-review record --source npm: the bytes already on npm', () => {
         [`repos/${REPO}/compare/main...${COMMIT}`]: { status: 'behind' },
       },
       signed,
+      served,
     };
     const bin = join(work, `${name}-bin`);
     mkdirSync(bin, { recursive: true });
@@ -290,6 +202,7 @@ describe('cert-review record --source npm: the bytes already on npm', () => {
           `const spec = '${NAME}@${VERSION}';`,
           "if (a[0] === 'view' && a[1] === spec && a[2] === '--json') process.stdout.write(JSON.stringify(f.npm));",
           "else if (a[0] === 'install' && a.at(-1) === spec) process.exit(0);",
+          "else if (a[0] === 'pack' && a[1] === spec) require('node:fs').copyFileSync(f.served, require('node:path').join(a[a.indexOf('--pack-destination') + 1], 'served.tgz'));",
           "else if (a[0] === 'audit' && a[1] === 'signatures' && f.signed) process.stdout.write('1 package has a verified attestation\\n');",
           "else if (a[0] === 'audit' && a[1] === 'signatures') { process.stderr.write('1 package has an invalid attestation\\n'); process.exit(1); }",
           'else process.exit(1);',
@@ -412,17 +325,189 @@ describe('cert-review record --source npm: the bytes already on npm', () => {
     assert.equal(r.code, 1, r.out);
     assert.match(r.rec.line, /package\/package\.json: differs in more than gitHead/);
   });
+  function published(env) {
+    const r = tool('published.mjs', ['--version', VERSION, '--repo', REPO, '--wait', '0'], env);
+    return { ...r, line: r.out.trim().split('\n').at(-1) };
+  }
 
-  it('refuses to publish a record that replays npm bytes', () => {
-    const r = tool('gate.mjs', [
+  it('verify: the registry bytes are the SLSA subject, built by release.yml on main from the tag', () => {
+    const r = published(registry('pub-ok'));
+    assert.equal(r.code, 0, r.out);
+    assert.equal(
+      r.line,
+      `verified ${NAME}@${VERSION} sha256=${onNpm.sha256} on npm: ${integrity}, provenance .github/workflows/release.yml@refs/heads/main commit ${COMMIT} = gitHead = tag v${VERSION}, on main`
+    );
+  });
+
+  for (const [what, opts, why] of [
+    [
+      'bytes other than the SLSA subject',
+      { served: rebuilt.tgz },
+      /dist\.integrity is .*, the tarball is/,
+    ],
+    [
+      'a provenance from another workflow',
+      { path: '.github/workflows/ci.yml' },
+      /provenance workflow is \.github\/workflows\/ci\.yml/,
+    ],
+    [
+      'a provenance from another ref',
+      { ref: 'refs/heads/evil' },
+      /provenance ref is refs\/heads\/evil/,
+    ],
+    [
+      'a gitHead other than the provenance commit',
+      { gitHead: 'e'.repeat(40) },
+      /isn't the package's gitHead/,
+    ],
+    [
+      'a provenance commit other than the tag',
+      { gitCommit: 'e'.repeat(40), gitHead: 'e'.repeat(40) },
+      new RegExp(`tag v${VERSION} is ${COMMIT}, provenance says ${'e'.repeat(40)}`),
+    ],
+    ['unverified attestation signatures', { signed: false }, /npm audit signatures failed/],
+  ]) {
+    it(`verify: fails loudly on ${what}`, () => {
+      const r = published(registry(`pub-${what.replace(/\W+/g, '-')}`, opts));
+      assert.equal(r.code, 1, r.out);
+      assert.match(r.line, /^cert-ci: FAIL published /);
+      assert.match(r.line, why);
+    });
+  }
+});
+
+describe('cert-review record --commit: a pull request or merge group under review', () => {
+  const HEAD = 'c'.repeat(40);
+  const CHANGE = '0.0.0-pr.42';
+  const change = tarball('pr', { name: NAME, version: CHANGE, gitHead: HEAD });
+  const otherHead = tarball('pr-other-head', {
+    name: NAME,
+    version: CHANGE,
+    gitHead: 'd'.repeat(40),
+  });
+
+  function record(name, tgz, sha256, extra = []) {
+    const dir = join(work, `${name}-review`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'verdict.json'), JSON.stringify({ verdict: 'certified', known: [] }));
+    const out = join(work, `rec-${name}`);
+    const r = tool('record.mjs', [
+      '--version',
+      CHANGE,
+      '--review',
+      dir,
+      '--out',
+      out,
       '--tarball',
-      onNpm.tgz,
-      '--record',
-      recordFile('npm-gate', { ...certifiedRecord(onNpm.sha256), source: 'npm' }),
+      tgz,
       '--sha256',
-      onNpm.sha256,
+      sha256,
+      '--commit',
+      HEAD,
+      '--change',
+      'pull request #42',
+      ...extra,
     ]);
+    const rec =
+      r.code === 2 ? undefined : JSON.parse(readFileSync(join(out, 'record.json'), 'utf8'));
+    return { ...r, rec };
+  }
+
+  it('certifies the head it was packed from, with no tag and nothing published', () => {
+    const r = record('pr-ok', change.tgz, change.sha256);
+    assert.equal(r.code, 0, r.out);
+    assert.equal(r.rec.commit, HEAD);
+    assert.equal(
+      r.rec.line,
+      `certified ${NAME}@${CHANGE} sha256=${change.sha256} (ci: local; known: none)`
+    );
+    assert.match(
+      readFileSync(join(work, 'rec-pr-ok', 'body.md'), 'utf8'),
+      /nothing is published from here/
+    );
+  });
+
+  it("fails when the tarball's gitHead is not the head under review", () => {
+    const r = record('pr-head', otherHead.tgz, otherHead.sha256);
+    assert.equal(r.code, 1, r.out);
+    assert.match(
+      r.rec.line,
+      new RegExp(`gitHead is ${'d'.repeat(40)}, the pull request #42 is ${HEAD}`)
+    );
+  });
+
+  it('refuses a change version without the commit it was packed from', () => {
+    const r = tool('record.mjs', ['--version', CHANGE, '--review', work, '--out', join(work, 'x')]);
     assert.equal(r.code, 2, r.out);
-    assert.match(r.out, /refuse to publish .*already on npm/);
+  });
+});
+
+describe('cert-review shipped: which changes are behaviour', () => {
+  const repo = join(work, 'shipped-repo');
+  const git = (...args) => {
+    const r = spawnSync('git', args, { cwd: repo, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout.trim();
+  };
+  mkdirSync(repo, { recursive: true });
+  git('init', '-q', '-b', 'main');
+  git('config', 'user.email', 'test@example.com');
+  git('config', 'user.name', 'test');
+  git('config', 'commit.gpgsign', 'false');
+  const commit = (files) => {
+    for (const [f, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(repo, f)), { recursive: true });
+      writeFileSync(join(repo, f), text);
+    }
+    git('add', '-A');
+    git('commit', '-q', '-m', 'x');
+    return git('rev-parse', 'HEAD');
+  };
+  const root0 = commit({ 'src/a.ts': '1', 'README.md': '1', 'docs/spec.html': '1' });
+  const branch = (name, files) => {
+    git('checkout', '-q', '-b', name, root0);
+    return commit(files);
+  };
+  const run = (head) => tool('shipped.mjs', ['--repo', repo, '--base', root0, '--head', head]);
+
+  for (const [name, files] of [
+    ['docs', { 'README.md': '2', 'docs/spec.html': '2', 'AGENTS.md': '2' }],
+    ['tests', { 'test/integration/x.test.mjs': '2' }],
+    ['ci', { '.github/workflows/ci.yml': '2', 'scripts/cert-review/record.mjs': '2' }],
+  ]) {
+    it(`skips a ${name}-only change as not behaviour`, () => {
+      const r = run(branch(name, files));
+      assert.equal(r.code, 0, r.out);
+      assert.match(r.out, /^not behaviour: none of the \d+ changed files is shipped/);
+    });
+  }
+
+  for (const [name, file] of [
+    ['src', 'src/a.ts'],
+    ['package.json', 'package.json'],
+    ['lockfile', 'package-lock.json'],
+    ['build script', 'scripts/build.mjs'],
+    ['release workflow', '.github/workflows/release.yml'],
+    ['binaries workflow', '.github/workflows/binaries.yml'],
+    ['release config', '.releaserc.json'],
+    ['installer', 'install.sh'],
+  ]) {
+    it(`reviews a change to the ${name}`, () => {
+      const r = run(branch(`b-${name.replace(/\W/g, '-')}`, { [file]: '3', 'README.md': '3' }));
+      assert.equal(r.code, 0, r.out);
+      assert.match(
+        r.out,
+        new RegExp(`^behaviour: 1 shipped file changed: ${file.replace(/\./g, '\\.')}`)
+      );
+    });
+  }
+
+  it('reads the change from the merge base, not from a base that moved on', () => {
+    const head = branch('moved-head', { 'README.md': '4' });
+    git('checkout', '-q', '-b', 'moved-main', root0);
+    const moved = commit({ 'src/a.ts': '4' });
+    const r = tool('shipped.mjs', ['--repo', repo, '--base', moved, '--head', head]);
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /^not behaviour/);
   });
 });

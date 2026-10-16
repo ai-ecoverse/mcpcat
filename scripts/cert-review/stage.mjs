@@ -13,7 +13,19 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import * as esbuild from 'esbuild';
 import { compareTarballs } from './compare.mjs';
-import { fetchPlanted, NAME, packTree, SEMVER, sh, sha, sri, worktree } from './tarball.mjs';
+import {
+  CHANGE,
+  COMMIT,
+  fetchCommit,
+  fetchPlanted,
+  NAME,
+  packTree,
+  SEMVER,
+  sh,
+  sha,
+  sri,
+  worktree,
+} from './tarball.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const { values } = parseArgs({
@@ -23,12 +35,19 @@ const { values } = parseArgs({
     work: { type: 'string' },
     tarball: { type: 'string' },
     planted: { type: 'string', default: '' },
+    commit: { type: 'string', default: '' },
+    base: { type: 'string', default: '' },
   },
 });
-const { version, prev } = values;
+const { version, prev, commit: change, base } = values;
 const work = resolve(values.work);
-if (!SEMVER.test(version ?? '') || !SEMVER.test(prev ?? '') || !values.tarball) {
-  console.error('stage: --version and --prev must be x.y.z, and --tarball is required');
+const versionOk = change
+  ? COMMIT.test(change) && COMMIT.test(base) && CHANGE.test(version ?? '') && !values.planted
+  : SEMVER.test(version ?? '') && !base;
+if (!versionOk || !SEMVER.test(prev ?? '') || !values.tarball) {
+  console.error(
+    'stage: --version x.y.z (or 0.0.0-pr.<n>/0.0.0-queue.<n> with --commit and --base shas), --prev x.y.z and --tarball are required'
+  );
   process.exit(2);
 }
 const KERNEL = '@ai-ecoverse/slicc-kernel';
@@ -177,7 +196,12 @@ function stageKernel(pin) {
 
 mkdirSync(work, { recursive: true });
 const planted = values.planted;
-const subjectRef = planted ? fetchPlanted(root, planted) : `v${version}`;
+const subjectRef = change
+  ? fetchCommit(root, change)
+  : planted
+    ? fetchPlanted(root, planted)
+    : `v${version}`;
+const baseRef = change ? fetchCommit(root, base) : `v${prev}`;
 
 const kernels = kernelPins().map(stageKernel);
 
@@ -203,7 +227,7 @@ const fileDiff = [...new Set([...pubFiles, ...rebuiltFiles].map((f) => f.path))]
 swapDist(join(work, 'tag'), pubDir);
 
 const prevTree = join(work, 'prev');
-const prevCommit = worktree(root, prevTree, `v${prev}`);
+const prevCommit = worktree(root, prevTree, baseRef);
 sh('npm', ['ci', ...npmFlags], { cwd: prevTree });
 if (!existsSync(join(prevTree, 'dist/kernel/mcpcat.mjs')))
   sh('npm', ['run', 'build'], { cwd: prevTree });
@@ -224,14 +248,33 @@ const prevFile = sh('npm', ['pack', `${NAME}@${prev}`, '--silent', '--pack-desti
 const prevPub = untar(join(prevPack, prevFile), join(prevPack, 'x'));
 
 const now = await surface(pubDir);
-const before = await surface(prevPub);
+const before = await surface(prevTree);
+const published = await surface(prevPub);
+const changedTests = sh(
+  'git',
+  [
+    'diff',
+    '--name-only',
+    '--no-renames',
+    '--diff-filter=AM',
+    prevCommit,
+    tag.commit,
+    '--',
+    'test/integration',
+  ],
+  { cwd: root }
+)
+  .split('\n')
+  .filter((f) => /^test\/integration\/[^/]+\.test\.mjs$/.test(f));
 const stage = {
   name: NAME,
   version,
   prev,
   planted: planted || null,
   subject: { ref: subjectRef, commit: tag.commit },
+  base: { ref: baseRef, commit: prevCommit },
   prevCommit,
+  changedTests,
   tools: sh('git', ['rev-parse', 'HEAD'], { cwd: root }).trim(),
   node: process.version,
   npm: sh('npm', ['--version']).trim(),
@@ -259,7 +302,8 @@ const stage = {
   })),
   surface: {
     [version]: now,
-    [prev]: before,
+    base: before,
+    published: { version: prev, ...published },
     ctxAdded: now.ctx.filter((c) => !before.ctx.includes(c)),
     ctxRemoved: before.ctx.filter((c) => !now.ctx.includes(c)),
   },

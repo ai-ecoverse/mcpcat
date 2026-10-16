@@ -26,7 +26,7 @@ mcpcat runs natively on macOS, Linux and Windows (Node ≥ 24), and inside Slicc
 
 ## Releases: certified = latest
 
-Every npm release of mcpcat is certified first. A merge to `main` tags a version, packs its tarball, and runs mcpcat's cert-review on those exact bytes. Only a `certified` verdict whose sha256 matches the tarball gets published to npm as `latest`, with provenance. A failing version stays tagged as a GitHub prerelease and is never published, so `npm install @ai-ecoverse/mcpcat` and the installer always get the last certified release. The verdict line is in each release's notes and in the `cert-review` commit status.
+Every change that alters what mcpcat ships is certified before it reaches `main`. A pull request that touches `src/`, the build, the dependencies or the release workflows gets mcpcat's cert-review on a pack of its head, and again in the merge queue on the exact tree that lands on `main`; a FAIL blocks the merge. Docs-, test- and CI-only changes skip it as "not behaviour". Each merge to `main` is then released to npm as `latest` in one step by semantic-release, with provenance, so `npm install @ai-ecoverse/mcpcat` and the installer always get certified code. The verdict line is a comment on the pull request and the `cert-review` commit status.
 
 ## Quick start
 

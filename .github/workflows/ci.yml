@@ -86,9 +86,20 @@ jobs:
         env:
           NODE_NO_WARNINGS: '1'
 
+  cert-review:
+    permissions:
+      actions: read
+      contents: write
+      issues: write
+      pull-requests: write
+      statuses: write
+    uses: ./.github/workflows/cert-review.yml
+    secrets: inherit
+
   all-green:
     if: always()
-    needs: [runner, ci, cert]
+    needs: [runner, ci, cert, cert-review]
     runs-on: ${{ vars.CERT_RUNNER || 'ubuntu-latest' }}
     steps:
-      - run: '[ "${{ needs.runner.result }}" = success ] && [ "${{ needs.ci.result }}" = success ] && [ "${{ needs.cert.result }}" = success ]'
+      - run: '[ "${{ needs.runner.result }}" = success ] && [ "${{ needs.ci.result }}" = success ] && [ "${{ needs.cert.result }}" = success ] && [ "${{ needs.cert-review.result }}" = success ]'
+      - run: 'echo "cert-review: ${{ needs.cert-review.outputs.verdict }}"'

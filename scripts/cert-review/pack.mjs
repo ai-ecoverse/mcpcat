@@ -4,7 +4,19 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { compareTarballs } from './compare.mjs';
-import { fetchPlanted, NAME, packTree, SEMVER, sh, sha, sri, worktree } from './tarball.mjs';
+import {
+  CHANGE,
+  COMMIT,
+  fetchCommit,
+  fetchPlanted,
+  NAME,
+  packTree,
+  SEMVER,
+  sh,
+  sha,
+  sri,
+  worktree,
+} from './tarball.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const { values } = parseArgs({
@@ -13,11 +25,17 @@ const { values } = parseArgs({
     out: { type: 'string' },
     planted: { type: 'string', default: '' },
     source: { type: 'string', default: 'tag' },
+    commit: { type: 'string', default: '' },
   },
 });
-const { version, planted, source } = values;
-if (!SEMVER.test(version ?? '') || !values.out || !['tag', 'npm'].includes(source)) {
-  console.error('pack: --version x.y.z, --out <dir> and --source tag|npm are required');
+const { version, planted, source, commit: change } = values;
+const versionOk = change
+  ? COMMIT.test(change) && CHANGE.test(version ?? '') && source === 'tag' && !planted
+  : SEMVER.test(version ?? '');
+if (!versionOk || !values.out || !['tag', 'npm'].includes(source)) {
+  console.error(
+    'pack: --version x.y.z (or 0.0.0-pr.<n>/0.0.0-queue.<n> with --commit <sha>), --out <dir> and --source tag|npm are required'
+  );
   process.exit(2);
 }
 if (source === 'npm' && planted) {
@@ -25,7 +43,11 @@ if (source === 'npm' && planted) {
   process.exit(2);
 }
 const out = resolve(values.out);
-const ref = planted ? fetchPlanted(root, planted) : `v${version}`;
+const ref = change
+  ? fetchCommit(root, change)
+  : planted
+    ? fetchPlanted(root, planted)
+    : `v${version}`;
 const tree = join(out, 'tree');
 worktree(root, tree, ref);
 const { commit, tgz } = packTree(tree, version, join(out, 'tmp'));

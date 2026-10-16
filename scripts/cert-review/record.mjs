@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { checkManifest, one, run, tagOnMain } from './checks.mjs';
 import { compareTarballs } from './compare.mjs';
-import { manifestOf, NAME, SEMVER, sha, sri } from './tarball.mjs';
+import { CHANGE, COMMIT, manifestOf, NAME, SEMVER, sha, sri } from './tarball.mjs';
 
 const { values } = parseArgs({
   options: {
@@ -20,12 +20,14 @@ const { values } = parseArgs({
     repo: { type: 'string', default: 'ai-ecoverse/mcpcat' },
     source: { type: 'string', default: 'tag' },
     rebuilt: { type: 'string', default: '' },
+    commit: { type: 'string', default: '' },
+    change: { type: 'string', default: '' },
   },
 });
 
 const WORKFLOW = '.github/workflows/release.yml';
 const SLSA = 'https://slsa.dev/provenance/v1';
-const { version, repo, planted, source } = values;
+const { version, repo, planted, source, commit: change } = values;
 const fromNpm = source === 'npm';
 const problems = [];
 const facts = {};
@@ -132,6 +134,14 @@ async function artifact() {
     fail(`the artifact is sha256 ${facts.sha256}, the pack job made ${expected}`);
   checkManifest(tgz, version, fail, facts);
   if (planted) return undefined;
+  if (change) {
+    facts.commit = change;
+    if (facts.gitHead !== change)
+      fail(
+        `the tarball's gitHead is ${facts.gitHead}, the ${values.change || 'change'} is ${change}`
+      );
+    return true;
+  }
   const commit = tagOnMain(repo, version, fail, facts);
   facts.commit = commit;
   if (fromNpm) {
@@ -167,8 +177,13 @@ function readVerdict() {
   }
 }
 
-if (!SEMVER.test(version ?? '') || !values.review || !values.out) {
-  console.error('record: --version x.y.z, --review and --out are required');
+const versionOk = change
+  ? COMMIT.test(change) && CHANGE.test(version ?? '') && source === 'tag'
+  : SEMVER.test(version ?? '');
+if (!versionOk || !values.review || !values.out) {
+  console.error(
+    'record: --version x.y.z (or 0.0.0-pr.<n>/0.0.0-queue.<n> with --commit <sha>), --review and --out are required'
+  );
   process.exit(2);
 }
 if (!['tag', 'npm'].includes(source)) {
@@ -207,13 +222,17 @@ const checks = [
   `- artifact: sha256 ${facts.sha256 ?? '?'} (the pack job's: ${values.sha256 || '?'}), ${facts.integrity ?? '?'}, re-hashed here`,
   planted
     ? '- tag and main: not checked, this is a planted build'
-    : `- gitHead ${facts.gitHead === null ? 'none' : (facts.gitHead ?? '?')}, tag v${version} ${facts.tagCommit ?? '?'}, main...tag ${facts.onMain ?? '?'}`,
+    : change
+      ? `- gitHead ${facts.gitHead ?? '?'}, ${values.change || 'the change'} ${change}`
+      : `- gitHead ${facts.gitHead === null ? 'none' : (facts.gitHead ?? '?')}, tag v${version} ${facts.tagCommit ?? '?'}, main...tag ${facts.onMain ?? '?'}`,
   fromNpm
     ? [
         `- the bytes already on npm: dist.integrity ${facts.registryIntegrity ?? '?'}, registry gitHead ${facts.registryGitHead ?? '?'}, provenance ${facts.provenance?.workflow?.path ?? '?'}@${facts.provenance?.workflow?.ref ?? '?'} commit ${facts.provenance?.gitCommit ?? '?'}`,
         `- rebuild from tag v${version}: ${facts.rebuild ? (facts.rebuild.identical ? 'identical' : [...facts.rebuild.explained, ...facts.rebuild.unexplained].join('; ')) : '?'}; never published from this run`,
       ].join('\n')
-    : `- npm before publish: ${facts.npm ?? 'not checked'}; only these bytes are published, with provenance, and verified on npm after`,
+    : change
+      ? '- npm: nothing is published from here; main releases to npm on merge, and only certified changes merge'
+      : `- npm: ${facts.npm ?? 'not checked'}; nothing is published from this run`,
 ].join('\n');
 const trouble = problems.length
   ? `\n\n**Problems:**\n${problems.map((p) => `- ${p}`).join('\n')}`
