@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { checkManifest, one, run, tagOnMain } from './checks.mjs';
@@ -71,6 +72,27 @@ async function provenance(m, commit) {
   return true;
 }
 
+function signatures() {
+  const audit = mkdtempSync(join(tmpdir(), 'cert-record-audit-'));
+  try {
+    writeFileSync(join(audit, 'package.json'), '{"private":true}\n');
+    run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', `${NAME}@${version}`], {
+      cwd: audit,
+    });
+    let out;
+    try {
+      out = run('npm', ['audit', 'signatures'], { cwd: audit });
+    } catch (error) {
+      out = `${error.stdout ?? ''}${error.stderr ?? ''}`;
+      fail(`npm audit signatures failed: ${one(out).slice(0, 300)}`);
+    }
+    facts.signatures = one(out);
+    if (!/verified attestation/.test(out)) fail('npm audit signatures verified no attestation');
+  } finally {
+    rmSync(audit, { recursive: true, force: true });
+  }
+}
+
 function rebuild(commit) {
   const tgz = resolve(values.rebuilt);
   if (!values.rebuilt || !existsSync(tgz)) return fail('no rebuild from the tag to compare with');
@@ -94,6 +116,7 @@ async function registry(commit) {
     fail(`the tarball's gitHead is ${facts.gitHead}, tag v${version} is ${commit}`);
   facts.npm = m.dist?.integrity === facts.integrity ? 'these bytes' : 'other bytes';
   await provenance(m, commit);
+  signatures();
   rebuild(commit);
 }
 

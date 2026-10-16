@@ -225,7 +225,10 @@ describe('cert-review record --source npm: the bytes already on npm', () => {
   const hash = (algo, enc) => createHash(algo).update(readFileSync(onNpm.tgz)).digest(enc);
   const integrity = `sha512-${hash('sha512', 'base64')}`;
 
-  function registry(name, { gitHead = COMMIT, gitCommit = COMMIT, dist = integrity } = {}) {
+  function registry(
+    name,
+    { gitHead = COMMIT, gitCommit = COMMIT, dist = integrity, signed = true } = {}
+  ) {
     const statement = {
       subject: [
         {
@@ -272,6 +275,7 @@ describe('cert-review record --source npm: the bytes already on npm', () => {
         [`repos/${REPO}/git/ref/tags/v${VERSION}`]: { object: { type: 'commit', sha: COMMIT } },
         [`repos/${REPO}/compare/main...${COMMIT}`]: { status: 'behind' },
       },
+      signed,
     };
     const bin = join(work, `${name}-bin`);
     mkdirSync(bin, { recursive: true });
@@ -282,7 +286,14 @@ describe('cert-review record --source npm: the bytes already on npm', () => {
     writeFileSync(
       join(bin, 'npm'),
       stub(
-        `if (a[0] === 'view' && a[1] === '${NAME}@${VERSION}' && a[2] === '--json') { process.stdout.write(JSON.stringify(f.npm)); } else { process.exit(1); }`
+        [
+          `const spec = '${NAME}@${VERSION}';`,
+          "if (a[0] === 'view' && a[1] === spec && a[2] === '--json') process.stdout.write(JSON.stringify(f.npm));",
+          "else if (a[0] === 'install' && a.at(-1) === spec) process.exit(0);",
+          "else if (a[0] === 'audit' && a[1] === 'signatures' && f.signed) process.stdout.write('1 package has a verified attestation\\n');",
+          "else if (a[0] === 'audit' && a[1] === 'signatures') { process.stderr.write('1 package has an invalid attestation\\n'); process.exit(1); }",
+          'else process.exit(1);',
+        ].join('\n')
       )
     );
     writeFileSync(
@@ -369,6 +380,12 @@ describe('cert-review record --source npm: the bytes already on npm', () => {
     const r = record('npm-int', registry('npm-int', { dist: 'sha512-AAAA' }));
     assert.equal(r.code, 1, r.out);
     assert.match(r.rec.line, /npm's dist\.integrity is sha512-AAAA/);
+  });
+
+  it('fails when npm audit signatures does not verify the attestation', () => {
+    const r = record('npm-sig', registry('npm-sig', { signed: false }));
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.rec.line, /npm audit signatures failed: 1 package has an invalid attestation/);
   });
 
   it('fails when the rebuild differs from the npm bytes in a file other than package.json', () => {
