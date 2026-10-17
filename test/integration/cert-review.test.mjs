@@ -795,11 +795,13 @@ describe('cert-review shipped: which changes are behaviour', () => {
 
 describe('cert-review bind: every artifact is the one its producer output, by id and digest', () => {
   const D = (c) => c.repeat(64);
-  const art = (id, name, digest, run = 5) => ({
+  const STARTED = '2026-10-17T20:00:00Z';
+  const art = (id, name, digest, run = 5, created_at = '2026-10-17T20:05:00Z') => ({
     id,
     name,
     digest: `sha256:${digest}`,
     expired: false,
+    created_at,
     workflow_run: { id: run },
   });
   const TARBALL = art(71, 'mcpcat-tarball-1.2.3', D('a'));
@@ -819,15 +821,14 @@ describe('cert-review bind: every artifact is the one its producer output, by id
     'mcpcat-tarball-',
     '--prefix',
     'cert-review-',
-    '--allow',
-    'cert-review-record-1.2.3',
   ];
   function bind(name, { listed = [TARBALL, VERDICT, SUITES], byId = listed, args = ARGS } = {}) {
     const bin = join(work, `${name}-bin`);
     mkdirSync(bin, { recursive: true });
-    const ids = Object.fromEntries(
-      byId.map((a) => [`repos/ai-ecoverse/mcpcat/actions/artifacts/${a.id}`, a])
-    );
+    const ids = Object.fromEntries([
+      ['repos/ai-ecoverse/mcpcat/actions/runs/5', { id: 5, run_started_at: STARTED }],
+      ...byId.map((a) => [`repos/ai-ecoverse/mcpcat/actions/artifacts/${a.id}`, a]),
+    ]);
     writeFileSync(
       join(bin, 'gh'),
       [
@@ -855,17 +856,21 @@ describe('cert-review bind: every artifact is the one its producer output, by id
         VERDICT,
         SUITES,
         art(9, 'coverage', D('d')),
-        art(10, 'cert-review-record-1.2.3', D('e')),
+        art(10, 'cert-review-verdict-1.2.3', D('e'), 5, '2026-10-17T19:00:00Z'),
       ],
     });
     assert.equal(r.code, 0, r.out);
+    assert.match(
+      r.out,
+      /bind: cert-review-verdict-1\.2\.3 \(10\) is from an earlier attempt, never read/
+    );
     assert.match(
       r.out,
       new RegExp(`bind: cert-review-suites-1\\.2\\.3 is artifact 73 sha256:${D('c')} from run 5`)
     );
     assert.equal(
       r.line,
-      "bind: ok, 3 artifacts bound by id and digest, and no other in this run's namespaces"
+      "bind: ok, 3 artifacts bound by id and digest, and no other from this attempt in this run's namespaces"
     );
   });
 

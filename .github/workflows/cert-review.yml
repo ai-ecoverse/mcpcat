@@ -367,6 +367,7 @@ jobs:
         run: node scripts/cert-review/bind.mjs --repo "$GH_REPO" --run "$GITHUB_RUN_ID" --artifact "$SPEC"
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        if: needs.pack.outputs.tarball-id != ''
         with:
           artifact-ids: ${{ needs.pack.outputs.tarball-id }}
           digest-mismatch: error
@@ -529,11 +530,10 @@ jobs:
           VERDICT: cert-review-verdict-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}=${{ needs.review.outputs.verdict-id }}@${{ needs.review.outputs.verdict-digest }}
           SUITES: cert-review-suites-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}=${{ needs.review.outputs.suites-id }}@${{ needs.review.outputs.suites-digest }}
           EVIDENCE: cert-review-evidence-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}=${{ needs.review.outputs.evidence-id }}@${{ needs.review.outputs.evidence-digest }}
-          RECORD: cert-review-record-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
         run: |
           out=$(node scripts/cert-review/bind.mjs --repo "$GH_REPO" --run "$GITHUB_RUN_ID" \
             --artifact "$TARBALL" --artifact "$VERDICT" --artifact "$SUITES" --optional "$EVIDENCE" \
-            --prefix mcpcat-tarball- --prefix mcpcat-npm-tarball- --prefix cert-review- --allow "$RECORD") && ok=true || ok=false
+            --prefix mcpcat-tarball- --prefix mcpcat-npm-tarball- --prefix cert-review-) && ok=true || ok=false
           echo "$out"
           last=$(printf '%s\n' "$out" | tail -1)
           [[ "$last" == "bind: ok, "* ]] || ok=false
@@ -542,7 +542,7 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         id: get-verdict
-        if: steps.bind.outputs.ok == 'true'
+        if: steps.bind.outputs.ok == 'true' && needs.review.outputs.verdict-id != ''
         continue-on-error: true
         with:
           artifact-ids: ${{ needs.review.outputs.verdict-id }}
@@ -551,7 +551,7 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         id: get-tarball
-        if: steps.bind.outputs.ok == 'true'
+        if: steps.bind.outputs.ok == 'true' && needs.pack.outputs.tarball-id != ''
         continue-on-error: true
         with:
           artifact-ids: ${{ needs.pack.outputs.tarball-id }}
@@ -560,7 +560,7 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         id: get-suites
-        if: steps.bind.outputs.ok == 'true'
+        if: steps.bind.outputs.ok == 'true' && needs.review.outputs.suites-id != ''
         continue-on-error: true
         with:
           artifact-ids: ${{ needs.review.outputs.suites-id }}
@@ -585,6 +585,7 @@ jobs:
             gap=(--gap "${BIND_LINE:-bind printed no verdict}")
           elif [ "$FETCHED" != success,success,success ]; then
             gap=(--gap "the verdict, tarball and suites artifacts didn't all download with their digests ($FETCHED)")
+            rm -rf "$RUNNER_TEMP/cert-review" "$RUNNER_TEMP/tarball" "$RUNNER_TEMP/evidence"
           fi
           if node scripts/cert-review/record.mjs --version "$VERSION" --review "$RUNNER_TEMP/cert-review" \
             --out "$RUNNER_TEMP/record" --run "$RUN_URL" --repo "$GH_REPO" ${PLANTED:+--planted "$PLANTED"} \

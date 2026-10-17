@@ -9,7 +9,6 @@ const { values } = parseArgs({
     artifact: { type: 'string', multiple: true, default: [] },
     optional: { type: 'string', multiple: true, default: [] },
     prefix: { type: 'string', multiple: true, default: [] },
-    allow: { type: 'string', multiple: true, default: [] },
   },
 });
 const { repo } = values;
@@ -52,7 +51,9 @@ function check({ name, id, digest }) {
 
 function extras() {
   let all;
+  let since;
   try {
+    since = api(`repos/${repo}/actions/runs/${values.run}`).run_started_at;
     all = JSON.parse(
       run('gh', [
         'api',
@@ -66,9 +67,14 @@ function extras() {
       `this run's artifacts couldn't be listed (${one(error.stderr || error.message).slice(0, 200)})`
     );
   }
+  if (!since) return problems.push("this run's attempt has no start time");
   for (const a of all) {
     if (!values.prefix.some((p) => String(a.name).startsWith(p))) continue;
-    if (bound.includes(a.id) || values.allow.includes(a.name)) continue;
+    if (bound.includes(a.id)) continue;
+    if (String(a.created_at ?? '') < since) {
+      console.log(`bind: ${a.name} (${a.id}) is from an earlier attempt, never read`);
+      continue;
+    }
     problems.push(`an unexpected artifact ${one(a.name)} (${a.id}) in this run`);
   }
   return undefined;
@@ -89,5 +95,5 @@ if (problems.length) {
   process.exit(1);
 }
 console.log(
-  `bind: ok, ${bound.length} artifacts bound by id and digest, and no other in this run's namespaces`
+  `bind: ok, ${bound.length} artifacts bound by id and digest, and no other from this attempt in this run's namespaces`
 );
