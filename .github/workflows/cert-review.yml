@@ -87,6 +87,7 @@ jobs:
             test/integration/cert-review.test.mjs
             test/integration/cert-runner.test.mjs
             test/integration/cert-self-guard.test.mjs
+            test/integration/cert-verify.test.mjs
           approval-label: cert-review-approved
 
   plan:
