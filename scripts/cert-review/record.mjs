@@ -31,9 +31,14 @@ const { version, repo, planted, source, commit: change } = values;
 const fromNpm = source === 'npm';
 const problems = [];
 const facts = {};
+const gaps = new Set();
 const fail = (what) => {
   problems.push(what);
   return undefined;
+};
+const gap = (what) => {
+  gaps.add(what);
+  return fail(what);
 };
 
 function onRegistry() {
@@ -50,7 +55,7 @@ async function provenance(m, commit) {
   const url = m.dist?.attestations?.url;
   if (!url) return fail('no attestations on npm');
   const res = await fetch(url);
-  if (!res.ok) return fail(`attestations answered ${res.status}`);
+  if (!res.ok) return gap(`attestations answered ${res.status}`);
   const prov = ((await res.json()).attestations ?? []).find((b) => b.predicateType === SLSA);
   if (!prov) return fail('no SLSA provenance attestation');
   const statement = JSON.parse(
@@ -97,7 +102,7 @@ function signatures() {
 
 function rebuild(commit) {
   const tgz = resolve(values.rebuilt);
-  if (!values.rebuilt || !existsSync(tgz)) return fail('no rebuild from the tag to compare with');
+  if (!values.rebuilt || !existsSync(tgz)) return gap('no rebuild from the tag to compare with');
   const head = manifestOf(tgz).gitHead ?? null;
   if (head !== commit) fail(`the rebuild's gitHead is ${head}, tag v${version} is ${commit}`);
   const diff = compareTarballs(resolve(values.tarball), tgz);
@@ -124,12 +129,12 @@ async function registry(commit) {
 
 async function artifact() {
   const tgz = resolve(values.tarball ?? '');
-  if (!values.tarball || !existsSync(tgz)) return fail('no release artifact to check');
+  if (!values.tarball || !existsSync(tgz)) return gap('no release artifact to check');
   facts.sha256 = sha('sha256', tgz);
   facts.integrity = sri(tgz);
   facts.sha512 = sha('sha512', tgz);
   const expected = values.sha256.trim().toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(expected)) fail(`the pack job's sha256 is "${one(expected)}"`);
+  if (!/^[0-9a-f]{64}$/.test(expected)) gap(`the pack job's sha256 is "${one(expected)}"`);
   else if (expected !== facts.sha256)
     fail(`the artifact is sha256 ${facts.sha256}, the pack job made ${expected}`);
   checkManifest(tgz, version, fail, facts);
@@ -158,12 +163,12 @@ function readVerdict() {
   try {
     const v = JSON.parse(readFileSync(join(values.review, 'verdict.json'), 'utf8'));
     if (v?.verdict !== 'certified' && v?.verdict !== 'fail') {
-      problems.push(`verdict.json says "${one(v?.verdict)}", neither certified nor fail`);
+      gap(`verdict.json says "${one(v?.verdict)}", neither certified nor fail`);
       return undefined;
     }
     const known = v.known === undefined ? [] : v.known;
     if (!Array.isArray(known)) {
-      problems.push('verdict.json "known" is not a list');
+      gap('verdict.json "known" is not a list');
       return { verdict: v.verdict, known: [], reason: one(v.reason) };
     }
     return {
@@ -172,7 +177,7 @@ function readVerdict() {
       reason: one(v.reason).slice(0, 300),
     };
   } catch (error) {
-    problems.push(`no readable verdict.json (${one(error.message)})`);
+    gap(`no readable verdict.json (${one(error.message)})`);
     return undefined;
   }
 }
@@ -193,11 +198,11 @@ if (!['tag', 'npm'].includes(source)) {
 if (fromNpm && planted) problems.push('--source npm never reviews a planted build');
 if (planted) problems.push(`a planted build of ${planted}, not a release: never certified`);
 if (values.upstream && values.upstream !== 'success')
-  problems.push(`held: the review job ended ${values.upstream}`);
+  gap(`held: the review job ended ${values.upstream}`);
 try {
   await artifact();
 } catch (error) {
-  problems.push(`artifact check failed: ${one(error.stderr || error.message).slice(0, 300)}`);
+  gap(`artifact check failed: ${one(error.stderr || error.message).slice(0, 300)}`);
 }
 const review = readVerdict();
 const subject = `${NAME}@${version}${planted ? ` (planted ${planted})` : ''}`;
@@ -211,10 +216,12 @@ if (!problems.length && review?.verdict === 'certified') {
     ...(review?.verdict === 'certified' ? ['the reviewer certified it'] : []),
     ...problems,
   ];
-  line = `cert-ci: FAIL ${subject}: ${why.join('; ')} (${ci})`;
+  const failed = review?.verdict === 'fail' || problems.some((p) => !gaps.has(p));
+  line = `cert-ci: ${failed ? 'FAIL' : 'INCOMPLETE'} ${subject}: ${why.join('; ')} (${ci})`;
 }
 
 const certified = line.startsWith('certified ');
+const state = certified ? 'success' : line.startsWith('cert-ci: INCOMPLETE ') ? 'error' : 'failure';
 const comment = existsSync(join(values.review, 'comment.md'))
   ? readFileSync(join(values.review, 'comment.md'), 'utf8').trim()
   : '**Cert review:** the reviewer wrote no comment.';
@@ -244,7 +251,7 @@ writeFileSync(join(values.out, 'line.txt'), `${line}\n`);
 writeFileSync(join(values.out, 'body.md'), body);
 writeFileSync(
   join(values.out, 'record.json'),
-  `${JSON.stringify({ name: NAME, version, source, planted: planted || null, certified, sha256: certified ? facts.sha256 : null, line, commit: facts.commit ?? null, facts, problems, review }, null, 2)}\n`
+  `${JSON.stringify({ name: NAME, version, source, planted: planted || null, certified, state, sha256: certified ? facts.sha256 : null, line, commit: facts.commit ?? null, facts, problems, review }, null, 2)}\n`
 );
 console.log(line);
 for (const p of problems) console.error(`problem: ${p}`);
