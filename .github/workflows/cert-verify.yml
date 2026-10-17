@@ -167,8 +167,15 @@ jobs:
             gh issue comment "$open" --body "Again in $RUN_URL: $LINE" > /dev/null
             echo "cert-verify: alert added to #$open"
           else
-            printf 'cert-verify of @ai-ecoverse/mcpcat@%s failed in %s.\n\n```\n%s\n```\n\nTreat this as a supply-chain alert: the bytes on npm, their provenance or the release notes do not match v%s on main.\n' \
-              "$VERSION" "$RUN_URL" "$LINE" "$VERSION" > "$RUNNER_TEMP/alert.md"
+            {
+              echo "cert-verify of @ai-ecoverse/mcpcat@$VERSION failed in $RUN_URL."
+              echo
+              echo '```'
+              echo "$LINE"
+              echo '```'
+              echo
+              echo "Treat this as a supply-chain alert: the bytes on npm, their provenance or the release notes do not match v$VERSION on main."
+            } > "$RUNNER_TEMP/alert.md"
             echo "cert-verify: alert filed as $(gh issue create --title "$title" --body-file "$RUNNER_TEMP/alert.md")"
           fi
           echo "::error title=cert-verify::$LINE"
