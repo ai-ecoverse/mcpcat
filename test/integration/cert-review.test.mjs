@@ -793,70 +793,143 @@ describe('cert-review shipped: which changes are behaviour', () => {
   });
 });
 
-describe('cert-review bind: evidence is the artifact its producer output, by id and digest', () => {
-  const DIGEST = 'a'.repeat(64);
-  function bind(name, artifact, args) {
+describe('cert-review bind: every artifact is the one its producer output, by id and digest', () => {
+  const D = (c) => c.repeat(64);
+  const STARTED = '2026-10-17T20:00:00Z';
+  const art = (id, name, digest, run = 5, created_at = '2026-10-17T20:05:00Z') => ({
+    id,
+    name,
+    digest: `sha256:${digest}`,
+    expired: false,
+    created_at,
+    workflow_run: { id: run },
+  });
+  const TARBALL = art(71, 'mcpcat-tarball-1.2.3', D('a'));
+  const VERDICT = art(72, 'cert-review-verdict-1.2.3', D('b'));
+  const SUITES = art(73, 'cert-review-suites-1.2.3', D('c'));
+  const spec = (a, digest = a.digest) => `${a.name}=${a.id}@${digest}`;
+  const ARGS = [
+    '--artifact',
+    spec(TARBALL),
+    '--artifact',
+    spec(VERDICT),
+    '--artifact',
+    spec(SUITES),
+    '--optional',
+    'cert-review-evidence-1.2.3=@',
+    '--prefix',
+    'mcpcat-tarball-',
+    '--prefix',
+    'cert-review-',
+  ];
+  function bind(name, { listed = [TARBALL, VERDICT, SUITES], byId = listed, args = ARGS } = {}) {
     const bin = join(work, `${name}-bin`);
     mkdirSync(bin, { recursive: true });
+    const ids = Object.fromEntries([
+      ['repos/ai-ecoverse/mcpcat/actions/runs/5', { id: 5, run_started_at: STARTED }],
+      ...byId.map((a) => [`repos/ai-ecoverse/mcpcat/actions/artifacts/${a.id}`, a]),
+    ]);
     writeFileSync(
       join(bin, 'gh'),
-      `#!/usr/bin/env node\nconst a = process.argv.slice(2);\nif (a[0] === 'api' && a[1] === 'repos/ai-ecoverse/mcpcat/actions/artifacts/77') process.stdout.write(${JSON.stringify(JSON.stringify(artifact))});\nelse process.exit(1);\n`
+      [
+        '#!/usr/bin/env node',
+        'const a = process.argv.slice(2);',
+        `const ids = ${JSON.stringify(ids)};`,
+        `const listed = ${JSON.stringify(listed)};`,
+        "if (a[0] === 'api' && a[1] === '--paginate' && a.at(-1) === 'repos/ai-ecoverse/mcpcat/actions/runs/5/artifacts?per_page=100') process.stdout.write(JSON.stringify([{ artifacts: listed }]));",
+        "else if (a[0] === 'api' && ids[a[1]]) process.stdout.write(JSON.stringify(ids[a[1]]));",
+        'else process.exit(1);',
+        '',
+      ].join('\n')
     );
     chmodSync(join(bin, 'gh'), 0o755);
-    const r = tool(
-      'bind.mjs',
-      [
-        '--run',
-        '5',
-        '--name',
-        'cert-review-suites-1.2.3',
-        '--id',
-        '77',
-        '--digest',
-        DIGEST,
-        ...args,
-      ],
-      { PATH: [bin, process.env.PATH].join(delimiter) }
-    );
+    const r = tool('bind.mjs', ['--run', '5', ...args], {
+      PATH: [bin, process.env.PATH].join(delimiter),
+    });
     return { ...r, line: r.out.trim().split('\n').at(-1) };
   }
-  const real = {
-    id: 77,
-    name: 'cert-review-suites-1.2.3',
-    digest: `sha256:${DIGEST}`,
-    expired: false,
-    workflow_run: { id: 5 },
-  };
 
-  it('binds the artifact whose name, run and digest are the producer outputs', () => {
-    const r = bind('bind-ok', real, []);
+  it('binds every artifact whose name, run and digest are its producer outputs', () => {
+    const r = bind('bind-ok', {
+      listed: [
+        TARBALL,
+        VERDICT,
+        SUITES,
+        art(9, 'coverage', D('d')),
+        art(10, 'cert-review-verdict-1.2.3', D('e'), 5, '2026-10-17T19:00:00Z'),
+      ],
+    });
     assert.equal(r.code, 0, r.out);
+    assert.match(
+      r.out,
+      /bind: cert-review-verdict-1\.2\.3 \(10\) is from an earlier attempt, never read/
+    );
+    assert.match(
+      r.out,
+      new RegExp(`bind: cert-review-suites-1\\.2\\.3 is artifact 73 sha256:${D('c')} from run 5`)
+    );
     assert.equal(
       r.line,
-      `bind: cert-review-suites-1.2.3 is artifact 77 sha256:${DIGEST} from run 5`
+      "bind: ok, 3 artifacts bound by id and digest, and no other from this attempt in this run's namespaces"
     );
   });
 
-  for (const [what, artifact, args, why] of [
+  it('is INCOMPLETE when a planted extra artifact sits in the namespace, even one the old name download would have skipped', () => {
+    const planted = art(80, 'cert-review-verdict-1.2.3-planted', D('f'));
+    const r = bind('bind-extra', { listed: [TARBALL, VERDICT, SUITES, planted] });
+    assert.equal(r.code, 1, r.out);
+    assert.match(
+      r.line,
+      /^bind: INCOMPLETE an unexpected artifact cert-review-verdict-1\.2\.3-planted \(80\) in this run$/
+    );
+  });
+
+  it('is INCOMPLETE when an artifact the producer output no id for exists anyway', () => {
+    const evidence = art(81, 'cert-review-evidence-1.2.3', D('9'));
+    const r = bind('bind-noid', { listed: [TARBALL, VERDICT, SUITES, evidence] });
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.line, /unexpected artifact cert-review-evidence-1\.2\.3 \(81\)/);
+  });
+
+  for (const [what, opts, why] of [
     [
-      'another digest',
-      { ...real, digest: `sha256:${'b'.repeat(64)}` },
-      [],
-      /has digest sha256:b{64}/,
+      'a digest mismatch',
+      { byId: [TARBALL, { ...VERDICT, digest: `sha256:${D('0')}` }, SUITES] },
+      /cert-review-verdict-1\.2\.3: artifact 72 has digest sha256:0{64}/,
     ],
-    ['another run', { ...real, workflow_run: { id: 6 } }, [], /is from run 6/],
+    [
+      'another run',
+      { byId: [TARBALL, VERDICT, { ...SUITES, workflow_run: { id: 6 } }] },
+      /artifact 73 is from run 6/,
+    ],
     [
       'another name',
-      { ...real, name: 'cert-review-suites-1.2.3-x' },
-      [],
-      /is named cert-review-suites-1\.2\.3-x/,
+      { byId: [{ ...TARBALL, name: 'mcpcat-tarball-9.9.9' }, VERDICT, SUITES] },
+      /artifact 71 is named mcpcat-tarball-9\.9\.9/,
     ],
-    ['no id from the producer', real, ['--id', ''], /the producer output no artifact id/],
-    ['no digest from the producer', real, ['--digest', ''], /the producer output no sha256 digest/],
-    ['an artifact that cannot be read', real, ['--id', '78'], /artifact 78 couldn't be read/],
+    [
+      'an expired artifact',
+      { byId: [TARBALL, { ...VERDICT, expired: true }, SUITES] },
+      /artifact 72 has expired/,
+    ],
+    [
+      'no id from the producer',
+      { args: ['--artifact', 'cert-review-verdict-1.2.3=@'] },
+      /cert-review-verdict-1\.2\.3: the producer output no artifact id/,
+    ],
+    [
+      'no digest from the producer',
+      { args: ['--artifact', 'cert-review-verdict-1.2.3=72@'] },
+      /cert-review-verdict-1\.2\.3: the producer output no sha256 digest/,
+    ],
+    [
+      'an artifact that cannot be read',
+      { byId: [TARBALL, SUITES] },
+      /artifact 72 couldn't be read/,
+    ],
   ]) {
     it(`is INCOMPLETE for ${what}`, () => {
-      const r = bind(`bind-${what.replace(/\W+/g, '-')}`, artifact, args);
+      const r = bind(`bind-${what.replace(/\W+/g, '-')}`, opts);
       assert.equal(r.code, 1, r.out);
       assert.match(r.line, /^bind: INCOMPLETE /);
       assert.match(r.line, why);

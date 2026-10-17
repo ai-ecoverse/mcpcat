@@ -260,6 +260,8 @@ jobs:
       LEFTHOOK: '0'
     outputs:
       sha256: ${{ steps.pack.outputs.sha256 }}
+      tarball-id: ${{ steps.tarball.outputs.artifact-id }}
+      tarball-digest: ${{ steps.tarball.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -288,6 +290,7 @@ jobs:
           fi
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        id: tarball
         with:
           name: ${{ needs.plan.outputs.artifact }}
           path: |
@@ -304,6 +307,10 @@ jobs:
     runs-on: ${{ vars.CERT_RUNNER }}
     timeout-minutes: 75
     outputs:
+      suites-id: ${{ steps.suites.outputs.artifact-id }}
+      suites-digest: ${{ steps.suites.outputs.artifact-digest }}
+      verdict-id: ${{ steps.verdict.outputs.artifact-id }}
+      verdict-digest: ${{ steps.verdict.outputs.artifact-digest }}
       evidence-id: ${{ steps.evidence.outputs.artifact-id }}
       evidence-digest: ${{ steps.evidence.outputs.artifact-digest }}
     concurrency:
@@ -353,15 +360,24 @@ jobs:
           chmod +x "$RUNNER_TEMP/bin/cert-run"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
+      - name: The tarball is the artifact the pack job output, by id and digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SPEC: ${{ needs.plan.outputs.artifact }}=${{ needs.pack.outputs.tarball-id }}@${{ needs.pack.outputs.tarball-digest }}
+        run: node scripts/cert-review/bind.mjs --repo "$GH_REPO" --run "$GITHUB_RUN_ID" --artifact "$SPEC"
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        if: needs.pack.outputs.tarball-id != ''
         with:
-          name: ${{ needs.plan.outputs.artifact }}
+          artifact-ids: ${{ needs.pack.outputs.tarball-id }}
+          digest-mismatch: error
           path: ${{ runner.temp }}/tarball
 
       - name: Stage the artifact, the rebuild, the base, the previous npm release and the pinned kernels (no secrets in this step)
         run: |
           npm ci --no-audit --no-fund
-          tgz=$(ls "$RUNNER_TEMP"/tarball/*.tgz)
+          tgz=$(find "$RUNNER_TEMP/tarball" -maxdepth 1 -name '*.tgz')
+          [ "$(printf '%s\n' "$tgz" | grep -c .)" = 1 ] || { echo "::error::INCOMPLETE: the tarball artifact holds $(printf '%s\n' "$tgz" | grep -c .) tarballs, not one"; exit 1; }
           if [ "$MODE" = dispatch ]; then
             node scripts/cert-review/stage.mjs --version "$VERSION" --prev "$PREV" --work "$WORK" --tarball "$tgz" ${PLANTED:+--planted "$PLANTED"}
           else
@@ -372,7 +388,7 @@ jobs:
         run: node scripts/cert-review/suites.mjs --work "$WORK" || echo "::warning::some suites failed; the review reads suites.json, and record recomputes them in code"
 
       - name: The code-made evidence, uploaded before the reviewer runs, bound by its id and digest
-        id: evidence
+        id: suites
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: cert-review-suites-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
@@ -435,6 +451,7 @@ jobs:
             Don't edit, commit or push anything, and don't comment on issues or pull requests other than the ones you file.
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        id: verdict
         if: always()
         with:
           name: cert-review-verdict-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
@@ -455,6 +472,7 @@ jobs:
           cp -r "$WORK/logs" "$RUNNER_TEMP/evidence/" 2> /dev/null || true
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        id: evidence
         if: always()
         with:
           name: cert-review-evidence-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
@@ -505,36 +523,47 @@ jobs:
         with:
           node-version: '24'
 
+      - name: Every artifact by the id and digest its producer output, and no other in this run's namespaces
+        id: bind
+        env:
+          TARBALL: ${{ needs.plan.outputs.artifact }}=${{ needs.pack.outputs.tarball-id }}@${{ needs.pack.outputs.tarball-digest }}
+          VERDICT: cert-review-verdict-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}=${{ needs.review.outputs.verdict-id }}@${{ needs.review.outputs.verdict-digest }}
+          SUITES: cert-review-suites-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}=${{ needs.review.outputs.suites-id }}@${{ needs.review.outputs.suites-digest }}
+          EVIDENCE: cert-review-evidence-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}=${{ needs.review.outputs.evidence-id }}@${{ needs.review.outputs.evidence-digest }}
+        run: |
+          out=$(node scripts/cert-review/bind.mjs --repo "$GH_REPO" --run "$GITHUB_RUN_ID" \
+            --artifact "$TARBALL" --artifact "$VERDICT" --artifact "$SUITES" --optional "$EVIDENCE" \
+            --prefix mcpcat-tarball- --prefix mcpcat-npm-tarball- --prefix cert-review-) && ok=true || ok=false
+          echo "$out"
+          last=$(printf '%s\n' "$out" | tail -1)
+          [[ "$last" == "bind: ok, "* ]] || ok=false
+          [[ "$last" == "bind: "* ]] || last="bind: INCOMPLETE bind printed no verdict"
+          { echo "ok=$ok"; echo "line=$last"; } >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        id: get-verdict
+        if: steps.bind.outputs.ok == 'true' && needs.review.outputs.verdict-id != ''
         continue-on-error: true
         with:
-          name: cert-review-verdict-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
+          artifact-ids: ${{ needs.review.outputs.verdict-id }}
+          digest-mismatch: error
           path: ${{ runner.temp }}/cert-review
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        id: get-tarball
+        if: steps.bind.outputs.ok == 'true' && needs.pack.outputs.tarball-id != ''
         continue-on-error: true
         with:
-          name: ${{ needs.plan.outputs.artifact }}
+          artifact-ids: ${{ needs.pack.outputs.tarball-id }}
+          digest-mismatch: error
           path: ${{ runner.temp }}/tarball
 
-      - name: The code-made evidence is the artifact the review job output before the reviewer ran
-        id: bind
-        env:
-          ID: ${{ needs.review.outputs.evidence-id }}
-          DIGEST: ${{ needs.review.outputs.evidence-digest }}
-          NAME: cert-review-suites-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
-        run: |
-          out=$(node scripts/cert-review/bind.mjs --repo "$GH_REPO" --run "$GITHUB_RUN_ID" --name "$NAME" --id "$ID" --digest "$DIGEST") && ok=true || ok=false
-          echo "$out"
-          [[ "$out" == "bind: "* ]] || out="bind: INCOMPLETE $NAME: bind printed no verdict"
-          { echo "ok=$ok"; echo "line=$out"; } >> "$GITHUB_OUTPUT"
-
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        id: evidence
-        if: steps.bind.outputs.ok == 'true'
+        id: get-suites
+        if: steps.bind.outputs.ok == 'true' && needs.review.outputs.suites-id != ''
         continue-on-error: true
         with:
-          artifact-ids: ${{ needs.review.outputs.evidence-id }}
+          artifact-ids: ${{ needs.review.outputs.suites-id }}
           digest-mismatch: error
           path: ${{ runner.temp }}/evidence
 
@@ -543,19 +572,20 @@ jobs:
         env:
           BOUND: ${{ steps.bind.outputs.ok }}
           BIND_LINE: ${{ steps.bind.outputs.line }}
-          FETCHED: ${{ steps.evidence.outcome }}
-          EVIDENCE_ID: ${{ needs.review.outputs.evidence-id }}
+          FETCHED: ${{ steps.get-verdict.outcome }},${{ steps.get-tarball.outcome }},${{ steps.get-suites.outcome }}
         run: |
           mkdir -p "$RUNNER_TEMP/cert-review" "$RUNNER_TEMP/tarball"
-          tgz=$(find "$RUNNER_TEMP/tarball" -maxdepth 1 -name '*.tgz' | head -1)
+          tgz=$(find "$RUNNER_TEMP/tarball" -maxdepth 1 -name '*.tgz')
+          [ "$(printf '%s\n' "$tgz" | grep -c .)" = 1 ] || tgz=
           rebuilt=$(find "$RUNNER_TEMP/tarball/rebuilt" -maxdepth 1 -name '*.tgz' 2> /dev/null | head -1 || true)
           change=()
           [ "$MODE" = dispatch ] || change=(--commit "$PLAN_COMMIT" --change "$CHANGE")
           gap=()
           if [ "$BOUND" != true ]; then
             gap=(--gap "${BIND_LINE:-bind printed no verdict}")
-          elif [ "$FETCHED" != success ]; then
-            gap=(--gap "the evidence artifact $EVIDENCE_ID didn't download with its digest ($FETCHED)")
+          elif [ "$FETCHED" != success,success,success ]; then
+            gap=(--gap "the verdict, tarball and suites artifacts didn't all download with their digests ($FETCHED)")
+            rm -rf "$RUNNER_TEMP/cert-review" "$RUNNER_TEMP/tarball" "$RUNNER_TEMP/evidence"
           fi
           if node scripts/cert-review/record.mjs --version "$VERSION" --review "$RUNNER_TEMP/cert-review" \
             --out "$RUNNER_TEMP/record" --run "$RUN_URL" --repo "$GH_REPO" ${PLANTED:+--planted "$PLANTED"} \
