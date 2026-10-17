@@ -36,6 +36,51 @@ function tool(script, args, extra = {}) {
   return { code: r.status, out: `${r.stdout}${r.stderr}` };
 }
 
+const ROWS = JSON.parse(readFileSync(join(tools, 'rows.json'), 'utf8'));
+
+function evidence(name, version, sha256, change = (_stage, _suites) => {}) {
+  const dir = join(work, `${name}-evidence`);
+  mkdirSync(dir, { recursive: true });
+  const kernels = [{ version: '1.2.3' }, { version: '1.0.0' }];
+  const names = [...new Set(Object.values(ROWS).flat())];
+  const stage = {
+    version,
+    artifact: { sha256 },
+    kernels,
+    changedTests: [],
+    rebuildDiff: { identical: true, explained: [], unexplained: [] },
+    surface: { [version]: { kernelBundle: { imports: [] } } },
+  };
+  const ok = (n, kernel) => ({
+    name: n,
+    ok: true,
+    exit: 0,
+    pass: 10,
+    fail: 0,
+    failed: [],
+    kernelSeen: kernel ? true : undefined,
+  });
+  const suites = {
+    version,
+    rows: ROWS,
+    hostRows: names.slice(0, 3),
+    kernelRows: names.slice(3),
+    negative: [],
+    results: [
+      ok('subject host suite'),
+      ok('rows host'),
+      ...kernels.flatMap((k) => [
+        ok(`subject cert kernel ${k.version}`, true),
+        ok(`rows kernel ${k.version}`, true),
+      ]),
+    ],
+  };
+  change(stage, suites);
+  writeFileSync(join(dir, 'stage.json'), JSON.stringify(stage));
+  writeFileSync(join(dir, 'suites.json'), JSON.stringify(suites));
+  return dir;
+}
+
 const good = tarball('good', { name: NAME, version: VERSION });
 const other = tarball('other', { name: NAME, version: VERSION, description: 'other bytes' });
 
@@ -249,6 +294,8 @@ describe('cert-review record --source npm: the bytes already on npm', () => {
         rebuild,
         '--repo',
         REPO,
+        '--evidence',
+        evidence(name, VERSION, sha256),
       ],
       env
     );
@@ -387,7 +434,14 @@ describe('cert-review record --commit: a pull request or merge group under revie
     gitHead: 'd'.repeat(40),
   });
 
-  function record(name, tgz, sha256, extra = [], verdict = { verdict: 'certified', known: [] }) {
+  function record(
+    name,
+    tgz,
+    sha256,
+    extra = [],
+    verdict = { verdict: 'certified', known: [] },
+    change = undefined
+  ) {
     const dir = join(work, `${name}-review`);
     mkdirSync(dir, { recursive: true });
     if (verdict) writeFileSync(join(dir, 'verdict.json'), JSON.stringify(verdict));
@@ -407,6 +461,8 @@ describe('cert-review record --commit: a pull request or merge group under revie
       HEAD,
       '--change',
       'pull request #42',
+      '--evidence',
+      evidence(name, CHANGE, sha256, change),
       ...extra,
     ]);
     const rec =
@@ -481,6 +537,168 @@ describe('cert-review record --commit: a pull request or merge group under revie
     assert.equal(r.code, 1, r.out);
     assert.match(r.rec.line, /^cert-ci: FAIL .*the reviewer: a planted leak/);
     assert.equal(r.rec.state, 'failure');
+  });
+
+  const allClear = { verdict: 'certified', known: [] };
+  const coded = (name, change, extra = []) =>
+    record(name, change.tgz ?? changeTgz.tgz, changeTgz.sha256, extra, allClear, change.fn);
+  const changeTgz = change;
+
+  it('a crafted all-clear verdict never clears a suite that failed in code', () => {
+    const r = coded('code-row-fail', {
+      fn: (_stage, suites) => {
+        const row = suites.results.find((x) => x.name === 'rows kernel 1.2.3');
+        Object.assign(row, { ok: true, exit: 1, failed: ['redacts ${VAR} in -v'] });
+      },
+    });
+    assert.equal(r.code, 1, r.out);
+    assert.equal(r.rec.state, 'failure');
+    assert.match(
+      r.rec.line,
+      /^cert-ci: FAIL .*in code: rows kernel 1\.2\.3 failed \(exit 1: redacts \$\{VAR\} in -v\)/
+    );
+  });
+
+  it('a crafted all-clear verdict never clears a changed test that fails on the subject', () => {
+    const r = coded('code-neg-head', {
+      fn: (stage, suites) => {
+        stage.changedTests = ['test/integration/x.test.mjs'];
+        suites.negative = [
+          { file: 'test/integration/x.test.mjs', head: { ok: false }, base: { ok: false } },
+        ];
+      },
+    });
+    assert.equal(r.code, 1, r.out);
+    assert.match(
+      r.rec.line,
+      /^cert-ci: FAIL .*the changed test test\/integration\/x\.test\.mjs fails on the subject/
+    );
+  });
+
+  it('a crafted all-clear verdict never clears an import in the kernel bundle', () => {
+    const r = coded('code-imports', {
+      fn: (stage) => {
+        stage.surface[CHANGE].kernelBundle.imports = ['node:fs'];
+      },
+    });
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.rec.line, /^cert-ci: FAIL .*the kernel bundle imports node:fs/);
+  });
+
+  it('a crafted all-clear verdict never clears an unexplained rebuild difference', () => {
+    const r = coded('code-rebuild', {
+      fn: (stage) => {
+        stage.rebuildDiff.unexplained = ['package/dist/kernel/mcpcat.mjs: different bytes'];
+      },
+    });
+    assert.equal(r.code, 1, r.out);
+    assert.match(
+      r.rec.line,
+      /^cert-ci: FAIL .*not reproducible: package\/dist\/kernel\/mcpcat\.mjs/
+    );
+  });
+
+  for (const [what, fn, why] of [
+    [
+      'a pinned kernel whose suites never ran',
+      (_stage, suites) => {
+        suites.results = suites.results.filter((x) => !x.name.endsWith('1.0.0'));
+      },
+      /rows kernel 1\.0\.0 didn't run/,
+    ],
+    [
+      'a kernel suite that never reached its kernel',
+      (_stage, suites) => {
+        suites.results.find((x) => x.name === 'subject cert kernel 1.2.3').kernelSeen = false;
+      },
+      /subject cert kernel 1\.2\.3 didn't run on its kernel/,
+    ],
+    [
+      'a suite that ran no tests',
+      (_stage, suites) => {
+        suites.results.find((x) => x.name === 'rows host').pass = 0;
+      },
+      /rows host ran no tests/,
+    ],
+    [
+      "security rows other than rows.json's",
+      (_stage, suites) => {
+        suites.rows = { secrets: ['auth'] };
+        suites.kernelRows = [];
+      },
+      /the security rows that ran aren't rows\.json's.*the security row test /,
+    ],
+    [
+      'a changed test the NEGATIVE never ran',
+      (stage) => {
+        stage.changedTests = ['test/integration/y.test.mjs'];
+      },
+      /the NEGATIVE didn't run test\/integration\/y\.test\.mjs/,
+    ],
+    [
+      'evidence from other bytes',
+      (stage) => {
+        stage.artifact.sha256 = 'f'.repeat(64);
+      },
+      /the suites ran on sha256 f{64}, not the artifact's/,
+    ],
+  ]) {
+    it(`a crafted all-clear verdict is INCOMPLETE with ${what}`, () => {
+      const r = coded(`code-${what.replace(/\W+/g, '-')}`, { fn });
+      assert.equal(r.code, 1, r.out);
+      assert.equal(r.rec.state, 'error');
+      assert.match(r.rec.line, /^cert-ci: INCOMPLETE /);
+      assert.match(r.rec.line, why);
+    });
+  }
+
+  it('a crafted all-clear verdict is INCOMPLETE without code-made evidence', () => {
+    const r = coded('code-none', {
+      fn: (stage) => {
+        stage.version = undefined;
+      },
+    });
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.rec.line, /^cert-ci: INCOMPLETE .*the evidence is for/);
+    const none = tool('record.mjs', [
+      '--version',
+      CHANGE,
+      '--review',
+      join(work, 'code-none-review'),
+      '--out',
+      join(work, 'rec-code-none-2'),
+      '--tarball',
+      change.tgz,
+      '--sha256',
+      change.sha256,
+      '--commit',
+      HEAD,
+      '--gap',
+      'the suites artifact id 1 is from another run',
+    ]);
+    assert.equal(none.code, 1, none.out);
+    const line = readFileSync(join(work, 'rec-code-none-2', 'line.txt'), 'utf8');
+    assert.match(
+      line,
+      /^cert-ci: INCOMPLETE .*the evidence: the suites artifact id 1 is from another run/
+    );
+    assert.match(line, /in code: no code-made evidence \(stage\.json and suites\.json\)/);
+  });
+
+  it('certifies a changed test that does not bite, and names the gap in the line', () => {
+    const r = coded('code-no-negative', {
+      fn: (stage, suites) => {
+        stage.changedTests = ['test/integration/z.test.mjs'];
+        suites.negative = [
+          { file: 'test/integration/z.test.mjs', head: { ok: true }, base: { ok: true } },
+        ];
+      },
+    });
+    assert.equal(r.code, 0, r.out);
+    assert.equal(
+      r.rec.line,
+      `certified ${NAME}@${CHANGE} sha256=${change.sha256} (ci: local; known: none; gaps: no-negative z.test.mjs)`
+    );
   });
 
   it('refuses a change version without the commit it was packed from', () => {
@@ -573,4 +791,75 @@ describe('cert-review shipped: which changes are behaviour', () => {
     assert.equal(r.code, 0, r.out);
     assert.match(r.out, /^not behaviour/);
   });
+});
+
+describe('cert-review bind: evidence is the artifact its producer output, by id and digest', () => {
+  const DIGEST = 'a'.repeat(64);
+  function bind(name, artifact, args) {
+    const bin = join(work, `${name}-bin`);
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, 'gh'),
+      `#!/usr/bin/env node\nconst a = process.argv.slice(2);\nif (a[0] === 'api' && a[1] === 'repos/ai-ecoverse/mcpcat/actions/artifacts/77') process.stdout.write(${JSON.stringify(JSON.stringify(artifact))});\nelse process.exit(1);\n`
+    );
+    chmodSync(join(bin, 'gh'), 0o755);
+    const r = tool(
+      'bind.mjs',
+      [
+        '--run',
+        '5',
+        '--name',
+        'cert-review-suites-1.2.3',
+        '--id',
+        '77',
+        '--digest',
+        DIGEST,
+        ...args,
+      ],
+      { PATH: [bin, process.env.PATH].join(delimiter) }
+    );
+    return { ...r, line: r.out.trim().split('\n').at(-1) };
+  }
+  const real = {
+    id: 77,
+    name: 'cert-review-suites-1.2.3',
+    digest: `sha256:${DIGEST}`,
+    expired: false,
+    workflow_run: { id: 5 },
+  };
+
+  it('binds the artifact whose name, run and digest are the producer outputs', () => {
+    const r = bind('bind-ok', real, []);
+    assert.equal(r.code, 0, r.out);
+    assert.equal(
+      r.line,
+      `bind: cert-review-suites-1.2.3 is artifact 77 sha256:${DIGEST} from run 5`
+    );
+  });
+
+  for (const [what, artifact, args, why] of [
+    [
+      'another digest',
+      { ...real, digest: `sha256:${'b'.repeat(64)}` },
+      [],
+      /has digest sha256:b{64}/,
+    ],
+    ['another run', { ...real, workflow_run: { id: 6 } }, [], /is from run 6/],
+    [
+      'another name',
+      { ...real, name: 'cert-review-suites-1.2.3-x' },
+      [],
+      /is named cert-review-suites-1\.2\.3-x/,
+    ],
+    ['no id from the producer', real, ['--id', ''], /the producer output no artifact id/],
+    ['no digest from the producer', real, ['--digest', ''], /the producer output no sha256 digest/],
+    ['an artifact that cannot be read', real, ['--id', '78'], /artifact 78 couldn't be read/],
+  ]) {
+    it(`is INCOMPLETE for ${what}`, () => {
+      const r = bind(`bind-${what.replace(/\W+/g, '-')}`, artifact, args);
+      assert.equal(r.code, 1, r.out);
+      assert.match(r.line, /^bind: INCOMPLETE /);
+      assert.match(r.line, why);
+    });
+  }
 });

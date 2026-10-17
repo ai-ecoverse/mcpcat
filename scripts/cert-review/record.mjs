@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { checkManifest, one, run, tagOnMain } from './checks.mjs';
 import { compareTarballs } from './compare.mjs';
+import { codeFindings } from './findings.mjs';
 import { CHANGE, COMMIT, manifestOf, NAME, SEMVER, sha, sri } from './tarball.mjs';
 
 const { values } = parseArgs({
@@ -22,6 +24,8 @@ const { values } = parseArgs({
     rebuilt: { type: 'string', default: '' },
     commit: { type: 'string', default: '' },
     change: { type: 'string', default: '' },
+    evidence: { type: 'string', default: '' },
+    gap: { type: 'string', multiple: true, default: [] },
   },
 });
 
@@ -204,12 +208,25 @@ try {
 } catch (error) {
   gap(`artifact check failed: ${one(error.stderr || error.message).slice(0, 300)}`);
 }
+for (const g of values.gap) gap(`the evidence: ${one(g).slice(0, 300)}`);
+const found = codeFindings({
+  dir: values.evidence,
+  rows: JSON.parse(
+    readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'rows.json'), 'utf8')
+  ),
+  version,
+  sha256: facts.sha256,
+  rebuild: !fromNpm,
+});
+for (const d of found.defects) fail(`in code: ${d}`);
+for (const g of found.gaps) gap(`in code: ${g}`);
+facts.findings = found;
 const review = readVerdict();
 const subject = `${NAME}@${version}${planted ? ` (planted ${planted})` : ''}`;
 const ci = values.run ? `ci: ${values.run}` : 'ci: local';
 let line;
 if (!problems.length && review?.verdict === 'certified') {
-  line = `certified ${NAME}@${version} sha256=${facts.sha256} (${ci}; known: ${review.known.length ? review.known.join(', ') : 'none'})`;
+  line = `certified ${NAME}@${version} sha256=${facts.sha256} (${ci}; known: ${review.known.length ? review.known.join(', ') : 'none'}${found.notes.length ? `; gaps: ${found.notes.join(', ')}` : ''})`;
 } else {
   const why = [
     ...(review?.verdict === 'fail' ? [`the reviewer: ${review.reason || 'no reason given'}`] : []),
@@ -227,6 +244,7 @@ const comment = existsSync(join(values.review, 'comment.md'))
   : '**Cert review:** the reviewer wrote no comment.';
 const checks = [
   `- artifact: sha256 ${facts.sha256 ?? '?'} (the pack job's: ${values.sha256 || '?'}), ${facts.integrity ?? '?'}, re-hashed here`,
+  `- suites, security rows, NEGATIVE, kernel bundle imports and rebuild, from the evidence uploaded before the reviewer ran: ${found.defects.length + found.gaps.length ? `${found.defects.length} defects, ${found.gaps.length} gaps` : 'all passed'}${found.notes.length ? ` (${found.notes.join(', ')})` : ''}`,
   planted
     ? '- tag and main: not checked, this is a planted build'
     : change
