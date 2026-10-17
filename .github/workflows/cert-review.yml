@@ -4,7 +4,7 @@ on:
   workflow_call:
     outputs:
       verdict:
-        description: 'certified, fail, not-behaviour, fork, none or needs-coordinator-review'
+        description: 'certified, fail, incomplete, not-behaviour, fork, none or needs-coordinator-review'
         value: ${{ jobs.verdict.outputs.verdict }}
   workflow_dispatch:
     inputs:
@@ -339,25 +339,12 @@ jobs:
         with:
           node-version: '24'
 
-      - name: gh and cert-run
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: The runner's own gh (none is ever downloaded here), and cert-run
         run: |
-          case "$(uname -m)" in
-            x86_64) arch=amd64 ;;
-            aarch64 | arm64) arch=arm64 ;;
-            *) echo "::error::no gh release for $(uname -m)"; exit 1 ;;
-          esac
+          if ! command -v gh > /dev/null; then echo "::error title=cert-review::INCOMPLETE: no gh on this runner, and none is ever downloaded"; exit 1; fi
+          echo "gh: $(gh --version | head -1)"
           mkdir -p "$RUNNER_TEMP/bin" "$RUNNER_TEMP/cert-review"
           echo "WORK=$RUNNER_TEMP/cert" >> "$GITHUB_ENV"
-          if ! command -v gh > /dev/null; then
-            v=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/cli/cli/releases/latest | jq -r '.tag_name | ltrimstr("v")')
-            (cd "$RUNNER_TEMP/bin" \
-              && curl -fsSL -O "https://github.com/cli/cli/releases/download/v$v/gh_${v}_linux_$arch.tar.gz" \
-                -O "https://github.com/cli/cli/releases/download/v$v/gh_${v}_checksums.txt" \
-              && sha256sum -c "gh_${v}_checksums.txt" --ignore-missing \
-              && tar -xzf "gh_${v}_linux_$arch.tar.gz" --strip-components=2 "gh_${v}_linux_$arch/bin/gh")
-          fi
           printf '#!/bin/sh\nexec env -u AWS_BEARER_TOKEN_BEDROCK -u GH_TOKEN -u GITHUB_TOKEN "$@"\n' > "$RUNNER_TEMP/bin/cert-run"
           chmod +x "$RUNNER_TEMP/bin/cert-run"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
@@ -526,14 +513,22 @@ jobs:
             --out "$RUNNER_TEMP/record" --run "$RUN_URL" --repo "$GH_REPO" ${PLANTED:+--planted "$PLANTED"} \
             --source "$SOURCE" ${rebuilt:+--rebuilt "$rebuilt"} "${change[@]}" \
             --tarball "$tgz" --sha256 "$PACKED" --upstream "$UPSTREAM"; then
-            echo "conclusion=success" >> "$GITHUB_OUTPUT"
+            ok=true
           else
-            echo "conclusion=failure" >> "$GITHUB_OUTPUT"
+            ok=false
           fi
+          state=$(jq -r '.state // empty' "$RUNNER_TEMP/record/record.json")
+          [ "$ok" = true ] || [ "$state" != success ] || state=error
+          case "$state" in
+            success) verdict=certified ;;
+            failure) verdict=fail ;;
+            *) state=error verdict=incomplete ;;
+          esac
+          echo "conclusion=$state" >> "$GITHUB_OUTPUT"
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           commit=$(jq -r '.commit // empty' "$RUNNER_TEMP/record/record.json")
           echo "commit=${commit:-$PLAN_COMMIT}" >> "$GITHUB_OUTPUT"
-          jq -r '"verdict=\(if .certified then "certified" else "fail" end)", "line=\(.line | split("\n")[0])"' \
-            "$RUNNER_TEMP/record/record.json" >> "$GITHUB_OUTPUT"
+          jq -r '"line=\(.line | split("\n")[0])"' "$RUNNER_TEMP/record/record.json" >> "$GITHUB_OUTPUT"
           { echo '```'; cat "$RUNNER_TEMP/record/line.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -618,7 +613,7 @@ jobs:
             echo "::error title=cert-review: needs coordinator review::this change touches the cert paths and has no coordinator approval on its head"
             exit 1
           fi
-          [ "$PLAN" = success ] || { say fail "cert-review: the plan job ended $PLAN"; exit 1; }
+          [ "$PLAN" = success ] || { say incomplete "cert-ci: INCOMPLETE the plan job ended $PLAN (re-run the failed jobs)"; exit 1; }
           if [ "$GO" != true ]; then
             case "$REASON" in
               not-behaviour)
@@ -630,7 +625,7 @@ jobs:
                 fi
                 exit 0 ;;
               fork)
-                say fork "cert-ci: FAIL a fork's change to shipped behaviour gets no cert review; push the branch to $GH_REPO"
+                say fork "cert-ci: INCOMPLETE a fork's change to shipped behaviour gets no cert review; push the branch to $GH_REPO"
                 echo "::error title=cert-review: fork::a fork's change to shipped behaviour gets no review (no secrets), so it cannot merge"
                 exit 1 ;;
               none)
@@ -641,11 +636,11 @@ jobs:
                   say certified "${REUSED_LINE:-cert-review: certified} (reused: a label changed, the head did not)"
                   exit 0
                 fi
-                say fail "${REUSED_LINE:-cert-ci: FAIL} (reused: a label changed, the head did not)"
+                say "$([ "$REUSED" = error ] && echo incomplete || echo fail)" "${REUSED_LINE:-cert-ci: $([ "$REUSED" = error ] && echo INCOMPLETE || echo FAIL)} (reused: a label changed, the head did not)"
                 echo "::error title=cert-review::the verdict recorded on this head is $REUSED; push or re-run the review"
                 exit 1 ;;
               *)
-                say fail "cert-review: the plan gave no reason ($REASON)"
+                say incomplete "cert-ci: INCOMPLETE the plan gave no reason ($REASON)"
                 exit 1 ;;
             esac
           fi
@@ -653,6 +648,9 @@ jobs:
             say certified "$LINE"
             exit 0
           fi
-          say fail "${LINE:-cert-ci: FAIL no cert-review line (record $RECORD)}"
+          case "$VERDICT" in
+            fail) say fail "${LINE:-cert-ci: FAIL no cert-review line (record $RECORD)}" ;;
+            *) say incomplete "${LINE:-cert-ci: INCOMPLETE no cert-review line (record $RECORD)}" ;;
+          esac
           echo "::error title=cert-review::${LINE:-no cert-review line (record $RECORD)}"
           exit 1

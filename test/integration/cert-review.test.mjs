@@ -69,6 +69,7 @@ describe('cert-review record: the line comes from the artifact, not the reviewer
     assert.equal(rec.sha256, null);
     assert.equal(rec.facts.sha256, good.sha256);
     assert.match(rec.line, /^cert-ci: FAIL .*planted proof\/planted/);
+    assert.equal(rec.state, 'failure');
   });
 
   it('fails when the artifact is not what the pack job hashed', () => {
@@ -386,10 +387,10 @@ describe('cert-review record --commit: a pull request or merge group under revie
     gitHead: 'd'.repeat(40),
   });
 
-  function record(name, tgz, sha256, extra = []) {
+  function record(name, tgz, sha256, extra = [], verdict = { verdict: 'certified', known: [] }) {
     const dir = join(work, `${name}-review`);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'verdict.json'), JSON.stringify({ verdict: 'certified', known: [] }));
+    if (verdict) writeFileSync(join(dir, 'verdict.json'), JSON.stringify(verdict));
     const out = join(work, `rec-${name}`);
     const r = tool('record.mjs', [
       '--version',
@@ -434,6 +435,52 @@ describe('cert-review record --commit: a pull request or merge group under revie
       r.rec.line,
       new RegExp(`gitHead is ${'d'.repeat(40)}, the pull request #42 is ${HEAD}`)
     );
+  });
+
+  it('calls a certified verdict from a review job that did not succeed INCOMPLETE, never FAIL', () => {
+    const r = record('pr-held', change.tgz, change.sha256, ['--upstream', 'failure']);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.rec.line, /^cert-ci: INCOMPLETE .*held: the review job ended failure/);
+    assert.equal(r.rec.state, 'error');
+    assert.equal(r.rec.certified, false);
+  });
+
+  it('calls a skipped review with no verdict INCOMPLETE', () => {
+    const r = record('pr-skipped', change.tgz, change.sha256, ['--upstream', 'skipped'], null);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.rec.line, /^cert-ci: INCOMPLETE .*held: the review job ended skipped/);
+    assert.match(r.rec.line, /no readable verdict\.json/);
+    assert.equal(r.rec.state, 'error');
+  });
+
+  it('calls a verdict that is neither certified nor fail INCOMPLETE', () => {
+    const r = record('pr-maybe', change.tgz, change.sha256, [], { verdict: 'maybe' });
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.rec.line, /^cert-ci: INCOMPLETE .*verdict\.json says "maybe"/);
+  });
+
+  it('calls a missing artifact INCOMPLETE', () => {
+    const r = record('pr-noartifact', join(work, 'absent.tgz'), change.sha256);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.rec.line, /^cert-ci: INCOMPLETE .*no release artifact to check/);
+    assert.equal(r.rec.state, 'error');
+  });
+
+  it('keeps a sha mismatch a FAIL even when the review job did not succeed', () => {
+    const r = record('pr-held-swap', otherHead.tgz, change.sha256, ['--upstream', 'failure']);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.rec.line, /^cert-ci: FAIL .*the artifact is sha256/);
+    assert.equal(r.rec.state, 'failure');
+  });
+
+  it("keeps the reviewer's fail a FAIL even when the review job did not succeed", () => {
+    const r = record('pr-held-fail', change.tgz, change.sha256, ['--upstream', 'failure'], {
+      verdict: 'fail',
+      reason: 'a planted leak',
+    });
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.rec.line, /^cert-ci: FAIL .*the reviewer: a planted leak/);
+    assert.equal(r.rec.state, 'failure');
   });
 
   it('refuses a change version without the commit it was packed from', () => {
