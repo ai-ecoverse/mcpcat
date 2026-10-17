@@ -1,0 +1,175 @@
+name: cert-verify
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'A released version (x.y.z) to verify again'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cert-verify-${{ github.event.workflow_run.head_sha || inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: cert-verify / which release
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+      || (github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_branch == 'main'
+      && github.event.workflow_run.head_repository.full_name == github.repository) }}
+    runs-on: ${{ vars.CERT_LIGHT_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: The version tagged on the commit the release run built, or the one asked for
+        id: tag
+        env:
+          WANTED: ${{ inputs.version }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ -n "$WANTED" ]; then
+            [[ "$WANTED" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version '$WANTED' is not x.y.z"; exit 1; }
+            git rev-parse -q --verify "refs/tags/v$WANTED^{commit}" > /dev/null || { echo "::error::no tag v$WANTED"; exit 1; }
+            version=$WANTED
+          else
+            version=$(git tag --points-at "$SHA" 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 | sed 's/^v//' || true)
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "cert-verify: release ${version:+v$version}${version:-none on $SHA}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  verify:
+    name: cert-verify / the release and its pull requests
+    needs: tag
+    if: needs.tag.outputs.version != ''
+    runs-on: ${{ vars.CERT_LIGHT_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: read
+    outputs:
+      state: ${{ steps.verify.outputs.state }}
+      line: ${{ steps.verify.outputs.line }}
+      sha256: ${{ steps.verify.outputs.sha256 }}
+    env:
+      VERSION: ${{ needs.tag.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          sparse-checkout: scripts/cert-review
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          # renovate: datasource=node-version depName=node versioning=node
+          node-version: '24'
+
+      - name: The runner's own gh (none is ever downloaded here)
+        run: |
+          if ! command -v gh > /dev/null; then echo "::error title=cert-verify::INCOMPLETE: no gh on this runner"; exit 1; fi
+          gh --version | head -1
+
+      - name: The bytes on npm, their provenance, and a green cert-review on every pull request since the previous tag
+        id: verify
+        run: |
+          node scripts/cert-review/certify.mjs --version "$VERSION" --repo "$GITHUB_REPOSITORY" --run "$RUN_URL" \
+            --out "$RUNNER_TEMP/certify.json" && ok=true || ok=false
+          state=$(jq -r '.state // empty' "$RUNNER_TEMP/certify.json" 2> /dev/null || true)
+          line=$(jq -r '.line // empty' "$RUNNER_TEMP/certify.json" 2> /dev/null | head -1 || true)
+          sha=$(jq -r '.sha256 // empty' "$RUNNER_TEMP/certify.json" 2> /dev/null || true)
+          if [ "$ok" = true ] && [ "$state" = success ] && [[ "$line" =~ ^(certified|verified)\ @ai-ecoverse/mcpcat@$VERSION\ sha256=$sha\  ]]; then
+            :
+          elif [ "$state" = failure ] && [[ "$line" == "supply-chain alert: "* ]]; then
+            :
+          else
+            state=error
+            line="cert-ci: INCOMPLETE @ai-ecoverse/mcpcat@$VERSION: ${line:-certify printed no verdict}"
+          fi
+          { echo "state=$state"; echo "line=$line"; echo "sha256=$sha"; } >> "$GITHUB_OUTPUT"
+          echo "cert-verify: $state: $line"
+          [ "$state" = success ] || { echo "::error title=cert-verify::$line"; exit 1; }
+
+  notes:
+    name: cert-verify / write the line into the release notes
+    needs: [tag, verify]
+    if: needs.verify.outputs.state == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.tag.outputs.version }}
+      LINE: ${{ needs.verify.outputs.line }}
+      SHA: ${{ needs.verify.outputs.sha256 }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          sparse-checkout: scripts/cert-review
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          # renovate: datasource=node-version depName=node versioning=node
+          node-version: '24'
+
+      - name: Only the notes edit, from verify's line
+        run: |
+          set -o pipefail
+          node scripts/cert-review/notes.mjs --version "$VERSION" --repo "$GITHUB_REPOSITORY" --line "$LINE" --sha256 "$SHA" \
+            | tee "$RUNNER_TEMP/notes.log"
+          grep -qE "^notes: (wrote into|v$VERSION already carries)" "$RUNNER_TEMP/notes.log" || {
+            echo "::error title=cert-verify::the notes step printed no verdict"
+            exit 1
+          }
+
+  alert:
+    name: cert-verify / supply-chain alert
+    needs: [tag, verify]
+    if: always() && needs.verify.outputs.state == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      VERSION: ${{ needs.tag.outputs.version }}
+      LINE: ${{ needs.verify.outputs.line }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: An issue for the alert, once per version
+        run: |
+          title="supply-chain alert: @ai-ecoverse/mcpcat@$VERSION failed cert-verify"
+          open=$(gh issue list --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body "Again in $RUN_URL: $LINE" > /dev/null
+            echo "cert-verify: alert added to #$open"
+          else
+            printf 'cert-verify of @ai-ecoverse/mcpcat@%s failed in %s.\n\n```\n%s\n```\n\nTreat this as a supply-chain alert: the bytes on npm, their provenance or the release notes do not match v%s on main.\n' \
+              "$VERSION" "$RUN_URL" "$LINE" "$VERSION" > "$RUNNER_TEMP/alert.md"
+            echo "cert-verify: alert filed as $(gh issue create --title "$title" --body-file "$RUNNER_TEMP/alert.md")"
+          fi
+          echo "::error title=cert-verify::$LINE"
+          exit 1
