@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import * as esbuild from 'esbuild';
 import { compareTarballs } from './compare.mjs';
+import { negativeTree } from './negative.mjs';
 import {
   CHANGE,
   COMMIT,
@@ -231,12 +232,12 @@ const prevCommit = worktree(root, prevTree, baseRef);
 sh('npm', ['ci', ...npmFlags], { cwd: prevTree });
 if (!existsSync(join(prevTree, 'dist/kernel/mcpcat.mjs')))
   sh('npm', ['run', 'build'], { cwd: prevTree });
-shadow(
-  join(work, 'tag'),
-  join(work, 'neg'),
-  join(work, 'tag/node_modules'),
-  join(prevTree, 'dist')
-);
+const negFromBase = negativeTree({
+  subject: join(work, 'tag'),
+  base: prevTree,
+  out: join(work, 'neg'),
+  nodeModules: join(work, 'tag/node_modules'),
+});
 shadow(root, join(work, 'rows'), join(root, 'node_modules'), join(pubDir, 'dist'));
 
 const prevPack = join(work, 'prev-pub');
@@ -275,6 +276,7 @@ const stage = {
   base: { ref: baseRef, commit: prevCommit },
   prevCommit,
   changedTests,
+  negative: { tests: tag.commit, base: prevCommit, fromBase: negFromBase },
   tools: sh('git', ['rev-parse', 'HEAD'], { cwd: root }).trim(),
   node: process.version,
   npm: sh('npm', ['--version']).trim(),
