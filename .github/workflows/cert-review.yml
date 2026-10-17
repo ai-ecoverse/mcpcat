@@ -198,7 +198,7 @@ jobs:
               status=$(gh api "repos/$REPO/commits/$commit/status" --jq '[.statuses[] | select(.context == "cert-review")][0] // {} | "\(.state // "")\t\(.description // "")"')
               state=${status%%$'\t'*}
               case "$state" in
-                success | failure | error)
+                success | failure)
                   emit "reused=$state" "reused_line=$(printf '%s' "${status#*$'\t'}" | tr -d '\r\n')"
                   skip reused "verdict reused ($state)" "A label changed and the head did not, so the cert-review verdict already recorded on ${commit:0:7} stands; no new review."
                   ;;
@@ -470,6 +470,7 @@ jobs:
     outputs:
       verdict: ${{ steps.record.outputs.verdict }}
       line: ${{ steps.record.outputs.line }}
+      posted: ${{ steps.status.outputs.posted }}
     concurrency:
       group: cert-review-record-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
       cancel-in-progress: false
@@ -589,6 +590,7 @@ jobs:
           if-no-files-found: error
 
       - name: The cert-review status on the commit, and the line on the pull request or the release
+        id: status
         if: needs.plan.outputs.dry_run != 'true' && needs.plan.outputs.planted == ''
         env:
           CONCLUSION: ${{ steps.record.outputs.conclusion }}
@@ -600,6 +602,7 @@ jobs:
             -f state="$CONCLUSION" -f context=cert-review -f target_url="$RUN_URL/artifacts/$ARTIFACT" \
             -f description="$(printf '%s' "$line" | cut -c1-140)" \
             --jq '"status \(.id) \(.state) on \(.url)"'
+          echo "posted=true" >> "$GITHUB_OUTPUT"
           if [ "$MODE" != dispatch ]; then
             marker="<!-- cert-review-comment:$MODE -->"
             { echo "$marker"; [ "$MODE" = queue ] && echo "_The merge group: the tree that lands on main, at $COMMIT._" && echo; cat "$RUNNER_TEMP/record/body.md"; } > "$RUNNER_TEMP/comment.md"
@@ -647,6 +650,8 @@ jobs:
       MODE: ${{ needs.plan.outputs.mode }}
       COMMIT: ${{ needs.plan.outputs.commit }}
       RECORD: ${{ needs.record.result }}
+      POSTED: ${{ needs.record.outputs.posted }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
       VERDICT: ${{ needs.record.outputs.verdict }}
       LINE: ${{ needs.record.outputs.line }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -654,7 +659,7 @@ jobs:
       - name: The outcome all-green reads
         id: verdict
         run: |
-          say() { echo "verdict=$1" >> "$GITHUB_OUTPUT"; { echo '```'; echo "$2"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; echo "$2"; }
+          say() { { echo "verdict=$1"; echo "line=$2"; } >> "$GITHUB_OUTPUT"; { echo '```'; echo "$2"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; echo "$2"; }
           if [ "$GUARD" != success ] && [ "$GUARD" != skipped ]; then
             say needs-coordinator-review "cert-review: needs coordinator review (self-guard ${GUARD_STATUS:-$GUARD}): label cert-review-approved after the head arrives"
             echo "::error title=cert-review: needs coordinator review::this change touches the cert paths and has no coordinator approval on its head"
@@ -701,3 +706,29 @@ jobs:
           esac
           echo "::error title=cert-review::${LINE:-no cert-review line (record $RECORD)}"
           exit 1
+
+      - name: A run that ends without a recorded verdict still leaves a cert-review status, so the required check never waits forever
+        if: always()
+        env:
+          OUTCOME: ${{ steps.verdict.outputs.verdict }}
+          SAID: ${{ steps.verdict.outputs.line }}
+        run: |
+          if [ -z "$HEAD_SHA" ]; then echo "cert-review fallback: not a pull request or merge group, no status"; exit 0; fi
+          if [ "$POSTED" = true ]; then echo "cert-review fallback: record posted the status on $HEAD_SHA"; exit 0; fi
+          if [ "$REASON" = reused ]; then echo "cert-review fallback: the status recorded on $HEAD_SHA stands"; exit 0; fi
+          case "${OUTCOME:-}" in
+            certified | not-behaviour | none)
+              echo "cert-review fallback: $OUTCOME, nothing to add"; exit 0 ;;
+            needs-coordinator-review)
+              state=pending desc="cert-review: needs coordinator review: label cert-review-approved after the head arrives" ;;
+            fail)
+              state=failure desc=${SAID:-"cert-ci: FAIL no cert-review line (record $RECORD)"} ;;
+            *)
+              state=error desc=${SAID:-"cert-ci: INCOMPLETE the verdict job printed no verdict (re-run the failed jobs)"} ;;
+          esac
+          if gh api "repos/$GH_REPO/statuses/$HEAD_SHA" -f state="$state" -f context=cert-review -f target_url="$RUN_URL" \
+            -f description="$(printf '%s' "$desc" | cut -c1-140)" --jq '"status \(.state) on \(.url)"'; then
+            echo "cert-review fallback: posted $state on $HEAD_SHA: $desc"
+          else
+            echo "::warning::cert-review fallback: no status on $HEAD_SHA (a read-only token): $desc"
+          fi

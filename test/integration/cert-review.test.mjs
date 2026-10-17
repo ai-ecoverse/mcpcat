@@ -863,3 +863,110 @@ describe('cert-review bind: evidence is the artifact its producer output, by id 
     });
   }
 });
+
+describe('cert-review verdict: a run without a recorded verdict still leaves a cert-review status', () => {
+  const yml = readFileSync(join(root, '.github/workflows/cert-review.yml'), 'utf8').split('\n');
+  const at = yml.findIndex((l) => l.includes('- name: A run that ends without a recorded verdict'));
+  const from = yml.findIndex((l, i) => i > at && l.trim() === 'run: |') + 1;
+  const indent = yml[from].length - yml[from].trimStart().length;
+  const to = yml.findIndex(
+    (l, i) => i >= from && l.trim() && l.length - l.trimStart().length < indent
+  );
+  const script = yml
+    .slice(from, to === -1 ? undefined : to)
+    .map((l) => l.slice(indent))
+    .join('\n');
+  const HEAD = 'e'.repeat(40);
+
+  function fallback(name, env) {
+    const bin = join(work, `${name}-bin`);
+    mkdirSync(bin, { recursive: true });
+    const log = join(bin, 'gh.log');
+    writeFileSync(
+      join(bin, 'gh'),
+      `#!/bin/sh\nprintf '%s\\n' "$@" >> ${JSON.stringify(log)}\necho "status from the stub"\n`
+    );
+    chmodSync(join(bin, 'gh'), 0o755);
+    const r = spawnSync('bash', ['-e', '-c', script], {
+      encoding: 'utf8',
+      env: {
+        PATH: [bin, process.env.PATH].join(delimiter),
+        GH_REPO: 'ai-ecoverse/mcpcat',
+        RUN_URL: 'https://github.com/ai-ecoverse/mcpcat/actions/runs/1',
+        HEAD_SHA: HEAD,
+        RECORD: 'skipped',
+        ...env,
+      },
+    });
+    let calls = [];
+    try {
+      calls = readFileSync(log, 'utf8').trim().split('\n');
+    } catch {}
+    return { code: r.status, out: `${r.stdout}${r.stderr}`, calls };
+  }
+
+  it('posts error with the INCOMPLETE line when the plan crashed', () => {
+    const r = fallback('fb-plan', {
+      OUTCOME: 'incomplete',
+      SAID: 'cert-ci: INCOMPLETE the plan job ended failure (re-run the failed jobs)',
+    });
+    assert.equal(r.code, 0, r.out);
+    assert.ok(r.calls.includes(`repos/ai-ecoverse/mcpcat/statuses/${HEAD}`), r.calls.join(' '));
+    assert.ok(r.calls.includes('state=error'), r.calls.join(' '));
+    assert.ok(r.calls.includes('context=cert-review'), r.calls.join(' '));
+    assert.ok(
+      r.calls.includes(
+        'description=cert-ci: INCOMPLETE the plan job ended failure (re-run the failed jobs)'
+      )
+    );
+    assert.match(
+      r.out,
+      /cert-review fallback: posted error on e{40}: cert-ci: INCOMPLETE the plan job ended failure/
+    );
+  });
+
+  it('posts error when the verdict job itself printed no verdict', () => {
+    const r = fallback('fb-silent', {});
+    assert.equal(r.code, 0, r.out);
+    assert.ok(r.calls.includes('state=error'), r.calls.join(' '));
+    assert.ok(
+      r.calls.some((c) =>
+        c.startsWith('description=cert-ci: INCOMPLETE the verdict job printed no verdict')
+      )
+    );
+  });
+
+  it('posts pending, never a reusable failure, while the coordinator approval is missing', () => {
+    const r = fallback('fb-guard', { OUTCOME: 'needs-coordinator-review' });
+    assert.equal(r.code, 0, r.out);
+    assert.ok(r.calls.includes('state=pending'), r.calls.join(' '));
+  });
+
+  it('posts failure for a FAIL that record never posted', () => {
+    const r = fallback('fb-fail', { OUTCOME: 'fail', SAID: 'cert-ci: FAIL x' });
+    assert.ok(r.calls.includes('state=failure'), r.calls.join(' '));
+  });
+
+  for (const [what, env, why] of [
+    ['record posted the status', { OUTCOME: 'fail', POSTED: 'true' }, /record posted the status/],
+    [
+      'the verdict was reused',
+      { OUTCOME: 'fail', REASON: 'reused' },
+      /the status recorded on e{40} stands/,
+    ],
+    ['it is certified', { OUTCOME: 'certified' }, /certified, nothing to add/],
+    ['it is not behaviour', { OUTCOME: 'not-behaviour' }, /not-behaviour, nothing to add/],
+    [
+      'it is a dispatch',
+      { OUTCOME: 'incomplete', HEAD_SHA: '' },
+      /not a pull request or merge group/,
+    ],
+  ]) {
+    it(`posts nothing when ${what}`, () => {
+      const r = fallback(`fb-${what.replace(/\W+/g, '-')}`, env);
+      assert.equal(r.code, 0, r.out);
+      assert.deepEqual(r.calls, []);
+      assert.match(r.out, why);
+    });
+  }
+});
