@@ -294,3 +294,53 @@ describe('cert-verify: the release line, from npm and every pull request since t
     assert.equal(s.edits(), 0);
   });
 });
+
+describe('cert-verify.yml: who runs it, and who may write', () => {
+  const text = readFileSync(join(root, '.github/workflows/cert-verify.yml'), 'utf8');
+  const lines = text.split('\n');
+  const start = lines.indexOf('jobs:');
+  const jobs = {};
+  let current;
+  for (const line of lines.slice(start + 1)) {
+    const m = /^ {2}([\w-]+):$/.exec(line);
+    if (m) {
+      current = m[1];
+      jobs[current] = [];
+    } else if (current) jobs[current].push(line);
+  }
+  const block = (name) => jobs[name].join('\n');
+  const needs = (name) => {
+    const m = /^ {4}needs: (.+)$/m.exec(block(name));
+    return m
+      ? m[1]
+          .replace(/[[\]]/g, '')
+          .split(',')
+          .map((n) => n.trim())
+      : [];
+  };
+  const chainsTo = (name, root) => name === root || needs(name).some((n) => chainsTo(n, root));
+
+  it('only runs from main on dispatch: the tag job guards it, and every other job needs tag', () => {
+    assert.deepEqual(Object.keys(jobs).sort(), ['alert', 'notes', 'tag', 'verify']);
+    assert.match(
+      block('tag'),
+      /\(github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/main'\)/
+    );
+    assert.match(block('tag'), /github\.event\.workflow_run\.head_branch == 'main'/);
+    for (const name of Object.keys(jobs).filter((n) => n !== 'tag'))
+      assert.ok(chainsTo(name, 'tag') && needs(name).includes('tag'), `${name} needs tag`);
+  });
+
+  it('gives contents: write to the notes job alone, and reads everywhere else', () => {
+    const head = lines.slice(0, start).join('\n');
+    assert.match(head, /^permissions:\n {2}contents: read$/m);
+    for (const name of Object.keys(jobs)) {
+      const writes = /^ {6}contents: write$/m.test(block(name));
+      assert.equal(writes, name === 'notes', `${name} contents: write`);
+    }
+    assert.match(block('notes'), /^ {4}permissions:\n {6}contents: write\n {4}env:/m);
+    assert.match(block('alert'), /^ {4}permissions:\n {6}issues: write\n {4}env:/m);
+    assert.doesNotMatch(block('verify'), /: write$/m);
+    assert.doesNotMatch(block('tag'), /permissions:/);
+  });
+});
