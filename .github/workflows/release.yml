@@ -80,6 +80,8 @@ jobs:
         run: |
           version="${TAG#v}"
           line=$(node scripts/cert-review/published.mjs --version "$version") && ok=1 || ok=0
+          [[ "$line" =~ ^verified\ @ai-ecoverse/mcpcat@$version\ sha256=[0-9a-f]{64}\  ]] || ok=0
+          [ -n "$line" ] || line="cert-ci: FAIL published @ai-ecoverse/mcpcat@$version: published.mjs printed no verdict"
           { echo '```'; echo "$line"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           echo "$line"
           [ "$ok" = 1 ] && exit 0

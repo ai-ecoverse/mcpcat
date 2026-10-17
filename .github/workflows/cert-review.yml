@@ -88,6 +88,7 @@ jobs:
             test/integration/cert-runner.test.mjs
             test/integration/cert-self-guard.test.mjs
             test/integration/cert-verify.test.mjs
+            test/integration/cert-verdicts.test.mjs
           approval-label: cert-review-approved
 
   plan:
@@ -187,6 +188,8 @@ jobs:
             git cat-file -e "$commit^{commit}" 2> /dev/null || git fetch --no-tags origin "$commit"
             git cat-file -e "$base_in^{commit}" 2> /dev/null || git fetch --no-tags origin "$base_in"
             node scripts/cert-review/shipped.mjs --base "$base_in" --head "$commit" | tee "$RUNNER_TEMP/shipped.txt"
+            head -1 "$RUNNER_TEMP/shipped.txt" | grep -qE '^(behaviour|not behaviour): ' \
+              || { echo "::error::INCOMPLETE: shipped.mjs printed no behaviour verdict"; exit 1; }
             base=$(git merge-base "$base_in" "$commit")
             if ! head -1 "$RUNNER_TEMP/shipped.txt" | grep -q '^behaviour:'; then
               skip not-behaviour "not behaviour (skipped)" "$(head -1 "$RUNNER_TEMP/shipped.txt") ($(git diff --name-only "$base" "$commit" | wc -l | tr -d ' ') files against ${base:0:7}); no review is needed."
