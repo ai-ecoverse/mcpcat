@@ -72,8 +72,10 @@ jobs:
     runs-on: ${{ needs.runner.outputs.runner }}
     needs: runner
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           # renovate: datasource=node-version depName=node versioning=node
           node-version: '24'
@@ -84,7 +86,14 @@ jobs:
           agent=$(node -p "require('@ai-ecoverse/slicc-bios/src/packages/agent/package.json').peerDependencies?.['@ai-ecoverse/slicc-kernel'] ?? require('@ai-ecoverse/slicc-bios/src/packages/agent/package.json').dependencies?.['@ai-ecoverse/slicc-kernel'] ?? ''")
           [ -z "$agent" ] || [ "$agent" = "$kernel" ]
           echo "slicc-bios ships slicc-kernel $kernel"
-          npm run cert -- "--kernel=@ai-ecoverse/slicc-kernel@$kernel"
+          set -o pipefail
+          npm run cert -- "--kernel=@ai-ecoverse/slicc-kernel@$kernel" 2>&1 | tee "$RUNNER_TEMP/cert.log"
+          verdict=$(grep -E "^cert: kernel $kernel — [1-9][0-9]* kernel tests passed$" "$RUNNER_TEMP/cert.log" | tail -1 || true)
+          if [ -z "$verdict" ]; then
+            echo "cert: FAIL — cert printed no passing verdict for slicc-kernel $kernel"
+            exit 1
+          fi
+          echo "cert: PASS — $verdict"
         env:
           NODE_NO_WARNINGS: '1'
 
@@ -104,5 +113,22 @@ jobs:
     needs: [runner, ci, cert, cert-review]
     runs-on: ${{ vars.CERT_LIGHT_RUNNER || 'ubuntu-latest' }}
     steps:
-      - run: '[ "${{ needs.runner.result }}" = success ] && [ "${{ needs.ci.result }}" = success ] && [ "${{ needs.cert.result }}" = success ] && [ "${{ needs.cert-review.result }}" = success ]'
-      - run: 'echo "cert-review: ${{ needs.cert-review.outputs.verdict }}"'
+      - name: The verdict the merge queue requires
+        env:
+          RUNNER_RESULT: ${{ needs.runner.result }}
+          CI_RESULT: ${{ needs.ci.result }}
+          CERT_RESULT: ${{ needs.cert.result }}
+          REVIEW_RESULT: ${{ needs.cert-review.result }}
+          VERDICT: ${{ needs.cert-review.outputs.verdict }}
+        run: |
+          line="runner=${RUNNER_RESULT:-none} ci=${CI_RESULT:-none} cert=${CERT_RESULT:-none} cert-review=${REVIEW_RESULT:-none} (${VERDICT:-no verdict})"
+          ok=true
+          for r in "$RUNNER_RESULT" "$CI_RESULT" "$CERT_RESULT" "$REVIEW_RESULT"; do [ "$r" = success ] || ok=false; done
+          case "$VERDICT" in certified | not-behaviour | none) ;; *) ok=false ;; esac
+          if [ "$ok" = true ]; then
+            echo "all-green: PASS $line"
+            exit 0
+          fi
+          echo "all-green: FAIL $line"
+          echo "::error title=all-green::$line"
+          exit 1

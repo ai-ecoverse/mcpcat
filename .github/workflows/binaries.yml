@@ -57,7 +57,10 @@ jobs:
           path: "assets/mcpcat-*.tgz"
 
       - name: Installer test, ubuntu with node
-        run: sh test/integration/test-install.sh assets "${TAG#v}"
+        run: |
+          set -o pipefail
+          sh test/integration/test-install.sh assets "${TAG#v}" 2>&1 | tee "$RUNNER_TEMP/install.log"
+          grep -qx 'All installer tests passed.' "$RUNNER_TEMP/install.log" || { echo "installer: FAIL — test-install.sh printed no verdict"; exit 1; }
         env:
           TAG: ${{ inputs.tag }}
           EXPECT_MANAGED_NODE: '0'
@@ -66,17 +69,22 @@ jobs:
         run: sh test/integration/hide-node.sh
 
       - name: Installer test, ubuntu without node
-        run: sh test/integration/test-install.sh assets "${TAG#v}"
+        run: |
+          set -o pipefail
+          sh test/integration/test-install.sh assets "${TAG#v}" 2>&1 | tee "$RUNNER_TEMP/install.log"
+          grep -qx 'All installer tests passed.' "$RUNNER_TEMP/install.log" || { echo "installer: FAIL — test-install.sh printed no verdict"; exit 1; }
         env:
           TAG: ${{ inputs.tag }}
           EXPECT_MANAGED_NODE: '1'
 
       - name: Installer test, alpine with nodejs
         run: |
+          set -o pipefail
           docker run --rm -v "$PWD:/w" -w /w -e TAG -e EXPECT_MANAGED_NODE=0 "$ALPINE_IMAGE" sh -euc '
             apk add --no-cache python3 tar xz nodejs >/dev/null
             sh test/integration/test-install.sh assets "${TAG#v}"
-          '
+          ' 2>&1 | tee "$RUNNER_TEMP/install.log"
+          grep -qx 'All installer tests passed.' "$RUNNER_TEMP/install.log" || { echo "installer: FAIL — test-install.sh printed no verdict"; exit 1; }
         env:
           TAG: ${{ inputs.tag }}
 
@@ -117,7 +125,10 @@ jobs:
         run: cd assets && shasum -a 256 -- * > SHA256SUMS
 
       - name: Installer test, macOS with node
-        run: sh test/integration/test-install.sh assets "${TAG#v}"
+        run: |
+          set -o pipefail
+          sh test/integration/test-install.sh assets "${TAG#v}" 2>&1 | tee "$RUNNER_TEMP/install.log"
+          grep -qx 'All installer tests passed.' "$RUNNER_TEMP/install.log" || { echo "installer: FAIL — test-install.sh printed no verdict"; exit 1; }
         env:
           TAG: ${{ inputs.tag }}
           EXPECT_MANAGED_NODE: '0'
@@ -126,7 +137,10 @@ jobs:
         run: sh test/integration/hide-node.sh
 
       - name: Installer test, macOS without node
-        run: sh test/integration/test-install.sh assets "${TAG#v}"
+        run: |
+          set -o pipefail
+          sh test/integration/test-install.sh assets "${TAG#v}" 2>&1 | tee "$RUNNER_TEMP/install.log"
+          grep -qx 'All installer tests passed.' "$RUNNER_TEMP/install.log" || { echo "installer: FAIL — test-install.sh printed no verdict"; exit 1; }
         env:
           TAG: ${{ inputs.tag }}
           EXPECT_MANAGED_NODE: '1'
