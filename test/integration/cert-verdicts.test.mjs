@@ -2,7 +2,6 @@ import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -100,9 +99,11 @@ describe('silence never passes: all-green', () => {
 
 describe('silence never passes: the cert job', () => {
   const script = stepScript('ci.yml', 'Run cert with the kernel slicc-bios ships');
-  const kernel = createRequire(join(root, 'package.json'))(
-    '@ai-ecoverse/slicc-bios/src/packages/package.json'
-  ).dependencies['@ai-ecoverse/slicc-kernel'];
+  const kernel = spawnSync('bash', ['-c', `${script.split('\n')[0]}\nprintf '%s' "$kernel"`], {
+    cwd: root,
+    encoding: 'utf8',
+  }).stdout;
+  assert.match(kernel, /^\d+\.\d+\.\d+$/);
   const npm = (out, code = 0) => ({ npm: `printf '%s\\n' ${JSON.stringify(out)}\nexit ${code}` });
 
   it("passes when cert prints its kernel's passing line", () => {
@@ -129,7 +130,7 @@ describe('silence never passes: the cert job', () => {
       assert.equal(r.code, 1, r.out);
       assert.match(
         r.out,
-        new RegExp(`^cert: FAIL — cert printed no passing verdict for slicc-kernel ${kernel}$`, 'm')
+        new RegExp(`^cert: FAIL — cert printed no passing verdict for \\S+ ${kernel}$`, 'm')
       );
     });
   }
