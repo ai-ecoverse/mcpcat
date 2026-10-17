@@ -45,6 +45,13 @@ function evidence(name, version, sha256, change = (_stage, _suites) => {}) {
   const names = [...new Set(Object.values(ROWS).flat())];
   const stage = {
     version,
+    subject: { commit: '1'.repeat(40) },
+    base: { commit: '2'.repeat(40) },
+    negative: {
+      tests: '1'.repeat(40),
+      base: '2'.repeat(40),
+      fromBase: ['dist', 'scripts', '.github/workflows'],
+    },
     artifact: { sha256 },
     kernels,
     changedTests: [],
@@ -636,6 +643,28 @@ describe('cert-review record --commit: a pull request or merge group under revie
       /the NEGATIVE didn't run test\/integration\/y\.test\.mjs/,
     ],
     [
+      "a NEGATIVE that ran on the subject's tooling",
+      (stage, suites) => {
+        stage.changedTests = ['test/integration/cert-x.test.mjs'];
+        stage.negative.fromBase = ['dist'];
+        suites.negative = [
+          { file: 'test/integration/cert-x.test.mjs', head: { ok: true }, base: { ok: false } },
+        ];
+      },
+      /the NEGATIVE didn't take scripts from the base/,
+    ],
+    [
+      'a NEGATIVE on another base than the delta',
+      (stage, suites) => {
+        stage.changedTests = ['test/integration/cert-x.test.mjs'];
+        stage.negative.base = '3'.repeat(40);
+        suites.negative = [
+          { file: 'test/integration/cert-x.test.mjs', head: { ok: true }, base: { ok: false } },
+        ];
+      },
+      /the NEGATIVE doesn't name the subject's tests and the base's sha it ran on/,
+    ],
+    [
       'evidence from other bytes',
       (stage) => {
         stage.artifact.sha256 = 'f'.repeat(64);
@@ -1042,4 +1071,64 @@ describe('cert-review verdict: a run without a recorded verdict still leaves a c
       assert.match(r.out, why);
     });
   }
+});
+
+describe("cert-review NEGATIVE: the subject's tests on the base's dist, scripts and workflows", () => {
+  const tree = (name, files) => {
+    const dir = join(work, name);
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(dir, path)), { recursive: true });
+      writeFileSync(join(dir, path), text);
+    }
+    return dir;
+  };
+  const test = [
+    "import assert from 'node:assert/strict';",
+    "import { execFileSync } from 'node:child_process';",
+    "import { it } from 'node:test';",
+    "it('the tool says new', () => assert.equal(execFileSync(process.execPath, ['scripts/cert-review/tool.mjs'], { encoding: 'utf8' }), 'new'));",
+    '',
+  ].join('\n');
+  const subject = tree('neg-subject', {
+    'scripts/cert-review/tool.mjs': "process.stdout.write('new');\n",
+    'dist/mcpcat.mjs': 'new\n',
+    '.github/workflows/cert-review.yml': 'new\n',
+    'test/integration/cert-tool.test.mjs': test,
+  });
+  const base = tree('neg-base', {
+    'scripts/cert-review/tool.mjs': "process.stdout.write('old');\n",
+    'dist/mcpcat.mjs': 'old\n',
+    '.github/workflows/cert-review.yml': 'old\n',
+    'test/integration/cert-tool.test.mjs': 'old test\n',
+  });
+  const modules = tree('neg-modules', { 'x/package.json': '{}' });
+  const run = (cwd) => {
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    return spawnSync(process.execPath, ['--test', 'test/integration/cert-tool.test.mjs'], {
+      cwd,
+      encoding: 'utf8',
+      env,
+    }).status;
+  };
+
+  it("takes the base's tooling and dist, keeps the subject's tests, and so a cert-tool test bites", async () => {
+    const { negativeTree } = await import(join(tools, 'negative.mjs'));
+    const out = join(work, 'neg-out');
+    assert.deepEqual(negativeTree({ subject, base, out, nodeModules: modules }), [
+      'dist',
+      'scripts',
+      '.github/workflows',
+    ]);
+    assert.equal(
+      readFileSync(join(out, 'scripts/cert-review/tool.mjs'), 'utf8'),
+      "process.stdout.write('old');\n"
+    );
+    assert.equal(readFileSync(join(out, 'dist/mcpcat.mjs'), 'utf8'), 'old\n');
+    assert.equal(readFileSync(join(out, '.github/workflows/cert-review.yml'), 'utf8'), 'old\n');
+    assert.equal(readFileSync(join(out, 'test/integration/cert-tool.test.mjs'), 'utf8'), test);
+    assert.equal(readFileSync(join(out, 'node_modules/x/package.json'), 'utf8'), '{}');
+    assert.equal(run(subject), 0);
+    assert.notEqual(run(out), 0);
+  });
 });

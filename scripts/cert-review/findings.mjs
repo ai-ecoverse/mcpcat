@@ -50,7 +50,22 @@ function securityRows(suites, rows, out) {
     if (!ran.has(name)) out.gaps.push(`the security row test ${name} didn't run`);
 }
 
+const SHA = /^[0-9a-f]{40}$/;
+
+function negativeBase(stage, out) {
+  const n = stage.negative ?? {};
+  out.negative = { tests: n.tests ?? null, base: n.base ?? null, fromBase: list(n.fromBase) };
+  if (!list(stage.changedTests).length) return;
+  const named = SHA.test(n.tests ?? '') && SHA.test(n.base ?? '');
+  if (!named || n.tests !== stage.subject?.commit || n.base !== stage.base?.commit)
+    out.gaps.push("the NEGATIVE doesn't name the subject's tests and the base's sha it ran on");
+  for (const part of ['dist', 'scripts', '.github/workflows'])
+    if (!out.negative.fromBase.includes(part))
+      out.gaps.push(`the NEGATIVE didn't take ${part} from the base`);
+}
+
 function negative(stage, suites, out) {
+  negativeBase(stage, out);
   const runs = list(suites.negative);
   for (const file of list(stage.changedTests)) {
     const n = runs.find((x) => x.file === file);
