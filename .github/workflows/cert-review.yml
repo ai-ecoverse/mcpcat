@@ -303,6 +303,9 @@ jobs:
     if: needs.plan.outputs.go == 'true' && needs.pack.result == 'success'
     runs-on: ${{ vars.CERT_RUNNER }}
     timeout-minutes: 75
+    outputs:
+      evidence-id: ${{ steps.evidence.outputs.artifact-id }}
+      evidence-digest: ${{ steps.evidence.outputs.artifact-digest }}
     concurrency:
       group: cert-review-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
       cancel-in-progress: false
@@ -366,7 +369,17 @@ jobs:
           fi
 
       - name: Suites, NEGATIVE and security rows (no secrets in this step)
-        run: node scripts/cert-review/suites.mjs --work "$WORK" || echo "::warning::some suites failed; the review reads suites.json"
+        run: node scripts/cert-review/suites.mjs --work "$WORK" || echo "::warning::some suites failed; the review reads suites.json, and record recomputes them in code"
+
+      - name: The code-made evidence, uploaded before the reviewer runs, bound by its id and digest
+        id: evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: cert-review-suites-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
+          path: |
+            ${{ env.WORK }}/stage.json
+            ${{ env.WORK }}/suites.json
+          if-no-files-found: error
 
       - name: Review
         id: review
@@ -400,6 +413,7 @@ jobs:
             - `trees.rows` is the checkout's tests with the artifact's dist: the security rows, listed in `scripts/cert-review/rows.json` (row → test files in `test/integration/`). They are committed integration tests; you review and run them, you never design probes.
             - `kernels`: the pinned slicc-kernels (the `kernel-cert-*` devDependencies and slicc-bios's kernel), each with its `tgz` and an installed `dir`.
             - `surface`: the kernel bundle's imports (from esbuild's metafile), `eval(` and `Function` hits (comments stripped), the `ctx.*` set (and `ctxAdded`/`ctxRemoved` against the base), LICENSE and THIRD_PARTY_NOTICES, and the manifest's dependencies, scripts, engines, bin and `slicc.commands`.
+            - **Recomputed in code after you:** `record` re-reads `stage.json` and `suites.json` as they were uploaded before you started, and on its own fails a suite or row that didn't exit 0 on the host or a pinned kernel, a changed test that fails on the head, an import in the kernel bundle and an unexplained rebuild difference. It calls missing suites, kernels or rows INCOMPLETE. Your verdict can add defects but can never clear those, so look for what code can't see.
             - **Already run, with no secrets** (`${{ env.WORK }}/suites.json`, logs in `${{ env.WORK }}/logs/`): the subject's host suite (`npm run test:integration` in `trees.tag`), `npm run cert -- --kernel=<tgz>` on every pinned kernel in `trees.tag`, the NEGATIVE, and the rows on the host and on every pinned kernel in `trees.rows`. Don't run them again; re-run single files only to tell a flake from a failure.
             - **Run every command that executes mcpcat, a test or a fixture through `cert-run`**, which drops the Bedrock key and the GitHub token from its environment: for example `cd <trees.neg> && cert-run node --test --test-timeout=120000 test/integration/<file>.test.mjs`, and for a kernel test `cert-run env MCPCAT_CERT_KERNEL_DIR=<kernels[i].dir> node --test …`. Never touch ports 9222–9229.
             - `gh` reads this repository: `gh api repos/${{ github.repository }}/compare/${{ env.FROM }}...${{ env.TO }}`, `gh pr view <n>`, `gh issue list --state all --search …`, and `gh issue create`.
@@ -502,17 +516,49 @@ jobs:
           name: ${{ needs.plan.outputs.artifact }}
           path: ${{ runner.temp }}/tarball
 
+      - name: The code-made evidence is the artifact the review job output before the reviewer ran
+        id: bind
+        env:
+          ID: ${{ needs.review.outputs.evidence-id }}
+          DIGEST: ${{ needs.review.outputs.evidence-digest }}
+          NAME: cert-review-suites-${{ needs.plan.outputs.version }}${{ needs.plan.outputs.planted && '-planted' || '' }}
+        run: |
+          out=$(node scripts/cert-review/bind.mjs --repo "$GH_REPO" --run "$GITHUB_RUN_ID" --name "$NAME" --id "$ID" --digest "$DIGEST") && ok=true || ok=false
+          echo "$out"
+          [[ "$out" == "bind: "* ]] || out="bind: INCOMPLETE $NAME: bind printed no verdict"
+          { echo "ok=$ok"; echo "line=$out"; } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        id: evidence
+        if: steps.bind.outputs.ok == 'true'
+        continue-on-error: true
+        with:
+          artifact-ids: ${{ needs.review.outputs.evidence-id }}
+          digest-mismatch: error
+          path: ${{ runner.temp }}/evidence
+
       - name: The line, from the artifact and the verdict (this job's tools, from ${{ github.sha }})
         id: record
+        env:
+          BOUND: ${{ steps.bind.outputs.ok }}
+          BIND_LINE: ${{ steps.bind.outputs.line }}
+          FETCHED: ${{ steps.evidence.outcome }}
+          EVIDENCE_ID: ${{ needs.review.outputs.evidence-id }}
         run: |
           mkdir -p "$RUNNER_TEMP/cert-review" "$RUNNER_TEMP/tarball"
           tgz=$(find "$RUNNER_TEMP/tarball" -maxdepth 1 -name '*.tgz' | head -1)
           rebuilt=$(find "$RUNNER_TEMP/tarball/rebuilt" -maxdepth 1 -name '*.tgz' 2> /dev/null | head -1 || true)
           change=()
           [ "$MODE" = dispatch ] || change=(--commit "$PLAN_COMMIT" --change "$CHANGE")
+          gap=()
+          if [ "$BOUND" != true ]; then
+            gap=(--gap "${BIND_LINE:-bind printed no verdict}")
+          elif [ "$FETCHED" != success ]; then
+            gap=(--gap "the evidence artifact $EVIDENCE_ID didn't download with its digest ($FETCHED)")
+          fi
           if node scripts/cert-review/record.mjs --version "$VERSION" --review "$RUNNER_TEMP/cert-review" \
             --out "$RUNNER_TEMP/record" --run "$RUN_URL" --repo "$GH_REPO" ${PLANTED:+--planted "$PLANTED"} \
-            --source "$SOURCE" ${rebuilt:+--rebuilt "$rebuilt"} "${change[@]}" \
+            --source "$SOURCE" ${rebuilt:+--rebuilt "$rebuilt"} "${change[@]}" "${gap[@]}" --evidence "$RUNNER_TEMP/evidence" \
             --tarball "$tgz" --sha256 "$PACKED" --upstream "$UPSTREAM"; then
             ok=true
           else
