@@ -25,6 +25,14 @@ describe('cert self-guard wiring', () => {
       guardJob,
       /uses: ai-ecoverse\/slicc-shared-web\/\.github\/actions\/cert-self-guard@[0-9a-f]{40}\n/
     );
+  });
+
+  it('pins the guard release that matches dot paths, slicc-shared-web v1.24.2', () => {
+    assert.match(
+      guardJob,
+      /\n {8}uses: ai-ecoverse\/slicc-shared-web\/\.github\/actions\/cert-self-guard@f342d7cf558c817ce517bbbbc4cc46df6eac2f97\n/
+    );
+    assert.doesNotMatch(review, /cert-self-guard@(?!f342d7cf558c817ce517bbbbc4cc46df6eac2f97\n)/);
     assert.match(guardJob, /approval-label: cert-review-approved\n/);
   });
 
