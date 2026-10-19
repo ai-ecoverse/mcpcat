@@ -1,0 +1,72 @@
+---
+name: mcpcat
+description: Call Model Context Protocol (MCP) servers from the shell with mcpcat, a curl for MCP. List and call tools, read resources and prompts, keep servers in mcp.json, and send secrets as ${VAR} placeholders that the vault fills in, never as values. Use when a task needs a tool from an MCP server over HTTP or a stdio command.
+---
+
+# mcpcat
+
+`mcpcat` talks to MCP servers over Streamable HTTP or stdio, one shell command per request. Options go before the target.
+
+## Targets
+
+- A URL: `https://example.com/mcp`.
+- A stdio command: `stdio:<command> [args…]`, as one argument (`'stdio:my-server --flag'`).
+- A name from `mcp.json`, the same `~/.pi/agent/mcp.json` the agent reads.
+
+## Discover and call
+
+```bash
+mcpcat info https://example.com/mcp
+mcpcat tools https://example.com/mcp
+mcpcat describe https://example.com/mcp search
+mcpcat call https://example.com/mcp search --q oauth --limit 5
+mcpcat call docs search -d '{"q":"oauth","limit":5}'
+mcpcat --json call docs search --q oauth
+mcpcat grep issue
+```
+
+- Tool arguments are `--name value` flags, coerced to the schema's types, or one JSON object with `-d` (`-d @file`, `-d @-` for stdin).
+- `describe` prints a tool's schema and help; `--schema` prints the raw JSON Schema, `--ts` TypeScript declarations.
+- `--json` prints deterministic JSON for scripts; human output otherwise. `-m <s>` sets the timeout (default 60 s).
+- `code -e '<js>'` runs a short script over configured servers (`tools.mcp__<server>__<tool>(args)`), with `-s <server>` to pick servers.
+
+## Configure servers
+
+```bash
+mcpcat add docs https://example.com/mcp
+mcpcat add docs https://example.com/mcp -H 'Authorization: Bearer ${DOCS_TOKEN}'
+mcpcat list
+mcpcat rm docs
+mcpcat import ~/.cursor/mcp.json
+mcpcat login docs
+```
+
+`login` runs the OAuth sign-in for a server that needs one; `logout` removes its tokens.
+
+## Secrets: never values, always placeholders
+
+- **Never print, echo, log or paste a secret's value**, not in a command, a file, a message or your answer. The value must never reach the conversation.
+- **Use `${NAME}` placeholders in single quotes**: `-H 'Authorization: Bearer ${GH_TOKEN}'`. mcpcat expands them itself, so the value stays out of argv. In seven, `NAME` holds the vault's placeholder, and the vault fills in the value where a secret rule allows that host.
+- **Never put a token into `mcp.json`.** Write `${NAME}` there too; `mcpcat add` refuses a literal `Bearer …` value.
+- `-v` traces show expanded headers as `[REDACTED]`. Don't try to work around redaction.
+- If a request needs a secret that isn't there, ask the user to add it to the vault; don't ask them to paste it.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | The tool reported an error (`isError`), or `grep` found nothing |
+| 2 | Usage: bad flags, unknown tool, invalid arguments or config |
+| 3 | Connection, transport or protocol failure |
+| 4 | Authentication required or failed: run the `mcpcat login` the message names |
+| 5 | JSON-RPC error from the server |
+| 6 | The server asked for input and there is no terminal |
+| 124 | Timeout |
+| 130 | Interrupted |
+
+## In seven
+
+- Host servers on the user's machine are `http://host.slicc.internal:<port>`, through a linked slicc CLI.
+- Stdio servers must be kernel commands; `npx` needs the optional Node.js package.
+- The agent's own MCP tools come from `mcp.json`; `mcpcat add` is how to add a server to it.

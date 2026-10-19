@@ -42,6 +42,10 @@ mcpcat weather get-forecast --lat 51.5 --lon -0.12
 mcpcat serve --http 8808 ./scripts/jira.jsh
 ```
 
+## Agent skill
+
+The package ships an [Agent Skill](https://agentskills.io/specification) that teaches an agent mcpcat in one file: `dist/skills/mcpcat/SKILL.md`, built from [`src/skill/SKILL.txt`](src/skill/SKILL.txt) (the repo keeps no Markdown besides README.md and AGENTS.md). It covers targets, listing and calling tools, `mcp.json`, exit codes, and the secrets rule: `${NAME}` placeholders in single quotes, never a value in a command, a file or the conversation, and never a token in `mcp.json`. `mcpcat help --skill` prints the copy that matches the installed version. `package.json` declares it as a pi package skill (`"pi": { "skills": ["dist/skills"] }`). In seven, bios links it into `/usr/share/skills` for the certified catalog install. It is shipped behaviour under `src/`, so a change to it gets a cert review.
+
 ## License
 
 Apache-2.0

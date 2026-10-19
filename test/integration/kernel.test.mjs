@@ -156,6 +156,15 @@ describe('kernel: mcpcat', () => {
     assert.equal(stdout.trim(), pkg.version);
   });
 
+  it('help --skill prints the shipped SKILL.md', async () => {
+    const { status, stdout } = await kernel.run(['mcpcat', 'help', '--skill'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.equal(status, 0);
+    assert.equal(stdout, readFileSync(join(root, 'src/skill/SKILL.txt'), 'utf8'));
+  });
+
   it('-V prints the version', async () => {
     const { status, stdout } = await kernel.run(['mcpcat', '-V'], {
       stdout: 'pipe',

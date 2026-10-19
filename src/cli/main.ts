@@ -144,6 +144,7 @@ Server and code verbs:
   discover <url>             Find MCP servers at a URL
   inbox [--json]             List discovery candidates
   help [verb]                Show help
+  help --skill               Print the agent skill (SKILL.md) for this version
 
 Options:
   --json                     JSON output
@@ -1164,6 +1165,22 @@ export async function run(platform: Platform, version: string, args: string[]): 
   }
 }
 
+declare const MCPCAT_SKILL: string | undefined;
+
+async function help(platform: Platform, version: string, args: string[]): Promise<number> {
+  if (args[0] !== 'help' || !args.includes('--skill')) {
+    await platform.write(1, helpText(version));
+    return 0;
+  }
+  const skill = typeof MCPCAT_SKILL === 'string' ? MCPCAT_SKILL : undefined;
+  if (!skill) {
+    await platform.write(2, 'mcpcat help: this build has no skill\n');
+    return EXIT_USAGE;
+  }
+  await platform.write(1, skill);
+  return 0;
+}
+
 async function runInner(platform: Platform, version: string, args: string[]): Promise<number> {
   if (args.includes('--version') || args.includes('-V')) {
     await platform.write(1, `${version}\n`);
@@ -1171,8 +1188,7 @@ async function runInner(platform: Platform, version: string, args: string[]): Pr
   }
 
   if (args.includes('--help') || args.includes('-h') || args[0] === 'help') {
-    await platform.write(1, helpText(version));
-    return 0;
+    return help(platform, version, args);
   }
 
   if (args.length === 0) {
