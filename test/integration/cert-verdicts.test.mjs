@@ -202,3 +202,68 @@ describe('silence never passes: release verify and the installer tests', () => {
     );
   });
 });
+
+describe('a draft is not reviewed, and its cert-review is red', () => {
+  const verdict = stepScript('cert-review.yml', 'The outcome all-green reads');
+  const fallback = stepScript(
+    'cert-review.yml',
+    'A run that ends without a recorded verdict still leaves a cert-review status, so the required check never waits forever'
+  );
+
+  it('the verdict job fails a draft with its line', () => {
+    const r = runStep('draft-verdict', verdict, {
+      GUARD: 'success',
+      PLAN: 'success',
+      GO: 'false',
+      REASON: 'draft',
+      GITHUB_OUTPUT: join(work, 'draft-verdict.out'),
+    });
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /^cert-review: draft: not reviewed, mark it ready for review$/m);
+  });
+
+  it('the fallback posts failure, never pending or success, on the draft head', () => {
+    const r = runStep(
+      'draft-fallback',
+      fallback,
+      { HEAD_SHA: 'a'.repeat(40), OUTCOME: 'draft', REASON: 'draft', GH_REPO: 'o/r', RUN_URL: 'u' },
+      { gh: 'printf "%s\\n" "$*" >> "$(dirname "$0")/gh.log"' }
+    );
+    assert.equal(r.code, 0, r.out);
+    const log = readFileSync(join(r.bin, 'gh.log'), 'utf8');
+    assert.match(log, /-f state=failure -f context=cert-review/);
+    assert.match(log, /description=draft: not reviewed, mark it ready for review/);
+  });
+
+  it('all-green fails on a draft', () => {
+    const script = stepScript('ci.yml', 'The verdict the merge queue requires');
+    const r = runStep('draft-all-green', script, {
+      RUNNER_RESULT: 'success',
+      CI_RESULT: 'success',
+      CERT_RESULT: 'success',
+      REVIEW_RESULT: 'success',
+      VERDICT: 'draft',
+    });
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /\(draft\)/);
+  });
+
+  it('the plan skips a draft pull request before any review, and ci reruns on ready and on converted_to_draft', () => {
+    const plan = stepScript(
+      'cert-review.yml',
+      'What is under review, against what, and whether it changes shipped behaviour'
+    );
+    const draft = plan.indexOf('if [ "$mode" = pr ] && [ "$PR_DRAFT" != false ]; then');
+    assert.ok(
+      draft > 0 && draft < plan.indexOf('emit "go=true"'),
+      'the draft skip comes before go=true'
+    );
+    const ci = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8');
+    assert.match(
+      ci,
+      /types: \[opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled\]/
+    );
+    const workflow = readFileSync(join(root, '.github/workflows/cert-review.yml'), 'utf8');
+    assert.match(workflow, /PR_DRAFT: \$\{\{ github\.event\.pull_request\.draft \}\}/);
+  });
+});
