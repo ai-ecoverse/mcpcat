@@ -83,7 +83,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           # renovate: datasource=node-version depName=node versioning=node
-          node-version: '24'
+          node-version: '26'
 
       - name: The runner's own gh (none is ever downloaded here)
         run: |
@@ -132,7 +132,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           # renovate: datasource=node-version depName=node versioning=node
-          node-version: '24'
+          node-version: '26'
 
       - name: Only the notes edit, from verify's line
         run: |
