@@ -65,7 +65,7 @@ jobs:
     with:
       runs-on: ${{ needs.runner.outputs.runner }}
       # renovate: datasource=node-version depName=node versioning=node
-      node-version: '24'
+      node-version: '26'
       chromium: false
 
   cert:
@@ -78,7 +78,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           # renovate: datasource=node-version depName=node versioning=node
-          node-version: '24'
+          node-version: '26'
       - run: npm ci
       - name: Run cert with the kernel slicc-bios ships
         run: |

@@ -18,7 +18,7 @@ permissions:
 
 env:
   # renovate: datasource=node-version depName=node versioning=node
-  NODE_VERSION: '24'
+  NODE_VERSION: '26'
   # renovate: datasource=docker depName=alpine
   ALPINE_IMAGE: alpine:3.24.2
 

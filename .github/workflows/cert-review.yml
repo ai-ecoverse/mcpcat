@@ -65,7 +65,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24'
+          node-version: '26'
 
       - id: guard
         uses: ai-ecoverse/slicc-shared-web/.github/actions/cert-self-guard@f342d7cf558c817ce517bbbbc4cc46df6eac2f97
@@ -129,7 +129,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24'
+          node-version: '26'
 
       - name: What is under review, against what, and whether it changes shipped behaviour
         id: plan
@@ -275,7 +275,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24'
+          node-version: '26'
 
       - name: Pack ${{ needs.plan.outputs.subject }}
         id: pack
@@ -326,7 +326,7 @@ jobs:
       pull-requests: read
     env:
       LEFTHOOK: '0'
-      NODE_VERSION: '24'
+      NODE_VERSION: '26'
       MODE: ${{ needs.plan.outputs.mode }}
       VERSION: ${{ needs.plan.outputs.version }}
       PREV: ${{ needs.plan.outputs.prev }}
@@ -351,7 +351,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24'
+          node-version: '26'
 
       - name: The runner's own gh (none is ever downloaded here), and cert-run
         run: |
@@ -524,7 +524,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24'
+          node-version: '26'
 
       - name: Every artifact by the id and digest its producer output, and no other in this run's namespaces
         id: bind
