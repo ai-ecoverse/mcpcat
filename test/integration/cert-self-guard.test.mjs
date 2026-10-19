@@ -82,7 +82,7 @@ describe('cert self-guard wiring', () => {
   it('runs on every pull request event the guard reads, and on the merge queue', () => {
     assert.match(
       ci,
-      /pull_request:\n {4}types: \[opened, synchronize, reopened, labeled, unlabeled, ready_for_review\]\n {2}merge_group:\n {4}types: \[checks_requested\]\n/
+      /pull_request:\n {4}types: \[opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled\]\n {2}merge_group:\n {4}types: \[checks_requested\]\n/
     );
   });
 
@@ -92,10 +92,11 @@ describe('cert self-guard wiring', () => {
     assert.match(ci, /needs: \[runner, ci, cert, cert-review\]\n/);
   });
 
-  it('keeps a label change from cancelling or repeating the review of the same head', () => {
+  it('keeps a label change from repeating the review of the same head, and lets it cancel nothing that a draft could outlive', () => {
+    assert.doesNotMatch(ci, /&& 'label' \|\| 'head'/);
     assert.match(
       ci,
-      /github\.event\.action == 'labeled' \|\| github\.event\.action == 'unlabeled'\) && 'label' \|\| 'head'/
+      /\n {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.event\.pull_request\.number \|\| github\.ref \}\}\n/
     );
     assert.match(review, /skip reused "verdict reused/);
   });
