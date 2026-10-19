@@ -142,6 +142,7 @@ jobs:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
           MG_HEAD: ${{ github.event.merge_group.head_sha }}
           MG_BASE: ${{ github.event.merge_group.base_sha }}
           MG_REF: ${{ github.event.merge_group.head_ref }}
@@ -196,6 +197,11 @@ jobs:
             fi
             if [ "$fork" = true ]; then
               skip fork "fork: no cert review" "This change touches shipped behaviour and comes from a fork, which gets no secrets and no review. Push the branch to ${REPO} and open the pull request from there."
+            fi
+            draft=$PR_DRAFT
+            [ "$mode" != pr ] || [ "$draft" != false ] || draft=$(gh api "repos/$REPO/pulls/$pr" --jq '.draft' || echo unknown)
+            if [ "$mode" = pr ] && [ "$draft" != false ]; then
+              skip draft "draft: not reviewed" "This pull request is a draft, so it gets no cert review; mark it ready for review and the review starts."
             fi
             if [ "$mode" = pr ] && { [ "$ACTION" = labeled ] || [ "$ACTION" = unlabeled ]; }; then
               status=$(gh api "repos/$REPO/commits/$commit/status" --jq '[.statuses[] | select(.context == "cert-review")][0] // {} | "\(.state // "")\t\(.description // "")"')
@@ -713,6 +719,10 @@ jobs:
                 say fork "cert-ci: INCOMPLETE a fork's change to shipped behaviour gets no cert review; push the branch to $GH_REPO"
                 echo "::error title=cert-review: fork::a fork's change to shipped behaviour gets no review (no secrets), so it cannot merge"
                 exit 1 ;;
+              draft)
+                say draft "cert-review: draft: not reviewed, mark it ready for review"
+                echo "::error title=cert-review: draft::a draft gets no cert review; mark it ready for review"
+                exit 1 ;;
               none)
                 say none "cert-review: $LABEL"
                 exit 0 ;;
@@ -752,6 +762,8 @@ jobs:
           case "${OUTCOME:-}" in
             certified | not-behaviour | none)
               echo "cert-review fallback: $OUTCOME, nothing to add"; exit 0 ;;
+            draft)
+              state=failure desc="draft: not reviewed, mark it ready for review" ;;
             needs-coordinator-review)
               state=pending desc="cert-review: needs coordinator review: label cert-review-approved after the head arrives" ;;
             fail)
