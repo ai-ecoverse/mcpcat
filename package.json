@@ -34,6 +34,11 @@
     "README.md",
     "dist"
   ],
+  "pi": {
+    "skills": [
+      "dist/skills"
+    ]
+  },
   "slicc": {
     "commands": {
       "mcpcat": {

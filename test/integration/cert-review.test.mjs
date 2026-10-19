@@ -785,6 +785,7 @@ describe('cert-review shipped: which changes are behaviour', () => {
     ['binaries workflow', '.github/workflows/binaries.yml'],
     ['release config', '.releaserc.json'],
     ['installer', 'install.sh'],
+    ['agent skill', 'src/skill/SKILL.txt'],
   ]) {
     it(`reviews a change to the ${name}`, () => {
       const r = run(branch(`b-${name.replace(/\W/g, '-')}`, { [file]: '3', 'README.md': '3' }));

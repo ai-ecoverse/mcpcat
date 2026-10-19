@@ -15,6 +15,7 @@ mkdirSync(join(dist, 'kernel'), { recursive: true });
 
 const define = {
   MCPCAT_VERSION: JSON.stringify(pkg.version),
+  MCPCAT_SKILL: JSON.stringify(readFileSync(join(root, 'src/skill/SKILL.txt'), 'utf8')),
 };
 
 const hostBanner = `#!/usr/bin/env node
@@ -34,6 +35,8 @@ await esbuild.build({
 });
 
 chmodSync(join(dist, 'host/mcpcat.mjs'), 0o755);
+mkdirSync(join(dist, 'skills/mcpcat'), { recursive: true });
+copyFileSync(join(root, 'src/skill/SKILL.txt'), join(dist, 'skills/mcpcat/SKILL.md'));
 
 await esbuild.build({
   entryPoints: [join(root, 'src/codemode/worker.ts')],
