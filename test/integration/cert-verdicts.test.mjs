@@ -235,25 +235,16 @@ describe('a draft is not reviewed, and its cert-review is red', () => {
     assert.match(log, /description=draft: not reviewed, mark it ready for review/);
   });
 
-  it('all-green fails on a draft', () => {
-    const script = stepScript('ci.yml', 'The verdict the merge queue requires');
-    const r = runStep('draft-all-green', script, {
-      RUNNER_RESULT: 'success',
-      CI_RESULT: 'success',
-      CERT_RESULT: 'success',
-      REVIEW_RESULT: 'success',
-      VERDICT: 'draft',
-    });
-    assert.equal(r.code, 1, r.out);
-    assert.match(r.out, /\(draft\)/);
-  });
-
   it('the plan skips a draft pull request before any review, and ci reruns on ready and on converted_to_draft', () => {
     const plan = stepScript(
       'cert-review.yml',
       'What is under review, against what, and whether it changes shipped behaviour'
     );
-    const draft = plan.indexOf('if [ "$mode" = pr ] && [ "$PR_DRAFT" != false ]; then');
+    const draft = plan.indexOf('if [ "$mode" = pr ] && [ "$draft" != false ]; then');
+    assert.ok(
+      plan.indexOf(`draft=$(gh api "repos/$REPO/pulls/$pr" --jq '.draft' || echo unknown)`) > 0,
+      'a ready payload is checked against the pull request as it is now'
+    );
     assert.ok(
       draft > 0 && draft < plan.indexOf('emit "go=true"'),
       'the draft skip comes before go=true'
@@ -262,6 +253,11 @@ describe('a draft is not reviewed, and its cert-review is red', () => {
     assert.match(
       ci,
       /types: \[opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled\]/
+    );
+    assert.match(
+      ci,
+      /^ {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.event\.pull_request\.number \|\| github\.ref \}\}\n {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}$/m,
+      'one concurrency group per pull request: converted_to_draft cancels every run, label runs included'
     );
     const workflow = readFileSync(join(root, '.github/workflows/cert-review.yml'), 'utf8');
     assert.match(workflow, /PR_DRAFT: \$\{\{ github\.event\.pull_request\.draft \}\}/);

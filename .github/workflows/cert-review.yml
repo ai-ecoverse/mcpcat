@@ -198,7 +198,9 @@ jobs:
             if [ "$fork" = true ]; then
               skip fork "fork: no cert review" "This change touches shipped behaviour and comes from a fork, which gets no secrets and no review. Push the branch to ${REPO} and open the pull request from there."
             fi
-            if [ "$mode" = pr ] && [ "$PR_DRAFT" != false ]; then
+            draft=$PR_DRAFT
+            [ "$mode" != pr ] || [ "$draft" != false ] || draft=$(gh api "repos/$REPO/pulls/$pr" --jq '.draft' || echo unknown)
+            if [ "$mode" = pr ] && [ "$draft" != false ]; then
               skip draft "draft: not reviewed" "This pull request is a draft, so it gets no cert review; mark it ready for review and the review starts."
             fi
             if [ "$mode" = pr ] && { [ "$ACTION" = labeled ] || [ "$ACTION" = unlabeled ]; }; then
