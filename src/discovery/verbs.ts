@@ -1,6 +1,7 @@
 import { addServer } from '../config/edit.ts';
 import { stateDir, userConfigPath } from '../config/paths.ts';
 import type { Platform } from '../platform/types.ts';
+import { sanitizeTerminal } from '../render/sanitize.ts';
 import { deduplicateCandidates, extractCandidates, resetIdCounter } from './extract.ts';
 import { appendCandidates, getCandidate, listCandidates } from './inbox.ts';
 import { probeDiscover } from './probe.ts';
@@ -97,7 +98,7 @@ export async function runFromDiscovery(platform: Platform, args: string[]): Prom
 
   const result = parseEvents(text);
   if ('error' in result) {
-    await platform.write(2, `mcpcat add --from-discovery: ${result.error}\n`);
+    await platform.write(2, sanitizeTerminal(`mcpcat add --from-discovery: ${result.error}\n`));
     return result.code;
   }
 
@@ -169,7 +170,7 @@ export async function runAddCandidate(
 
   for (const t of candidate.trust) {
     if (t.type.includes('mismatch')) {
-      await platform.write(2, `mcpcat add: warning: ${t.type}: ${t.detail}\n`);
+      await platform.write(2, sanitizeTerminal(`mcpcat add: warning: ${t.type}: ${t.detail}\n`));
     }
   }
 

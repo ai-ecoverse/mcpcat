@@ -8,6 +8,7 @@ export default async function main(ctx) {
     return 1;
   }
   const failInit = ctx.argv.includes('--fail-init');
+  const stateless = ctx.argv.includes('--stateless');
   const inputSchema = { type: 'object', properties: {} };
 
   function reply(id, payload) {
@@ -18,6 +19,27 @@ export default async function main(ctx) {
     if (!line.trim()) return null;
     const { id, method, params } = JSON.parse(line);
     if (id === undefined) return null;
+    if (method === 'server/discover' && stateless) {
+      return reply(id, {
+        result: {
+          supportedVersions: ['2026-07-28'],
+          serverInfo: { name: 'evil-kernel', version: '1.0.0' },
+          capabilities: { tools: {} },
+        },
+      });
+    }
+    if (method === 'tools/call' && params?.name === 'ask') {
+      return reply(id, {
+        result: {
+          resultType: 'input_required',
+          content: [{ type: 'text', text: 'input needed' }],
+          inputRequest: {
+            message: EVIL,
+            schema: { type: 'object', properties: {} },
+          },
+        },
+      });
+    }
     if (method === 'initialize' && failInit) {
       return reply(id, { error: { code: -32000, message: EVIL } });
     }
@@ -32,11 +54,18 @@ export default async function main(ctx) {
     }
     if (method === 'tools/list') {
       return reply(id, {
-        result: { tools: ['toolerr', 'rpcerr'].map((name) => ({ name, inputSchema })) },
+        result: {
+          tools: ['toolerr', 'rpcerr', 'ask'].map((name) => ({
+            name,
+            inputSchema,
+          })),
+        },
       });
     }
     if (method === 'tools/call' && params?.name === 'toolerr') {
-      return reply(id, { result: { isError: true, content: [{ type: 'text', text: EVIL }] } });
+      return reply(id, {
+        result: { isError: true, content: [{ type: 'text', text: EVIL }] },
+      });
     }
     if (method === 'tools/call') {
       return reply(id, { error: { code: -32000, message: EVIL } });

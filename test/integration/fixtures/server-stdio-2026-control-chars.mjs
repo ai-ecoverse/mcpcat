@@ -67,6 +67,7 @@ rl.on('line', (line) => {
         tools: [
           { name: 'ask', inputSchema },
           { name: 'ask-url', inputSchema },
+          { name: 'ask-bare', inputSchema },
         ],
       },
     });
@@ -75,6 +76,14 @@ rl.on('line', (line) => {
   if (method === 'tools/call') {
     if (answered(params)) {
       send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: 'done' }] } });
+      return;
+    }
+    if (params?.name === 'ask-bare') {
+      send({
+        jsonrpc: '2.0',
+        id,
+        result: { resultType: 'input_required', content: [{ type: 'text', text: EVIL }] },
+      });
       return;
     }
     send({

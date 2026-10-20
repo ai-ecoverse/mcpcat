@@ -134,7 +134,7 @@ async function jerkLogin(
     return 0;
   }
   if (errText.trim()) {
-    await platform.write(2, errText);
+    await platform.write(2, sanitizeTerminal(errText));
   }
   if (result.status === JERK_EXIT_SIGN_IN) return 4;
   return result.status;
