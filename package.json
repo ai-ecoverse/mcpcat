@@ -50,7 +50,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "prepack": "npm run build && node scripts/strip-own-scripts.mjs",
-    "prepare": "npm run build",
+    "prepare": "npm run build && { [ ! -e .git ] || lefthook install; }",
     "lint": "sh scripts/lint.sh",
     "typecheck": "tsc",
     "test": "npm run test:unit && npm run test:integration && npm run test:kernel-min",
@@ -72,6 +72,7 @@
     "@types/node": "26.6.5",
     "esbuild": "0.28.2",
     "kernel-cert-new": "npm:@ai-ecoverse/slicc-kernel@1.135.7",
+    "lefthook": "2.2.2",
     "monocart-coverage-reports": "2.13.2",
     "proper-lockfile": "4.1.2",
     "quickjs-wasi": "3.6.2",
