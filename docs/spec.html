@@ -279,7 +279,7 @@ mcpcat [options] &lt;verb&gt; …                             everything else</c
   <tr><td><code>-H, --header 'Name: value'</code></td><td>Extra HTTP header for this invocation (repeatable). Never written to config unless passed to <code>add</code>.</td></tr>
   <tr><td><code>-m, --timeout &lt;s&gt;</code></td><td>Per-request timeout, default 60, renewed by progress notifications. Expiry exits 124.</td></tr>
   <tr><td><code>-v, --verbose</code></td><td>curl-style trace on stderr: <code>&gt;</code> request lines, <code>&lt;</code> response lines, HTTP status and headers (secrets redacted), stdio server stderr prefixed <code>[server]</code>.</td></tr>
-  <tr><td><code>-s, --silent</code></td><td>No progress or notices on stderr; errors still print.</td></tr>
+  <tr><td><code>--silent</code></td><td>No progress or notices on stderr; errors still print.</td></tr>
   <tr><td><code>-o, --output &lt;path&gt;</code></td><td>Write the primary result (or each binary content block, numbered) to files.</td></tr>
   <tr><td><code>--protocol-version &lt;v&gt;</code></td><td>Pin a version; fail if the server does not support it.</td></tr>
   <tr><td><code>--config &lt;file&gt;</code></td><td>Use this <code>mcp.json</code> instead of the user/project pair.</td></tr>

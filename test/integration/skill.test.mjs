@@ -91,6 +91,20 @@ describe('the agent skill', () => {
       assert.ok(help.includes(flag), flag);
   });
 
+  it('the spec gives each short option the meaning --help gives it, so -s is --server', () => {
+    const help = mcpcat(['--help']).stdout;
+    const spec = readFileSync(join(root, 'docs/spec.html'), 'utf8');
+    const helpShorts = new Map(
+      [...help.matchAll(/^ {2}(-[A-Za-z]), (--[a-z-]+)/gm)].map(([, s, l]) => [s, l])
+    );
+    const specShorts = [...spec.matchAll(/<code>(-[A-Za-z]), (--[a-z-]+)/g)];
+    const shared = specShorts.filter(([, short]) => helpShorts.has(short));
+    assert.ok(shared.length > 0);
+    for (const [, short, long] of shared) assert.equal(helpShorts.get(short), long, short);
+    assert.equal(helpShorts.get('-s'), '--server');
+    assert.match(spec, /<code>--silent<\/code>/);
+  });
+
   it('ships in the npm package and is declared for pi as a package skill', () => {
     assert.deepEqual(pkg.pi, { skills: ['dist/skills'] });
     assert.equal(readFileSync(builtFile, 'utf8'), skill);
