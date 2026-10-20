@@ -123,11 +123,15 @@ Client verbs:
   tools <target>             List tools
   call <target> <tool>       Call a tool
   describe <target> [tool]   Tool schema and help
+  resources <target>         List resources
+  read <target> <uri>        Read a resource
+  prompts <target>           List prompts
+  prompt <target> <name>     Get a prompt
 
 Configuration verbs:
   add <name> <url>           Add a server to mcp.json
-  add <name> --bridge -- 
-    Bridge a stdio server to HTTP (kernel only,
+  add <name> --bridge -- <command> [args…]
+                             Bridge a stdio server to HTTP (kernel only,
                              runs in foreground, does not survive reload)
   rm <name>                  Remove a server
   list                       List configured servers
@@ -143,12 +147,12 @@ Server and code verbs:
   grep <pattern> [target…]   Search tools by name or description
   discover <url>             Find MCP servers at a URL
   inbox [--json]             List discovery candidates
-  help [verb]                Show help
+  help                       Show this help
   help --skill               Print the agent skill (SKILL.md) for this version
 
 Options:
   --json                     JSON output
-  -H, --header 'N: V'       Extra header
+  -H, --header 'N: V'        Extra header
   -d <json>                  Tool arguments as JSON (or @file, @- for stdin)
   -m, --timeout <s>          Request timeout (default 60)
   --memory <MiB>             Code mode memory limit (default 256, max 1024)
@@ -162,7 +166,7 @@ Options:
   -s, --server <name>        Server target (code, repeatable)
   --allow-shell              Enable shell() global (code)
   -v, --verbose              Trace on stderr
-  -s, --silent               Suppress progress
+  --silent                   Suppress progress
   -o, --output <path>        Write result to file
   -V, --version              Print version
   -h, --help                 Show this help
