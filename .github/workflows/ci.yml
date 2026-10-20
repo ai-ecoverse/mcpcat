@@ -68,6 +68,27 @@ jobs:
       node-version: '26'
       chromium: false
 
+  host-floor:
+    runs-on: ${{ needs.runner.outputs.runner }}
+    needs: runner
+    timeout-minutes: 20
+    env:
+      LEFTHOOK: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Host integration suite on the engines.node floor
+        run: |
+          floor=$(node -p "require('./package.json').engines.node.replace(/^>=/, '')")
+          [ "$(node -p 'process.versions.node.split(".")[0]')" = "$floor" ]
+          npm run test:integration
+
   cert:
     runs-on: ${{ needs.runner.outputs.runner }}
     needs: runner
@@ -110,20 +131,21 @@ jobs:
 
   all-green:
     if: always()
-    needs: [runner, ci, cert, cert-review]
+    needs: [runner, ci, host-floor, cert, cert-review]
     runs-on: ${{ vars.CERT_LIGHT_RUNNER || 'ubuntu-latest' }}
     steps:
       - name: The verdict the merge queue requires
         env:
           RUNNER_RESULT: ${{ needs.runner.result }}
           CI_RESULT: ${{ needs.ci.result }}
+          FLOOR_RESULT: ${{ needs.host-floor.result }}
           CERT_RESULT: ${{ needs.cert.result }}
           REVIEW_RESULT: ${{ needs.cert-review.result }}
           VERDICT: ${{ needs.cert-review.outputs.verdict }}
         run: |
-          line="runner=${RUNNER_RESULT:-none} ci=${CI_RESULT:-none} cert=${CERT_RESULT:-none} cert-review=${REVIEW_RESULT:-none} (${VERDICT:-no verdict})"
+          line="runner=${RUNNER_RESULT:-none} ci=${CI_RESULT:-none} host-floor=${FLOOR_RESULT:-none} cert=${CERT_RESULT:-none} cert-review=${REVIEW_RESULT:-none} (${VERDICT:-no verdict})"
           ok=true
-          for r in "$RUNNER_RESULT" "$CI_RESULT" "$CERT_RESULT" "$REVIEW_RESULT"; do [ "$r" = success ] || ok=false; done
+          for r in "$RUNNER_RESULT" "$CI_RESULT" "$FLOOR_RESULT" "$CERT_RESULT" "$REVIEW_RESULT"; do [ "$r" = success ] || ok=false; done
           case "$VERDICT" in certified | not-behaviour | none) ;; *) ok=false ;; esac
           if [ "$ok" = true ]; then
             echo "all-green: PASS $line"

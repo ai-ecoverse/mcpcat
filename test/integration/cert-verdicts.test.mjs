@@ -59,6 +59,7 @@ describe('silence never passes: all-green', () => {
   const green = {
     RUNNER_RESULT: 'success',
     CI_RESULT: 'success',
+    FLOOR_RESULT: 'success',
     CERT_RESULT: 'success',
     REVIEW_RESULT: 'success',
   };
@@ -70,7 +71,7 @@ describe('silence never passes: all-green', () => {
       assert.match(
         r.out,
         new RegExp(
-          `^all-green: PASS runner=success ci=success cert=success cert-review=success \\(${verdict}\\)$`,
+          `^all-green: PASS runner=success ci=success host-floor=success cert=success cert-review=success \\(${verdict}\\)$`,
           'm'
         )
       );
@@ -81,6 +82,16 @@ describe('silence never passes: all-green', () => {
     ['cert-review printed no verdict', { ...green }, /\(no verdict\)/],
     ['a job that never ran', { ...green, CERT_RESULT: '', VERDICT: 'certified' }, /cert=none/],
     ['a failed job', { ...green, CI_RESULT: 'failure', VERDICT: 'certified' }, /ci=failure/],
+    [
+      'a failed Node floor job',
+      { ...green, FLOOR_RESULT: 'failure', VERDICT: 'certified' },
+      /host-floor=failure/,
+    ],
+    [
+      'a Node floor job that never ran',
+      { ...green, FLOOR_RESULT: '', VERDICT: 'certified' },
+      /host-floor=none/,
+    ],
     [
       'a missing coordinator approval',
       { ...green, VERDICT: 'needs-coordinator-review' },
@@ -95,6 +106,27 @@ describe('silence never passes: all-green', () => {
       assert.match(r.out, why);
     });
   }
+});
+
+describe('the host suite runs on the engines.node floor', () => {
+  const script = stepScript('ci.yml', 'Host integration suite on the engines.node floor');
+  const floor = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).engines.node;
+  const shims = (major) => ({
+    node: `case "$*" in *engines*) echo ${floor.replace(/^>=/, '')} ;; *) echo ${major} ;; esac`,
+    npm: 'echo "npm $*"',
+  });
+
+  it('runs the host integration suite on the floor major', () => {
+    const r = runStep('floor-ok', script, {}, shims(floor.replace(/^>=/, '')));
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /^npm run test:integration$/m);
+  });
+
+  it('refuses to run on any other major', () => {
+    const r = runStep('floor-off', script, {}, shims('99'));
+    assert.equal(r.code, 1, r.out);
+    assert.doesNotMatch(r.out, /test:integration/);
+  });
 });
 
 describe('silence never passes: the cert job', () => {
