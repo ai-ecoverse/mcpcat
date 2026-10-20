@@ -66,6 +66,45 @@ describe('host: mcpcat', () => {
     assert.ok(stdout.includes('Usage:'));
   });
 
+  it('help lists every verb, names the bridge command and gives each short option one meaning', () => {
+    const { stdout, status } = runHost(['--help']);
+    assert.equal(status, 0);
+    const verbs = [
+      'info',
+      'tools',
+      'call',
+      'describe',
+      'resources',
+      'read',
+      'prompts',
+      'prompt',
+      'add',
+      'rm',
+      'list',
+      'enable|disable',
+      'exposure',
+      'import',
+      'login',
+      'logout',
+      'serve',
+      'code',
+      'grep',
+      'discover',
+      'inbox',
+      'help',
+    ];
+    for (const verb of verbs)
+      assert.match(stdout, new RegExp(`^  ${verb.replace('|', '\\|')} `, 'm'), verb);
+    assert.match(stdout, /^ {2}add <name> --bridge -- <command> \[args…\]$/m);
+    const shorts = [...stdout.matchAll(/^ {2}(-[A-Za-z]),/gm)].map(([, flag]) => flag);
+    assert.deepEqual(shorts, [...new Set(shorts)]);
+    assert.match(stdout, /^ {2}--silent {2,}Suppress progress$/m);
+    const columns = [...stdout.matchAll(/^ {2}(\S.*?\S) {2,}(\S)/gm)].map(
+      (m) => m.index + m[0].length - 1 - stdout.lastIndexOf('\n', m.index)
+    );
+    assert.deepEqual([...new Set(columns)], [30]);
+  });
+
   it('no args prints help', () => {
     const { stdout, status } = runHost([]);
     assert.equal(status, 0);
