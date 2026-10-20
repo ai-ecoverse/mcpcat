@@ -59,6 +59,10 @@ const usedTab = () => tab ?? currentTab();
 
 if (command === 'tab-list') {
   record({ command });
+  if (process.env.FAKE_PWCLI_TAB_LIST_FAIL) {
+    process.stderr.write('boom \x1b]0;pwned\x07 \x1b[2J \x9b31m end\n');
+    process.exit(1);
+  }
   if (tabIds.length === 0) {
     process.stdout.write('No tabs open\n');
     process.exit(0);
