@@ -33,7 +33,7 @@ import {
   renderResourcesJson,
   renderToolsJson,
 } from '../render/result.ts';
-import { sanitizeTerminal } from '../render/sanitize.ts';
+import { sanitizeJson, sanitizeTerminal } from '../render/sanitize.ts';
 import { parseServeFlags, runServe } from '../serve/runtime.ts';
 import { createTokenSource, runLogin, runLogout } from './auth-verbs.ts';
 import {
@@ -1454,13 +1454,13 @@ async function handleInputRequired(
   const parsed2 = JSON.parse(err.requestJson) as Record<string, unknown>;
   const inputReq = parseInputRequest((parsed2.result as Record<string, unknown>) ?? parsed2);
   if (!inputReq) {
-    await platform.write(2, `${err.requestJson}\n`);
+    await platform.write(2, `${sanitizeJson(err.requestJson)}\n`);
     return EXIT_INPUT_REQUIRED;
   }
   const isTty = platform.kind === 'host' && platform.isatty(0) && platform.isatty(2);
   const elicitResult = await handleElicitation(platform, inputReq, isTty, respondData);
   if ('exitCode' in elicitResult) {
-    await platform.write(2, `${err.requestJson}\n`);
+    await platform.write(2, `${sanitizeJson(err.requestJson)}\n`);
     return EXIT_INPUT_REQUIRED;
   }
   try {

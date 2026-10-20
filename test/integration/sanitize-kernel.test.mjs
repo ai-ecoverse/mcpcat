@@ -19,7 +19,12 @@ async function installPackage(kernel, dir, name, commands, files) {
   }
   await kernel.writeFile(
     `/node_modules/@ai-ecoverse/${dir}/package.json`,
-    JSON.stringify({ name, version: pkg.version, type: 'module', slicc: { commands } })
+    JSON.stringify({
+      name,
+      version: pkg.version,
+      type: 'module',
+      slicc: { commands },
+    })
   );
 }
 
@@ -54,7 +59,12 @@ describe('kernel: server-supplied control characters in printed messages', () =>
     );
     await kernel.writeFile(
       `${AGENT_DIR}/mcp.json`,
-      JSON.stringify({ mcpServers: { evil: { command: 'evil-srv' } } })
+      JSON.stringify({
+        mcpServers: {
+          evil: { command: 'evil-srv' },
+          ask: { command: 'evil-srv', args: ['--stateless'] },
+        },
+      })
     );
   });
 
@@ -121,6 +131,23 @@ describe('kernel: server-supplied control characters in printed messages', () =>
     const r = await run(['serve', '--webmcp', '--playwright-cli', 'evil-pwcli']);
     assert.equal(r.status, 3, r.stderr);
     assert.ok(r.stderr.includes('mcpcat serve --webmcp: boom'), r.stderr);
+    assert.ok(!CONTROL_RE.test(r.stderr), JSON.stringify(r.stderr));
+  });
+
+  for (const flags of [[], ['--json']]) {
+    it(`an unanswered input request is printed without control characters (${flags.join(' ') || 'text'})`, async () => {
+      const r = await run(['call', ...flags, 'ask', 'ask']);
+      assert.equal(r.status, 6, r.stderr);
+      assert.ok(!CONTROL_RE.test(r.stderr), JSON.stringify(r.stderr));
+      assert.equal(JSON.parse(r.stderr).result.inputRequest.message, EVIL);
+    });
+  }
+
+  it('an invalid discovery event is reported without control characters', async () => {
+    await kernel.writeFile(`${AGENT_DIR}/bad.ndjson`, `${EVIL}\n`);
+    const r = await run(['add', '--from-discovery', `${AGENT_DIR}/bad.ndjson`]);
+    assert.equal(r.status, 2, r.stderr);
+    assert.ok(r.stderr.includes('invalid JSON: boom'), r.stderr);
     assert.ok(!CONTROL_RE.test(r.stderr), JSON.stringify(r.stderr));
   });
 });

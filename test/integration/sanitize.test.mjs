@@ -120,11 +120,16 @@ function rpcServer() {
         const inputSchema = { type: 'object', properties: {} };
         payload = {
           result: {
-            tools: ['toolerr', 'ok', 'rpcerr'].map((name) => ({ name, inputSchema })),
+            tools: ['toolerr', 'ok', 'rpcerr'].map((name) => ({
+              name,
+              inputSchema,
+            })),
           },
         };
       } else if (msg.method === 'tools/call' && msg.params?.name === 'toolerr') {
-        payload = { result: { isError: true, content: [{ type: 'text', text: EVIL }] } };
+        payload = {
+          result: { isError: true, content: [{ type: 'text', text: EVIL }] },
+        };
       } else if (msg.method === 'tools/call' && msg.params?.name === 'ok') {
         payload = { result: { content: [{ type: 'text', text: EVIL }] } };
       } else {
@@ -306,7 +311,9 @@ describe('server-supplied control characters in login failures', () => {
     mkdirSync(agent, { recursive: true });
     writeFileSync(
       join(agent, 'mcp.json'),
-      JSON.stringify({ mcpServers: { evil: { url: `http://127.0.0.1:${mcp.port}/mcp` } } })
+      JSON.stringify({
+        mcpServers: { evil: { url: `http://127.0.0.1:${mcp.port}/mcp` } },
+      })
     );
     env = { HOME: home, PI_CODING_AGENT_DIR: agent };
   });
@@ -338,5 +345,143 @@ describe('server-supplied control characters in login failures', () => {
     assert.equal(status, 4, stderr);
     assert.ok(stderr.includes('mcpcat: login failed: boom'), stderr);
     assert.ok(!CONTROL_RE.test(stderr), JSON.stringify(stderr));
+  });
+});
+
+describe('server-supplied control characters in an unanswered elicitation', () => {
+  let home;
+  let env;
+  const target = `stdio:node ${elicitFixture}`;
+
+  before(() => {
+    home = mkdtempSync(join(tmpdir(), 'mcpcat-sanitize-input-'));
+    env = { HOME: home, PI_CODING_AGENT_DIR: join(home, 'agent') };
+  });
+
+  after(() => rmSync(home, { recursive: true, force: true }));
+
+  for (const flags of [[], ['--json']]) {
+    it(`the input request is printed without control characters (${flags.join(' ') || 'text'})`, async () => {
+      const r = await run(['call', ...flags, target, 'ask'], env);
+      assert.equal(r.status, 6, r.stderr);
+      assert.ok(!CONTROL_RE.test(r.stderr), JSON.stringify(r.stderr));
+      const parsed = JSON.parse(r.stderr);
+      assert.equal(parsed.result.inputRequest.message, EVIL);
+    });
+  }
+
+  it('an input request without a form is printed without control characters', async () => {
+    const r = await run(['call', target, 'ask-bare'], env);
+    assert.equal(r.status, 6, r.stderr);
+    assert.ok(!CONTROL_RE.test(r.stderr), JSON.stringify(r.stderr));
+    assert.equal(JSON.parse(r.stderr).result.content[0].text, EVIL);
+  });
+});
+
+describe('server-supplied control characters in discovery messages', () => {
+  let home;
+  let env;
+
+  before(() => {
+    home = mkdtempSync(join(tmpdir(), 'mcpcat-sanitize-disc-'));
+    const agent = join(home, 'agent');
+    mkdirSync(agent, { recursive: true });
+    writeFileSync(join(agent, 'mcp.json'), '{"mcpServers":{}}\n');
+    env = {
+      HOME: home,
+      PI_CODING_AGENT_DIR: agent,
+      XDG_STATE_HOME: join(home, 'state'),
+    };
+  });
+
+  after(() => rmSync(home, { recursive: true, force: true }));
+
+  it('an invalid discovery event is reported without control characters', async () => {
+    const events = join(home, 'bad.ndjson');
+    writeFileSync(events, `${EVIL}\n`);
+    const r = await run(['add', '--from-discovery', events], env);
+    assert.equal(r.status, 2, r.stderr);
+    assert.ok(r.stderr.includes('invalid JSON: boom'), r.stderr);
+    assert.ok(!CONTROL_RE.test(r.stderr), JSON.stringify(r.stderr));
+  });
+
+  it('a trust mismatch warning is printed without control characters', async () => {
+    const events = join(home, 'squatted.ndjson');
+    const event = {
+      v: 1,
+      standard: 'ard',
+      origin: 'https://legit.example.com',
+      url: 'https://legit.example.com/.well-known/ard.json',
+      via: 'well-known',
+      page: 'https://legit.example.com/',
+      targetId: 't1',
+      status: 'valid',
+      summary: {
+        entries: [
+          {
+            identifier: 'urn:air:legit.example.com:mcp:squatted',
+            displayName: 'Squatted',
+            type: 'application/mcp-server-card+json',
+            url: 'https://legit.example.com/mcp',
+            trustManifest: { identity: EVIL },
+          },
+        ],
+      },
+    };
+    writeFileSync(events, `${JSON.stringify(event)}\n`);
+    const added = await run(['add', '--from-discovery', events], env);
+    assert.equal(added.status, 0, added.stderr);
+    const r = await run(['add', 'squatted', '--candidate', '1'], env);
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.stderr.includes('trust-manifest-mismatch: identity boom'), r.stderr);
+    assert.ok(!CONTROL_RE.test(r.stderr), JSON.stringify(r.stderr));
+  });
+});
+
+describe('control characters in a jerk sign-in failure', () => {
+  let home;
+  let env;
+
+  before(() => {
+    home = mkdtempSync(join(tmpdir(), 'mcpcat-sanitize-jerk-'));
+    const agent = join(home, 'agent');
+    const bin = join(home, 'bin');
+    mkdirSync(agent, { recursive: true });
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(agent, 'mcp.json'),
+      JSON.stringify({
+        mcpServers: { evil: { url: 'https://mcp.example.com/' } },
+      })
+    );
+    writeFileSync(join(home, 'evil.txt'), `${EVIL}\n`);
+    writeFileSync(
+      join(bin, 'jerk'),
+      [
+        '#!/bin/sh',
+        'case "$1" in',
+        '  --version) echo "jerk 0.14.1"; exit 0 ;;',
+        `  list) echo '[{"provider":"mcp:evil","source":"mcp.json"}]'; exit 0 ;;`,
+        'esac',
+        `cat "${join(home, 'evil.txt')}" >&2`,
+        'exit 1',
+        '',
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+    env = {
+      HOME: home,
+      PI_CODING_AGENT_DIR: agent,
+      PATH: `${bin}:${process.env.PATH}`,
+    };
+  });
+
+  after(() => rmSync(home, { recursive: true, force: true }));
+
+  it('the jerk error output is printed without control characters', async () => {
+    const r = await run(['login', 'evil'], env);
+    assert.notEqual(r.status, 0, r.stderr);
+    assert.ok(r.stderr.includes('boom'), r.stderr);
+    assert.ok(!CONTROL_RE.test(r.stderr), JSON.stringify(r.stderr));
   });
 });
