@@ -2,6 +2,29 @@ import type { FsApi } from '../platform/types.ts';
 import { acquireLock } from './lock.ts';
 import type { McpServerConfig } from './types.ts';
 
+const FILE_MODE = 0o600;
+const DIR_MODE = 0o700;
+const PI_DIR = /\/\.pi(\/agent)?$/;
+
+async function privateDir(fs: FsApi, dir: string, made: boolean): Promise<void> {
+  try {
+    await fs.mkdir(dir, { mode: DIR_MODE });
+  } catch {}
+  if (fs.chmod && (made || PI_DIR.test(dir))) {
+    try {
+      await fs.chmod(dir, DIR_MODE);
+    } catch {}
+  }
+}
+
+async function privateFile(fs: FsApi, path: string, output: string): Promise<void> {
+  await fs.writeFile(path, output, { mode: FILE_MODE });
+  if (!fs.chmod) return;
+  try {
+    await fs.chmod(path, FILE_MODE);
+  } catch {}
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -29,6 +52,8 @@ async function editMcpServers(
   path: string,
   edit: (servers: Record<string, unknown> | undefined, parsed: Record<string, unknown>) => boolean
 ): Promise<EditResult> {
+  const dir = path.slice(0, path.lastIndexOf('/'));
+  const made = dir !== '' && !(await fs.exists(dir).catch(() => false));
   const release = await acquireLock(fs, path);
   try {
     const text = await readText(fs, path);
@@ -39,15 +64,10 @@ async function editMcpServers(
     if (!edit(servers, parsed)) return { changed: false };
     const indent = text ? detectIndent(text) : '  ';
     const output = `${JSON.stringify(parsed, null, indent)}\n`;
-    const dir = path.slice(0, path.lastIndexOf('/'));
-    if (dir) {
-      try {
-        await fs.mkdir(dir);
-      } catch {}
-    }
+    if (dir) await privateDir(fs, dir, made);
     const tmpPath = `${path}.tmp.${Date.now()}`;
-    await fs.writeFile(tmpPath, output);
     try {
+      await privateFile(fs, tmpPath, output);
       await fs.rename(tmpPath, path);
     } catch (renameErr) {
       try {
