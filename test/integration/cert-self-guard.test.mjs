@@ -89,7 +89,7 @@ describe('cert self-guard wiring', () => {
   it('feeds the guard into the verdict all-green reads', () => {
     assert.match(review, /needs: \[guard, plan, record\]\n/);
     assert.match(review, /say needs-coordinator-review "cert-review: needs coordinator review/);
-    assert.match(ci, /needs: \[runner, ci, cert, cert-review\]\n/);
+    assert.match(ci, /needs: \[runner, ci, host-floor, cert, cert-review\]\n/);
   });
 
   it('keeps a label change from repeating the review of the same head, and lets it cancel nothing that a draft could outlive', () => {
