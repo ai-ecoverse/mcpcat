@@ -1,18 +1,21 @@
 import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { mcpcatArgs } from './helpers/bin.mjs';
+import { waitForAuthorizeUrl } from './helpers/authorize.mjs';
+import { isStandalone, mcpcatArgs, mcpcatBin } from './helpers/bin.mjs';
 
-const stdioFixture = join(
-  dirname(fileURLToPath(import.meta.url)),
-  'fixtures/server-stdio-control-chars.mjs'
-);
+const here = dirname(fileURLToPath(import.meta.url));
+const fixturesDir = join(here, 'fixtures');
+const stdioFixture = join(fixturesDir, 'server-stdio-control-chars.mjs');
+const elicitFixture = join(fixturesDir, 'server-stdio-2026-control-chars.mjs');
+const fakeTty = join(here, 'helpers/fake-tty.mjs');
+const fakePwCli = join(fixturesDir, 'fake-playwright-cli.sh');
 const EVIL = 'boom \x1b]0;pwned\x07 \x1b[2J \x9b31m end';
 const CONTROL_RE = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/;
 
@@ -35,6 +38,48 @@ function run(args, env) {
       })
     );
   });
+}
+
+function runTty(args, env, input) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ['--import', fakeTty, mcpcatBin, ...args], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, NODE_NO_WARNINGS: '1', ...env },
+    });
+    const out = [];
+    const err = [];
+    child.stdout.on('data', (d) => out.push(d));
+    child.stderr.on('data', (d) => err.push(d));
+    child.stdin.on('error', () => {});
+    child.stdin.end(input);
+    child.on('exit', (status) =>
+      resolve({
+        stdout: Buffer.concat(out).toString('utf8'),
+        stderr: Buffer.concat(err).toString('utf8'),
+        status,
+      })
+    );
+  });
+}
+
+function startFixture(script, args = []) {
+  const child = spawn(process.execPath, [join(fixturesDir, script), ...args], {
+    stdio: ['ignore', 'pipe', 'inherit'],
+    env: { ...process.env, NODE_NO_WARNINGS: '1' },
+  });
+  return new Promise((resolve, reject) => {
+    let data = '';
+    child.stdout.on('data', (chunk) => {
+      data += chunk;
+      if (data.includes('\n')) resolve({ child, ...JSON.parse(data.split('\n')[0]) });
+    });
+    child.on('error', reject);
+    child.on('exit', (code) => reject(new Error(`${script} exited ${code}`)));
+  });
+}
+
+function scriptCalling(suffix) {
+  return `const n = ALL_TOOLS.find((t) => t.name.endsWith('__${suffix}')).name; await tools[n]({});`;
 }
 
 function rpcServer() {
@@ -169,5 +214,129 @@ describe('server-supplied control characters in printed messages', () => {
     const r = await run(['code', '-s', `${base}/forbidden`, '-e', '1'], env);
     assert.ok(r.stderr.includes('pwned'), r.stderr);
     assert.ok(!CONTROL_RE.test(r.stderr), JSON.stringify(r.stderr));
+  });
+
+  it('add reports a failed probe without control characters', async () => {
+    const config = join(home, 'add-probe.json');
+    const r = await run(['add', '--config', config, 'evil', `${base}/forbidden`], env);
+    assert.equal(r.status, 3, r.stderr);
+    assert.ok(r.stderr.includes('mcpcat add: probe failed:'), r.stderr);
+    assert.ok(r.stderr.includes('pwned'), r.stderr);
+    assert.ok(!CONTROL_RE.test(r.stderr), JSON.stringify(r.stderr));
+  });
+
+  it('a code script whose tool call fails is reported without control characters', async () => {
+    const r = await run(['code', '-s', `${base}/mcp`, '-e', scriptCalling('rpcerr')], env);
+    assert.equal(r.status, 1, r.stderr);
+    assert.ok(r.stderr.includes('mcpcat: script failed: boom'), r.stderr);
+    assert.ok(!CONTROL_RE.test(r.stderr), JSON.stringify(r.stderr));
+  });
+
+  it('a code script whose tool reports an error is reported without control characters', async () => {
+    const r = await run(['code', '-s', `${base}/mcp`, '-e', scriptCalling('toolerr')], env);
+    assert.equal(r.status, 1, r.stderr);
+    assert.ok(r.stderr.includes('mcpcat: script failed: boom'), r.stderr);
+    assert.ok(!CONTROL_RE.test(r.stderr), JSON.stringify(r.stderr));
+  });
+
+  it('code --json keeps the script failure byte-exact', async () => {
+    const r = await run(
+      ['code', '--json', '-s', `${base}/mcp`, '-e', scriptCalling('rpcerr')],
+      env
+    );
+    assert.equal(r.status, 1, r.stderr);
+    const parsed = JSON.parse(r.stdout);
+    assert.equal(parsed.ok, false);
+    assert.ok(parsed.error.message.includes(EVIL), r.stdout);
+  });
+
+  it('serve --webmcp reports a playwright-cli failure without control characters', async () => {
+    const r = await run(['serve', '--webmcp', '--playwright-cli', fakePwCli], {
+      ...env,
+      FAKE_PWCLI_TAB_LIST_FAIL: '1',
+    });
+    assert.equal(r.status, 3, r.stderr);
+    assert.ok(r.stderr.includes('mcpcat serve --webmcp: boom'), r.stderr);
+    assert.ok(!CONTROL_RE.test(r.stderr), JSON.stringify(r.stderr));
+  });
+});
+
+describe('server-supplied control characters in elicitation prompts', {
+  skip: isStandalone,
+}, () => {
+  let home;
+  let env;
+  const target = `stdio:node ${elicitFixture}`;
+
+  before(() => {
+    home = mkdtempSync(join(tmpdir(), 'mcpcat-sanitize-elicit-'));
+    env = { HOME: home, PI_CODING_AGENT_DIR: join(home, 'agent') };
+  });
+
+  after(() => rmSync(home, { recursive: true, force: true }));
+
+  it('the elicitation message and field prompt are printed without control characters', async () => {
+    const r = await runTty(['call', target, 'ask'], env, '\n');
+    assert.ok(r.stderr.startsWith('boom \\x1b]0;pwned'), JSON.stringify(r.stderr));
+    assert.ok(r.stderr.includes('key boom'), r.stderr);
+    assert.ok(r.stderr.includes(' - boom'), r.stderr);
+    assert.ok(r.stderr.includes(' (boom'), r.stderr);
+    assert.ok(r.stderr.includes('|b) [boom'), r.stderr);
+    assert.ok(!CONTROL_RE.test(r.stderr), JSON.stringify(r.stderr));
+  });
+
+  it('a URL-mode elicitation is printed without control characters', async () => {
+    const r = await runTty(['call', target, 'ask-url'], env, '\n');
+    assert.ok(r.stderr.includes('Open this URL to continue: https://example.com/boom'), r.stderr);
+    assert.ok(!CONTROL_RE.test(r.stderr), JSON.stringify(r.stderr));
+  });
+});
+
+describe('server-supplied control characters in login failures', () => {
+  let as;
+  let mcp;
+  let home;
+  let env;
+
+  before(async () => {
+    as = await startFixture('oauth-as.mjs');
+    mcp = await startFixture('server-oauth-protected.mjs', [as.issuer]);
+    home = mkdtempSync(join(tmpdir(), 'mcpcat-sanitize-login-'));
+    const agent = join(home, 'agent');
+    mkdirSync(agent, { recursive: true });
+    writeFileSync(
+      join(agent, 'mcp.json'),
+      JSON.stringify({ mcpServers: { evil: { url: `http://127.0.0.1:${mcp.port}/mcp` } } })
+    );
+    env = { HOME: home, PI_CODING_AGENT_DIR: agent };
+  });
+
+  after(() => {
+    as?.child.kill('SIGTERM');
+    mcp?.child.kill('SIGTERM');
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('an authorization error from the AS is printed without control characters', async () => {
+    const { cmd, args } = mcpcatArgs(['login', 'evil', '--no-browser']);
+    const child = spawn(cmd, args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, NODE_NO_WARNINGS: '1', ...env },
+    });
+    let stderr = '';
+    child.stderr.on('data', (d) => {
+      stderr += d;
+    });
+    const exited = new Promise((resolve) => child.on('exit', resolve));
+    const authorize = new URL(await waitForAuthorizeUrl(child, () => stderr));
+    const redirect = new URL(authorize.searchParams.get('redirect_uri'));
+    redirect.searchParams.set('error', 'access_denied');
+    redirect.searchParams.set('error_description', EVIL);
+    redirect.searchParams.set('state', authorize.searchParams.get('state'));
+    child.stdin.end(`${redirect.href}\n`);
+    const status = await exited;
+    assert.equal(status, 4, stderr);
+    assert.ok(stderr.includes('mcpcat: login failed: boom'), stderr);
+    assert.ok(!CONTROL_RE.test(stderr), JSON.stringify(stderr));
   });
 });
