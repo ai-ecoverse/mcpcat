@@ -174,6 +174,7 @@ Options:
   -v, --verbose              Trace on stderr
   --silent                   Suppress progress
   -o, --output <path>        Write result to file
+  --no-input                 Never prompt (non-TTY implies it)
   -V, --version              Print version
   -h, --help                 Show this help
 `;
@@ -203,6 +204,7 @@ interface ParsedArgs {
   noValidate: boolean;
   trailingCommand: string[] | undefined;
   respondArg: string | undefined;
+  noInput: boolean;
   roots: string[];
   outputPath: string | undefined;
 }
@@ -260,6 +262,7 @@ function parseFlags(args: string[]): {
   positional: string[];
   trailingCommand: string[] | undefined;
   respondArg: string | undefined;
+  noInput: boolean;
   roots: string[];
   outputPath: string | undefined;
   noValidate: boolean;
@@ -284,6 +287,7 @@ function parseFlags(args: string[]): {
   const positional: string[] = [];
   let trailingCommand: string[] | undefined;
   let respondArg: string | undefined;
+  let noInput = false;
   const roots: string[] = [];
   let outputPath: string | undefined;
   let noValidate = false;
@@ -331,6 +335,8 @@ function parseFlags(args: string[]): {
       timeoutMs = Number(args[++i]) * 1000;
     } else if (arg === '--respond' && args[i + 1]) {
       respondArg = args[++i];
+    } else if (arg === '--no-input') {
+      noInput = true;
     } else if (arg === '--root' && args[i + 1]) {
       roots.push(args[++i]);
     } else if ((arg === '-o' || arg === '--output') && args[i + 1]) {
@@ -388,6 +394,7 @@ function parseFlags(args: string[]): {
     positional,
     trailingCommand,
     respondArg,
+    noInput,
     roots,
     outputPath,
     noValidate,
@@ -458,6 +465,7 @@ function parseArgs(args: string[]): ParsedArgs {
     silent: flags.silent,
     noValidate: flags.noValidate,
     respondArg: flags.respondArg,
+    noInput: flags.noInput,
     roots: flags.roots,
     outputPath: flags.outputPath,
   };
@@ -1459,7 +1467,8 @@ async function handleInputRequired(
   err: InputRequiredError,
   respondData: Record<string, unknown> | undefined,
   json: boolean,
-  redact: Redactor
+  redact: Redactor,
+  noInput: boolean
 ): Promise<number> {
   const parsed2 = JSON.parse(err.requestJson) as Record<string, unknown>;
   const requestOut = sanitizeJson(JSON.stringify(redactDeep(parsed2, redact), null, 2));
@@ -1468,7 +1477,7 @@ async function handleInputRequired(
     await platform.write(2, `${requestOut}\n`);
     return EXIT_INPUT_REQUIRED;
   }
-  const isTty = platform.kind === 'host' && platform.isatty(0) && platform.isatty(2);
+  const isTty = !noInput && platform.kind === 'host' && platform.isatty(0) && platform.isatty(2);
   const elicitResult = await handleElicitation(
     redactWrites(platform, redact),
     inputReq,
@@ -1647,7 +1656,15 @@ async function runClientVerb(
       return termExitCode;
     }
     if (err instanceof InputRequiredError) {
-      return await handleInputRequired(platform, conn, err, respondData, parsed.jsonOutput, redact);
+      return await handleInputRequired(
+        platform,
+        conn,
+        err,
+        respondData,
+        parsed.jsonOutput,
+        redact,
+        parsed.noInput
+      );
     }
     const e = classifyError(err);
     await writeErrRedacted(platform, parsed.jsonOutput, e.kind, e.msg, redact);

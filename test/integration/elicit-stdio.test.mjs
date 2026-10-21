@@ -74,6 +74,31 @@ describe('host: elicitation retry over a stdio server', () => {
     assert.equal(r.stdout.trim(), 'call 2 answers {}');
   });
 
+  it('--no-input on a TTY prints the request and exits 6', { skip: isStandalone }, async () => {
+    const r = await runTty(['--no-input', 'call', target, 'whoami'], 'ada\n');
+    assert.equal(r.status, 6, r.stderr);
+    assert.ok(r.stderr.includes('"inputRequest'), r.stderr);
+    assert.ok(!r.stderr.includes('name:'), r.stderr);
+    assert.equal(r.stdout, '');
+  });
+
+  it('--no-input on a TTY does not wait for Enter on a URL', { skip: isStandalone }, async () => {
+    const r = await runTty(['--no-input', 'call', target, 'confirm-url'], '\n');
+    assert.equal(r.status, 6, r.stderr);
+    assert.ok(!r.stderr.includes('Press Enter'), r.stderr);
+    assert.ok(r.stderr.includes('https://example.com/confirm'), r.stderr);
+    assert.equal(r.stdout, '');
+  });
+
+  it('--no-input on a TTY still takes --respond answers', { skip: isStandalone }, async () => {
+    const r = await runTty(
+      ['--no-input', '--respond', '{"name":"bob"}', 'call', target, 'whoami'],
+      ''
+    );
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout.trim(), 'call 2 answers {"name":"bob"}');
+  });
+
   it('retries with --respond answers', async () => {
     const { cmd, args } = mcpcatArgs(['--respond', '{"name":"bob"}', 'call', target, 'whoami']);
     const r = await collect(spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env }));
@@ -126,5 +151,15 @@ describe('kernel: elicitation retry over a stdio server', () => {
     );
     assert.equal(r.status, 0, r.stderr);
     assert.equal(r.stdout.trim(), 'call 2 answers {"name":"bob"}');
+  });
+
+  it('accepts --no-input and exits 6 with the request', async () => {
+    const r = await kernel.run(['mcpcat', '--no-input', 'call', 'stdio:elicit-srv', 'whoami'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: { PI_CODING_AGENT_DIR: '/etc/mcpcat-elicit' },
+    });
+    assert.equal(r.status, 6, r.stderr);
+    assert.ok(r.stderr.includes('inputRequest'), r.stderr);
   });
 });

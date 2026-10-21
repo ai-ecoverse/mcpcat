@@ -285,7 +285,7 @@ mcpcat [options] &lt;verb&gt; …                             everything else</c
   <tr><td><code>--config &lt;file&gt;</code></td><td>Use this <code>mcp.json</code> instead of the user/project pair.</td></tr>
   <tr><td><code>--no-cache</code>, <code>--refresh</code></td><td>Skip / renew cached list results.</td></tr>
   <tr><td><code>--max-chars &lt;n&gt;</code></td><td>Cut text output in the middle (pi's 20 KB rule as an opt-in); ignored with <code>--json</code>.</td></tr>
-  <tr><td><code>-y, --yes</code> / <code>--no-input</code></td><td>Answer confirmations / never prompt (non-TTY implies <code>--no-input</code>).</td></tr>
+  <tr><td><code>--no-input</code></td><td>Never prompt; non-TTY implies it.</td></tr>
   <tr><td><code>-V, --version</code>, <code>-h, --help</code></td><td>Version from <code>package.json</code>; help.</td></tr>
 </table>
 
@@ -366,7 +366,7 @@ jq -n '{q:"cimd"}' | mcpcat call docs search -d @-</code></pre>
 </table>
 
 <h4 id="mrtr">Elicitation and multi-round-trip requests</h4>
-<p>On a TTY, mcpcat renders the requested schema as a prompt, asks, and retries with <code>inputResponses</code> (2026-07-28) or answers <code>elicitation/create</code> (≤ 2025-11-25). Without a TTY it exits 6 and prints the request; <code>--respond @answers.json</code> on a rerun supplies the answers. URL-mode elicitation prints the URL and waits for Enter.</p>
+<p>On a TTY, mcpcat renders the requested schema as a prompt, asks, and retries with <code>inputResponses</code> (2026-07-28) or answers <code>elicitation/create</code> (≤ 2025-11-25). Without a TTY, or with <code>--no-input</code>, it exits 6 and prints the request; <code>--respond @answers.json</code> on a rerun supplies the answers. URL-mode elicitation prints the URL and waits for Enter, except with <code>--no-input</code>.</p>
 
 <h2 id="config">10. Configuration</h2>
 
