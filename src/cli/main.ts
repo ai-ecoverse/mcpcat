@@ -1560,11 +1560,7 @@ async function runClientVerb(
   const redact: Redactor = (text: string) => {
     let result = text;
     for (const secret of allSecrets) {
-      if (secret.length > 0) {
-        while (result.includes(secret)) {
-          result = result.replace(secret, '[REDACTED]');
-        }
-      }
+      if (secret.length > 0) result = result.replaceAll(secret, '[REDACTED]');
     }
     return result;
   };

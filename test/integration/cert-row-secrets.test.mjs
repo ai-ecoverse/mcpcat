@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { isStandalone, mcpcatBin } from './helpers/bin.mjs';
+import { isStandalone, mcpcatArgs, mcpcatBin } from './helpers/bin.mjs';
 import { filesUnder, homeEnv, root, run, scratchHome, startFixture } from './helpers/rows.mjs';
 
 const MARK = 'certrowSecretQ7v3Zk9';
@@ -160,6 +160,29 @@ describe('cert row: secrets redaction', () => {
     assert.equal(r.status, 5, r.stderr.slice(0, 600));
     assert.ok(r.stderr.includes('retry failed'), r.stderr.slice(0, 600));
   });
+
+  for (const [name, path, tool] of [
+    ['an input request', 'ask', 'ask'],
+    ['a JSON-RPC error', 'mcp', 'err'],
+  ]) {
+    it(`terminates when the value is the marker: ${name}`, () => {
+      const { cmd, args } = mcpcatArgs([
+        '-H',
+        'X-Api: ${CERT_ROW_KEY}',
+        'call',
+        `${srv.base}/${path}`,
+        tool,
+      ]);
+      const r = spawnSync(cmd, args, {
+        env: { ...env, CERT_ROW_KEY: 'REDACTED' },
+        timeout: 10_000,
+        killSignal: 'SIGKILL',
+        encoding: 'utf8',
+      });
+      assert.notEqual(r.status, null, `mcpcat did not exit: ${r.signal}`);
+      assert.ok(r.stderr.includes('[REDACTED]'), r.stderr.slice(0, 600));
+    });
+  }
 
   it('delivers the expanded value to the server', async () => {
     const r = run([...header, 'call', `${srv.base}/mcp`, 'echo', '-d', '{"message":"x"}'], { env });
