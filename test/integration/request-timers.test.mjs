@@ -79,6 +79,36 @@ import { createServer } from 'node:http';
     assert.equal(res.code, 0, res.stderr);
     assert.equal(res.stdout, '0');
   });
+
+  it('rejects promptly when aborted during a pending read', async () => {
+    const source = `
+      import { createStdioStatelessConnection } from ${JSON.stringify(stdioModule)};
+      import { createHostPlatform } from ${JSON.stringify(hostModule)};
+      const controller = new AbortController();
+      const conn = await createStdioStatelessConnection({
+        command: process.execPath,
+        args: [${JSON.stringify(join(fixturesDir, 'server-stdio-2026-quiet.mjs'))}],
+        platform: createHostPlatform(),
+        signal: controller.signal,
+      });
+      const pending = conn.listTools();
+      setTimeout(() => controller.abort(), 200);
+      const started = Date.now();
+      let name = 'resolved';
+      try {
+        await pending;
+      } catch (err) {
+        name = err.name;
+      }
+      await conn.close();
+      process.stdout.write(name + ' ' + (Date.now() - started));
+    `;
+    const res = await runInChild(source, 20_000);
+    assert.equal(res.code, 0, res.stderr);
+    const [name, ms] = res.stdout.split(' ');
+    assert.equal(name, 'McpTimeoutError');
+    assert.ok(Number(ms) < 5_000, `took ${ms}ms`);
+  });
 });
 
 describe('stateless HTTP abort listeners (#319)', () => {
