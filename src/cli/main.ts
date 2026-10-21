@@ -1642,7 +1642,7 @@ async function runClientVerb(
       return termExitCode;
     }
     if (err instanceof InputRequiredError) {
-      return handleInputRequired(platform, conn, err, respondData, parsed.jsonOutput, redact);
+      return await handleInputRequired(platform, conn, err, respondData, parsed.jsonOutput, redact);
     }
     const e = classifyError(err);
     await writeErrRedacted(platform, parsed.jsonOutput, e.kind, e.msg, redact);
