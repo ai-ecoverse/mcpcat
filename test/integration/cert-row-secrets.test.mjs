@@ -1,9 +1,11 @@
 import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { filesUnder, homeEnv, run, scratchHome, startFixture } from './helpers/rows.mjs';
+import { isStandalone, mcpcatArgs, mcpcatBin } from './helpers/bin.mjs';
+import { filesUnder, homeEnv, root, run, scratchHome, startFixture } from './helpers/rows.mjs';
 
 const MARK = 'certrowSecretQ7v3Zk9';
 
@@ -25,6 +27,7 @@ describe('cert row: secrets redaction', () => {
           r500: { url: `${srv.base}/500`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
           r403: { url: `${srv.base}/403`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
           r401: { url: `${srv.base}/401`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
+          rask: { url: `${srv.base}/ask`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
         },
       })
     );
@@ -82,6 +85,102 @@ describe('cert row: secrets redaction', () => {
       assert.notEqual(r.status, null, `mcpcat did not exit: ${r.signal}`);
       const out = r.stdout + r.stderr;
       assert.ok(!out.includes(MARK), `the secret leaked (exit ${r.status}):\n${out.slice(0, 600)}`);
+    });
+  }
+
+  const inputCases = {
+    'an input request quoting -H': [() => [...header, 'call', `${srv.base}/ask`, 'ask'], 6, false],
+    'an input request quoting -H, --json': [
+      () => [...header, '--json', 'call', `${srv.base}/ask`, 'ask'],
+      6,
+      true,
+    ],
+    'a bare input request quoting -H': [
+      () => [...header, 'call', `${srv.base}/ask`, 'ask', '-d', '{"bare":true}'],
+      6,
+      true,
+    ],
+    'an input request quoting mcp.json ${VAR}': [() => ['call', 'rask', 'ask'], 6, false],
+    'a retried call failing with -H, --respond': [
+      () => [...header, '--respond', '{"answer":"y"}', 'call', `${srv.base}/ask`, 'ask'],
+      5,
+      false,
+    ],
+    'a retried call failing with -H, --respond, --json': [
+      () => [...header, '--json', '--respond', '{"answer":"y"}', 'call', `${srv.base}/ask`, 'ask'],
+      5,
+      true,
+    ],
+  };
+
+  for (const [name, [args, status, json]] of Object.entries(inputCases)) {
+    it(`redacts the value: ${name}`, async () => {
+      const r = run(args(), { env });
+      const out = `${r.stdout}${r.stderr}`;
+      assert.equal(r.status, status, out.slice(0, 600));
+      assert.ok(!out.includes(MARK), `the secret leaked (exit ${r.status}):\n${out.slice(0, 600)}`);
+      assert.ok(r.stderr.includes('[REDACTED]'), r.stderr.slice(0, 600));
+      if (json) JSON.parse(r.stderr);
+    });
+  }
+
+  const ttyCases = {
+    'the input prompt quoting -H': () => [...header, 'call', `${srv.base}/ask`, 'ask'],
+    'the input prompt quoting mcp.json ${VAR}': () => ['call', 'rask', 'ask'],
+  };
+
+  for (const [name, args] of Object.entries(ttyCases)) {
+    it(`redacts the value: ${name}`, { skip: isStandalone }, () => {
+      const r = spawnSync(
+        process.execPath,
+        ['--import', join(root, 'test/integration/helpers/fake-tty.mjs'), mcpcatBin, ...args()],
+        { env, input: 'y\n', timeout: 30_000, encoding: 'utf8' }
+      );
+      const out = `${r.stdout}${r.stderr}`;
+      assert.equal(r.status, 5, out.slice(0, 600));
+      assert.ok(!out.includes(MARK), `the secret leaked (exit ${r.status}):\n${out.slice(0, 600)}`);
+      assert.match(r.stderr, /need input [^\n]*\[REDACTED\]/);
+      assert.match(r.stderr, /answer - about [^\n]*\[REDACTED\]/);
+    });
+  }
+
+  it('retries when the value matches a protocol key', () => {
+    const r = run(
+      [
+        '-H',
+        'X-Api: ${CERT_ROW_KEY}',
+        '--respond',
+        '{"answer":"y"}',
+        'call',
+        `${srv.base}/ask`,
+        'ask',
+      ],
+      { env: { ...env, CERT_ROW_KEY: 'input' } }
+    );
+    assert.equal(r.status, 5, r.stderr.slice(0, 600));
+    assert.ok(r.stderr.includes('retry failed'), r.stderr.slice(0, 600));
+  });
+
+  for (const [name, path, tool] of [
+    ['an input request', 'ask', 'ask'],
+    ['a JSON-RPC error', 'mcp', 'err'],
+  ]) {
+    it(`terminates when the value is the marker: ${name}`, () => {
+      const { cmd, args } = mcpcatArgs([
+        '-H',
+        'X-Api: ${CERT_ROW_KEY}',
+        'call',
+        `${srv.base}/${path}`,
+        tool,
+      ]);
+      const r = spawnSync(cmd, args, {
+        env: { ...env, CERT_ROW_KEY: 'REDACTED' },
+        timeout: 10_000,
+        killSignal: 'SIGKILL',
+        encoding: 'utf8',
+      });
+      assert.notEqual(r.status, null, `mcpcat did not exit: ${r.signal}`);
+      assert.ok(r.stderr.includes('[REDACTED]'), r.stderr.slice(0, 600));
     });
   }
 
