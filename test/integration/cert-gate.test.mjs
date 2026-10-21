@@ -55,8 +55,17 @@ cpSync(join(root, 'scripts/cert-review'), join(repo, 'scripts/cert-review'), {
   recursive: true,
 });
 mkdirSync(join(repo, '.github/workflows'), { recursive: true });
-for (const f of ['ci.yml', 'cert-review.yml', 'release.yml'])
+for (const f of ['ci.yml', 'cert-review.yml', 'cert-verify.yml', 'release.yml'])
   cpSync(join(root, '.github/workflows', f), join(repo, '.github/workflows', f));
+cpSync(join(root, 'scripts/kernel-test-files.mjs'), join(repo, 'scripts/kernel-test-files.mjs'));
+const KERNEL_TEST = "import { kernel } from './helpers/kernel.mjs';\nkernel();\n";
+mkdirSync(join(repo, 'test/integration'), { recursive: true });
+writeFileSync(join(repo, 'test/integration/on-kernel.test.mjs'), KERNEL_TEST);
+for (const f of ['kernel', 'config-mode', 'request-timers-bundle', 'sanitize-kernel'])
+  cpSync(
+    join(root, `test/integration/${f}.test.mjs`),
+    join(repo, `test/integration/${f}.test.mjs`)
+  );
 writeFileSync(join(repo, 'README.md'), '1\n');
 mkdirSync(join(repo, 'src'), { recursive: true });
 writeFileSync(join(repo, 'src/a.ts'), '1\n');
@@ -123,6 +132,8 @@ describe("cert-review plan: a change to the gate gets the gate's full review", (
     ['cert-review.yml', '.github/workflows/cert-review.yml'],
     ['ci.yml', '.github/workflows/ci.yml'],
     ['the post-publish verify', 'scripts/cert-review/published.mjs'],
+    ['cert-verify.yml', '.github/workflows/cert-verify.yml'],
+    ['the kernel test set', 'scripts/kernel-test-files.mjs'],
   ]) {
     it(`reviews a pull request that changes only ${name}`, () => {
       const head = branch(`only-${name.replace(/\W/g, '-')}`, {
@@ -173,6 +184,44 @@ describe("cert-review plan: a change to the gate gets the gate's full review", (
       assert.equal(r.out.go, 'true', r.log);
     });
   }
+
+  it('reviews a pull request that weakens a test the pinned kernels run', () => {
+    const file = 'test/integration/on-kernel.test.mjs';
+    const r = runPlan('weak-kernel', branch('weak-kernel', { [file]: 'it.skip\n' }));
+    assert.equal(r.code, 0, r.log);
+    assert.match(
+      r.log,
+      /^behaviour: 1 gate file changed: test\/integration\/on-kernel\.test\.mjs$/m
+    );
+    assert.equal(r.out.go, 'true', r.log);
+  });
+
+  for (const f of ['kernel', 'config-mode', 'request-timers-bundle', 'sanitize-kernel']) {
+    it(`reviews a pull request that changes only the kernel test ${f}.test.mjs`, () => {
+      const file = `test/integration/${f}.test.mjs`;
+      const label = `only-kernel-${f}`;
+      const r = runPlan(label, branch(label, { [file]: 'it.skip\n' }));
+      assert.equal(r.code, 0, r.log);
+      assert.match(r.log, new RegExp(`^gate: ${file.replace(/\./g, '\\.')}$`, 'm'));
+      assert.equal(r.out.go, 'true', r.log);
+    });
+  }
+
+  it('reviews a pull request that adds a test the pinned kernels run', () => {
+    const file = 'test/integration/new-kernel.test.mjs';
+    const r = runPlan('new-kernel', branch('new-kernel', { [file]: KERNEL_TEST }));
+    assert.equal(r.code, 0, r.log);
+    assert.equal(r.out.go, 'true', r.log);
+  });
+
+  it('feeds a changed soak into the NEGATIVE like any changed test', async () => {
+    const { CHANGED_TEST } = await import(join(root, 'scripts/cert-review/classify.mjs'));
+    assert.ok(CHANGED_TEST.test('test/integration/serve-soak.cert.mjs'));
+    assert.ok(CHANGED_TEST.test('test/integration/proxy.test.mjs'));
+    assert.ok(!CHANGED_TEST.test('test/integration/helpers/kernel.mjs'));
+    const stage = readFileSync(join(root, 'scripts/cert-review/stage.mjs'), 'utf8');
+    assert.match(stage, /\.filter\(\(f\) => CHANGED_TEST\.test\(f\)\)/);
+  });
 
   it('still skips a change to neither shipped nor gate files', () => {
     const head = branch('docs-only', {
