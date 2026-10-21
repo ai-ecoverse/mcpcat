@@ -159,10 +159,26 @@ describe("cert-review plan: a change to the gate gets the gate's full review", (
     assert.notEqual(r.out.go, 'true');
   });
 
+  for (const file of [
+    'test/integration/cert-row-secrets.test.mjs',
+    'test/integration/webmcp.test.mjs',
+    'test/integration/cert-gate.test.mjs',
+    'test/integration/helpers/isolate.mjs',
+  ]) {
+    it(`reviews a pull request that changes only the evidence test ${file}`, () => {
+      const label = `evidence-${file.replace(/\W/g, '-')}`;
+      const r = runPlan(label, branch(label, { [file]: 'it.skip\n' }));
+      assert.equal(r.code, 0, r.log);
+      assert.match(r.log, /^behaviour: 1 gate file changed: /m);
+      assert.equal(r.out.go, 'true', r.log);
+    });
+  }
+
   it('still skips a change to neither shipped nor gate files', () => {
     const head = branch('docs-only', {
       'README.md': '2\n',
       '.github/workflows/renovate.yml': 'x\n',
+      'test/integration/x.test.mjs': 'x\n',
     });
     const r = runPlan('docs-only', head);
     assert.equal(r.code, 0, r.log);

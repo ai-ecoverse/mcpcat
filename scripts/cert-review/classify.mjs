@@ -19,10 +19,24 @@ export const SHIPPED = [
 export const GATE = [
   /^\.github\/workflows\/(ci|cert-review|release)\.ya?ml$/,
   /^scripts\/cert-review\//,
+  /^test\/integration\/cert-[^/]+\.test\.mjs$/,
+  /^test\/integration\/helpers\//,
 ];
 
 export const isShipped = (file) => SHIPPED.some((re) => re.test(file));
-export const isGate = (file) => GATE.some((re) => re.test(file));
+export const isGate = (file, rowTests = new Set()) =>
+  GATE.some((re) => re.test(file)) || rowTests.has(file);
+
+function rowTestsAt(git, rev) {
+  try {
+    const rows = JSON.parse(git(['show', `${rev}:scripts/cert-review/rows.json`]));
+    return Object.values(rows)
+      .flat()
+      .map((name) => `test/integration/${name}.test.mjs`);
+  } catch {
+    return [];
+  }
+}
 
 export function delta(repo, base, head) {
   const git = (args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
@@ -31,7 +45,8 @@ export function delta(repo, base, head) {
     .split('\n')
     .filter(Boolean);
   const shipped = changed.filter(isShipped);
-  const gate = changed.filter(isGate);
+  const rowTests = new Set([...rowTestsAt(git, from), ...rowTestsAt(git, head)]);
+  const gate = changed.filter((f) => isGate(f, rowTests));
   return {
     base: from,
     head: git(['rev-parse', `${head}^{commit}`]),
@@ -40,5 +55,6 @@ export function delta(repo, base, head) {
     gate,
     files: [...new Set([...shipped, ...gate])],
     changed,
+    rowTests,
   };
 }

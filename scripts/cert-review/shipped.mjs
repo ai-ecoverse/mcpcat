@@ -28,4 +28,4 @@ if (process.env.GITHUB_OUTPUT)
   );
 console.log(line);
 for (const f of r.changed)
-  console.log(`${isShipped(f) ? 'shipped' : isGate(f) ? 'gate' : 'not shipped'}: ${f}`);
+  console.log(`${isShipped(f) ? 'shipped' : isGate(f, r.rowTests) ? 'gate' : 'not shipped'}: ${f}`);
