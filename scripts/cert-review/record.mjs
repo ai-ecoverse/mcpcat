@@ -245,6 +245,9 @@ const comment = existsSync(join(values.review, 'comment.md'))
 const checks = [
   `- artifact: sha256 ${facts.sha256 ?? '?'} (the pack job's: ${values.sha256 || '?'}), ${facts.integrity ?? '?'}, re-hashed here`,
   `- NEGATIVE: the subject's tests at ${found.negative?.tests ?? '?'} on the base's ${found.negative?.fromBase?.join(', ') || '?'} at ${found.negative?.base ?? '?'}`,
+  found.delta
+    ? `- delta: ${found.delta.shipped.length} shipped, ${found.delta.gate.length} gate files${found.delta.shipped.length ? '' : " (gate-only: the artifact is the base's shipped sources packed again; the review is of the gate)"}`
+    : '- delta: unknown',
   `- suites, security rows, NEGATIVE, kernel bundle imports and rebuild, from the evidence uploaded before the reviewer ran: ${found.defects.length + found.gaps.length ? `${found.defects.length} defects, ${found.gaps.length} gaps` : 'all passed'}${found.notes.length ? ` (${found.notes.join(', ')})` : ''}`,
   planted
     ? '- tag and main: not checked, this is a planted build'

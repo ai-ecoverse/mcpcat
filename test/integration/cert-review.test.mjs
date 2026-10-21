@@ -55,6 +55,7 @@ function evidence(name, version, sha256, change = (_stage, _suites) => {}) {
     artifact: { sha256 },
     kernels,
     changedTests: [],
+    delta: { shipped: ['src/a.ts'], gate: [] },
     rebuildDiff: { identical: true, explained: [], unexplained: [] },
     surface: { [version]: { kernelBundle: { imports: [] } } },
   };
@@ -491,6 +492,44 @@ describe('cert-review record --commit: a pull request or merge group under revie
     );
   });
 
+  it('certifies a gate-only change on its evidence, and says so', () => {
+    const r = record('pr-gate-only', change.tgz, change.sha256, [], undefined, (stage) => {
+      stage.delta = { shipped: [], gate: ['scripts/cert-review/record.mjs'] };
+    });
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.rec.line, /^certified /);
+    assert.match(
+      readFileSync(join(work, 'rec-pr-gate-only', 'body.md'), 'utf8'),
+      /- delta: 0 shipped, 1 gate files \(gate-only: /
+    );
+  });
+
+  it('keeps a gate-only change fail-closed: a failed suite still fails it', () => {
+    const r = record('pr-gate-fail', change.tgz, change.sha256, [], undefined, (stage, suites) => {
+      stage.delta = { shipped: [], gate: ['.github/workflows/cert-review.yml'] };
+      const host = suites.results.find((x) => x.name === 'subject host suite');
+      Object.assign(host, { exit: 1, failed: ['gate test'] });
+    });
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.rec.line, /^cert-ci: FAIL .*subject host suite failed/);
+  });
+
+  it('calls evidence that does not say what the delta changes INCOMPLETE', () => {
+    const r = record('pr-no-delta', change.tgz, change.sha256, [], undefined, (stage) => {
+      delete stage.delta;
+    });
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.rec.line, /^cert-ci: INCOMPLETE .*which shipped and gate files the delta/);
+  });
+
+  it('calls a reviewed change with no shipped or gate file INCOMPLETE', () => {
+    const r = record('pr-empty-delta', change.tgz, change.sha256, [], undefined, (stage) => {
+      stage.delta = { shipped: [], gate: [] };
+    });
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.rec.line, /^cert-ci: INCOMPLETE .*changes no shipped or gate file/);
+  });
+
   it("fails when the tarball's gitHead is not the head under review", () => {
     const r = record('pr-head', otherHead.tgz, otherHead.sha256);
     assert.equal(r.code, 1, r.out);
@@ -767,7 +806,7 @@ describe('cert-review shipped: which changes are behaviour', () => {
   for (const [name, files] of [
     ['docs', { 'README.md': '2', 'docs/spec.html': '2', 'AGENTS.md': '2' }],
     ['tests', { 'test/integration/x.test.mjs': '2' }],
-    ['ci', { '.github/workflows/ci.yml': '2', 'scripts/cert-review/record.mjs': '2' }],
+    ['workflow', { '.github/workflows/renovate.yml': '2', 'scripts/lint.sh': '2' }],
   ]) {
     it(`skips a ${name}-only change as not behaviour`, () => {
       const r = run(branch(name, files));
@@ -796,6 +835,36 @@ describe('cert-review shipped: which changes are behaviour', () => {
       );
     });
   }
+
+  const escape = (file) => file.replace(/\./g, '\\.');
+  for (const [name, file] of [
+    ['cert-review workflow', '.github/workflows/cert-review.yml'],
+    ['ci workflow', '.github/workflows/ci.yml'],
+    ['post-publish verify', 'scripts/cert-review/published.mjs'],
+    ['behaviour classifier', 'scripts/cert-review/shipped.mjs'],
+    ['record', 'scripts/cert-review/record.mjs'],
+    ['security rows', 'scripts/cert-review/rows.json'],
+  ]) {
+    it(`reviews a change to the gate's ${name}`, () => {
+      const r = run(branch(`g-${name.replace(/\W/g, '-')}`, { [file]: '5', 'README.md': '5' }));
+      assert.equal(r.code, 0, r.out);
+      assert.match(r.out, new RegExp(`^behaviour: 1 gate file changed: ${escape(file)}$`, 'm'));
+      assert.match(r.out, new RegExp(`^gate: ${escape(file)}$`, 'm'));
+    });
+  }
+
+  it('names the release workflow both shipped and gate', () => {
+    const r = run(branch('g-release', { '.github/workflows/release.yml': '6' }));
+    assert.equal(r.code, 0, r.out);
+    const file = '.github/workflows/release.yml';
+    assert.match(
+      r.out,
+      new RegExp(
+        `^behaviour: 1 shipped file changed: ${escape(file)}; 1 gate file changed: ${escape(file)}$`,
+        'm'
+      )
+    );
+  });
 
   it('reviews a package.json change to scripts alone, whatever dist does', () => {
     git('checkout', '-q', '-b', 'pkg-base', root0);

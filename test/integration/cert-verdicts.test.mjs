@@ -226,7 +226,7 @@ describe('silence never passes: release verify and the installer tests', () => {
       'What is under review, against what, and whether it changes shipped behaviour'
     );
     const at = plan.indexOf('node scripts/cert-review/shipped.mjs');
-    const check = plan.indexOf("grep -qE '^(behaviour|not behaviour): '");
+    const check = plan.indexOf("grep -qE '^(base gate: )?(behaviour|not behaviour): '");
     const read = plan.indexOf('head -1 "$RUNNER_TEMP/shipped.txt" | grep -q \'^behaviour:\'');
     assert.ok(
       at > 0 && check > at && read > check,
