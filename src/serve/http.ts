@@ -18,10 +18,14 @@ export interface HttpResponse {
   body: string;
 }
 
-export type HttpHandler = (request: HttpRequest) => Promise<HttpResponse>;
+export type HttpHandler = (request: HttpRequest, signal: AbortSignal) => Promise<HttpResponse>;
+
+interface ChunkReader {
+  read(): Promise<ReadableStreamReadResult<Uint8Array>>;
+}
 
 export async function readUntil(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  reader: ChunkReader,
   buf: Uint8Array<ArrayBuffer>,
   bufLen: number,
   sentinel: string,
@@ -45,7 +49,7 @@ export async function readUntil(
 }
 
 export async function readExact(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  reader: ChunkReader,
   buf: Uint8Array<ArrayBuffer>,
   bufLen: number,
   needed: number
@@ -92,7 +96,15 @@ export async function handleConnection(
   writable: WritableStream<Uint8Array>,
   handler: HttpHandler
 ): Promise<void> {
-  const reader = readable.getReader();
+  const raw = readable.getReader();
+  let ahead: Promise<ReadableStreamReadResult<Uint8Array>> | null = null;
+  const reader: ChunkReader = {
+    read() {
+      const next = ahead ?? raw.read();
+      ahead = null;
+      return next;
+    },
+  };
   const writer = writable.getWriter();
   let buf = new Uint8Array(4096);
   let bufLen = 0;
@@ -145,7 +157,25 @@ export async function handleConnection(
         body,
       };
 
-      const response = await handler(request);
+      const disconnect = new AbortController();
+      let handling = true;
+      const watch: Promise<ReadableStreamReadResult<Uint8Array>> = ahead ?? raw.read();
+      ahead = watch;
+      watch.then(
+        (r) => {
+          if (handling && r.done) disconnect.abort();
+        },
+        () => {
+          if (handling) disconnect.abort();
+        }
+      );
+      let response: HttpResponse;
+      try {
+        response = await handler(request, disconnect.signal);
+      } finally {
+        handling = false;
+      }
+      if (disconnect.signal.aborted) break;
       await writeResponse(writer, response);
 
       const connectionHeader = (parsed.headers.connection ?? '').toLowerCase();
@@ -164,7 +194,7 @@ export async function handleConnection(
       }
     }
   } finally {
-    reader.releaseLock();
+    raw.releaseLock();
     try {
       await writer.close();
     } catch {}
