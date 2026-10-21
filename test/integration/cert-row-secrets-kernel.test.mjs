@@ -228,15 +228,15 @@ describe('cert row: secrets redaction in the kernel', () => {
   const pad = (n) => (n === 0 ? [] : ['-H', `X-A: ${'p'.repeat(n)}`]);
   const cutCases = {
     'call /401, -v': ['/401', (u) => ['-v', 'call', u, 'echo']],
-    'call /500': ['/500', (u) => ['call', u, 'echo'], 260],
+    'call /500': ['/500', (u) => ['call', u, 'echo'], [0, 560, 7]],
     'call /403, --json': ['/403', (u) => ['--json', 'call', u, 'echo']],
     'add /401': ['/401', null],
     'add /403': ['/403', null],
   };
 
-  for (const [name, [path, argv, from = 0]] of Object.entries(cutCases)) {
+  for (const [name, [path, argv, [from, to, step] = [0, 32, 1]]] of Object.entries(cutCases)) {
     it(`redacts before it truncates the error body: ${name}`, async () => {
-      for (let n = from; n < from + 32; n++) {
+      for (let n = from; n < to; n += step) {
         const r = argv
           ? await run([...pad(n), ...header, ...argv(`${base}${path}`)])
           : await run([
