@@ -50,7 +50,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "prepack": "npm run build && node scripts/strip-own-scripts.mjs",
-    "prepare": "npm run build && { [ ! -e .git ] || lefthook install; }",
+    "prepare": "npm run build && slicc-install-hooks",
     "lint": "sh scripts/lint.sh",
     "typecheck": "tsc",
     "test": "npm run test:unit && npm run test:integration && npm run test:kernel-min",
@@ -65,7 +65,7 @@
   "devDependencies": {
     "@ai-ecoverse/slicc-bios": "1.36.1",
     "@ai-ecoverse/slicc-kernel": "1.141.2",
-    "@ai-ecoverse/slicc-shared-web": "1.29.2",
+    "@ai-ecoverse/slicc-shared-web": "1.29.8",
     "@biomejs/biome": "2.5.15",
     "@earendil-works/pi-codemode": "1.2.0",
     "@earendil-works/pi-mcp": "1.2.0",

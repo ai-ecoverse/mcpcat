@@ -19,6 +19,7 @@ import {
   COMMIT,
   fetchCommit,
   fetchPlanted,
+  installBase,
   NAME,
   packTree,
   SEMVER,
@@ -229,9 +230,7 @@ swapDist(join(work, 'tag'), pubDir);
 
 const prevTree = join(work, 'prev');
 const prevCommit = worktree(root, prevTree, baseRef);
-sh('npm', ['ci', ...npmFlags], { cwd: prevTree });
-if (!existsSync(join(prevTree, 'dist/kernel/mcpcat.mjs')))
-  sh('npm', ['run', 'build'], { cwd: prevTree });
+installBase(prevTree);
 const negFromBase = negativeTree({
   subject: join(work, 'tag'),
   base: prevTree,

@@ -46,6 +46,11 @@ export function worktree(root, dir, ref) {
   return sh('git', ['rev-parse', 'HEAD'], { cwd: dir }).trim();
 }
 
+export function installBase(dir) {
+  sh('npm', ['ci', '--ignore-scripts', ...npmFlags], { cwd: dir });
+  sh('npm', ['run', 'build'], { cwd: dir });
+}
+
 function setVersion(dir, version) {
   sh('npm', ['version', version, '--no-git-tag-version', '--allow-same-version'], { cwd: dir });
 }
