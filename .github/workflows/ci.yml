@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   merge_group:
     types: [checks_requested]
 
@@ -121,7 +121,6 @@ jobs:
   cert-review:
     permissions:
       actions: read
-      checks: read
       contents: write
       issues: write
       pull-requests: write

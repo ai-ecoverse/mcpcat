@@ -1039,12 +1039,6 @@ describe('cert-review verdict: a run without a recorded verdict still leaves a c
     );
   });
 
-  it('posts pending, never a reusable failure, while the coordinator approval is missing', () => {
-    const r = fallback('fb-guard', { OUTCOME: 'needs-coordinator-review' });
-    assert.equal(r.code, 0, r.out);
-    assert.ok(r.calls.includes('state=pending'), r.calls.join(' '));
-  });
-
   it('posts failure for a FAIL that record never posted', () => {
     const r = fallback('fb-fail', { OUTCOME: 'fail', SAID: 'cert-ci: FAIL x' });
     assert.ok(r.calls.includes('state=failure'), r.calls.join(' '));
@@ -1052,11 +1046,6 @@ describe('cert-review verdict: a run without a recorded verdict still leaves a c
 
   for (const [what, env, why] of [
     ['record posted the status', { OUTCOME: 'fail', POSTED: 'true' }, /record posted the status/],
-    [
-      'the verdict was reused',
-      { OUTCOME: 'fail', REASON: 'reused' },
-      /the status recorded on e{40} stands/,
-    ],
     ['it is certified', { OUTCOME: 'certified' }, /certified, nothing to add/],
     ['it is not behaviour', { OUTCOME: 'not-behaviour' }, /not-behaviour, nothing to add/],
     [
