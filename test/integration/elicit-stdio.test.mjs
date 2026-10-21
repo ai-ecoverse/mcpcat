@@ -99,6 +99,22 @@ describe('host: elicitation retry over a stdio server', () => {
     assert.equal(r.stdout.trim(), 'call 2 answers {"name":"bob"}');
   });
 
+  it('--no-input after the tool name exits 6 on a TTY', { skip: isStandalone }, async () => {
+    const r = await runTty(['call', target, 'whoami', '--json', '--no-input'], 'ada\n');
+    assert.equal(r.status, 6, r.stderr);
+    assert.ok(r.stderr.includes('inputRequest'), r.stderr);
+    assert.equal(r.stdout, '');
+  });
+
+  it('--respond after the tool name supplies answers', { skip: isStandalone }, async () => {
+    const r = await runTty(
+      ['call', target, 'whoami', '--no-input', '--respond', '{"name":"eve"}'],
+      ''
+    );
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout.trim(), 'call 2 answers {"name":"eve"}');
+  });
+
   it('retries with --respond answers', async () => {
     const { cmd, args } = mcpcatArgs(['--respond', '{"name":"bob"}', 'call', target, 'whoami']);
     const r = await collect(spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env }));
@@ -153,8 +169,8 @@ describe('kernel: elicitation retry over a stdio server', () => {
     assert.equal(r.stdout.trim(), 'call 2 answers {"name":"bob"}');
   });
 
-  it('accepts --no-input and exits 6 with the request', async () => {
-    const r = await kernel.run(['mcpcat', '--no-input', 'call', 'stdio:elicit-srv', 'whoami'], {
+  it('accepts a trailing --no-input and exits 6 with the request', async () => {
+    const r = await kernel.run(['mcpcat', 'call', 'stdio:elicit-srv', 'whoami', '--no-input'], {
       stdout: 'pipe',
       stderr: 'pipe',
       env: { PI_CODING_AGENT_DIR: '/etc/mcpcat-elicit' },

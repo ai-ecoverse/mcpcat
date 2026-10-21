@@ -364,6 +364,10 @@ function parseFlags(args: string[]): {
       jsonOutput = true;
     } else if (ra === '--no-validate') {
       noValidate = true;
+    } else if (ra === '--no-input') {
+      noInput = true;
+    } else if (ra === '--respond' && rest[j + 1] !== undefined) {
+      respondArg = rest[++j];
     } else if ((ra === '-o' || ra === '--output') && rest[j + 1] !== undefined) {
       outputPath = rest[++j];
     } else if (ra === '--help' || ra === '-h') {
