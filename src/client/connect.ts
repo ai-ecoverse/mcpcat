@@ -27,6 +27,7 @@ export interface ConnectOptions {
   verbose?: VerboseLogger;
   authProvider?: AuthProvider;
   roots?: { uri: string; name?: string }[];
+  redact?: (text: string) => string;
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: protocol negotiation requires many branches
@@ -107,6 +108,7 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
       verbose: options.verbose,
       authProvider: options.authProvider,
       transportRefusals: platform.kind === 'kernel',
+      redact: options.redact,
     });
   } catch (err) {
     const isMethodNotFound =
