@@ -36,18 +36,22 @@ const server = createServer((req, res) => {
       return;
     }
     seen.push({ method: req.method, url: req.url, headers: req.headers });
-    const quoted = JSON.stringify(req.headers);
-    if (req.url.startsWith('/500')) {
+    const bare = req.url.startsWith('/tok');
+    const url = bare ? req.url.slice(4) : req.url;
+    const quoted = bare
+      ? `token ${(req.headers.authorization ?? '').slice(7)} key ${req.headers['x-key'] ?? ''}`
+      : JSON.stringify(req.headers);
+    if (url.startsWith('/500')) {
       res.writeHead(500, { 'content-type': 'text/plain' });
       res.end(`boom ${quoted}`);
       return;
     }
-    if (req.url.startsWith('/403')) {
+    if (url.startsWith('/403')) {
       res.writeHead(403, { 'content-type': 'text/plain' });
       res.end(`denied ${quoted}`);
       return;
     }
-    if (req.url.startsWith('/401')) {
+    if (url.startsWith('/401')) {
       res.writeHead(401, { 'content-type': 'text/plain' });
       res.end(`bad credentials ${quoted}`);
       return;
@@ -72,13 +76,13 @@ const server = createServer((req, res) => {
       return;
     }
     let out;
-    if (req.url.startsWith('/ask') && method === 'server/discover') {
+    if (url.startsWith('/ask') && method === 'server/discover') {
       out = rpc(id, {
         supportedVersions: ['2026-07-28'],
         serverInfo: { name: 'cert-reflect', version: '1.0.0' },
         capabilities: { tools: {} },
       });
-    } else if (req.url.startsWith('/ask') && method === 'tools/call') {
+    } else if (url.startsWith('/ask') && method === 'tools/call') {
       const ask = {
         message: `need input ${quoted}`,
         schema: {

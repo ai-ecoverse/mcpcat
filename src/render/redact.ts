@@ -18,3 +18,10 @@ export function redactWrites(platform: Platform, redact: Redactor): Platform {
       platform.write(fd, typeof data === 'string' ? redact(data) : data),
   });
 }
+
+export function redactSecrets(text: string, secrets: Iterable<string>): string {
+  const ordered = [...secrets].filter((s) => s.length > 0).sort((a, b) => b.length - a.length);
+  let result = text;
+  for (const secret of ordered) result = result.replaceAll(secret, '[REDACTED]');
+  return result;
+}
