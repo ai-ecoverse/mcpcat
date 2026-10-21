@@ -102,7 +102,7 @@ export function createProxyHandler(options: ProxyOptions): {
   const scrub = secretMasker(options.hiddenHeaders, '***');
 
   async function doConnect(): Promise<McpConnection> {
-    const c = await connect(options.platform, options.connectOpts);
+    const c = await connect(options.platform, { ...options.connectOpts, redact: scrub });
     cachedInfo = await c.info();
     return c;
   }

@@ -267,6 +267,41 @@ describe('cert row: secrets redaction', () => {
     });
   }
 
+  const pad = (n) => (n === 0 ? [] : ['-H', `X-A: ${'p'.repeat(n)}`]);
+  const cutCases = {
+    'call /401, -v': ['/401', (u) => ['-v', 'call', u, 'echo']],
+    'call /500': ['/500', (u) => ['call', u, 'echo'], 260],
+    'call /403, --json': ['/403', (u) => ['--json', 'call', u, 'echo']],
+    'add /401': ['/401', null],
+    'add /403': ['/403', null],
+  };
+
+  for (const [name, [path, argv, from = 0]] of Object.entries(cutCases)) {
+    it(`redacts before it truncates the error body: ${name}`, async () => {
+      for (let n = from; n < from + 32; n++) {
+        const r = argv
+          ? run([...pad(n), ...header, ...argv(`${srv.base}${path}`)], { env })
+          : run(
+              [
+                'add',
+                '--config',
+                join(home, `cut-${n}.json`),
+                'p',
+                `${srv.base}${path}`,
+                ...pad(n),
+                ...header,
+              ],
+              { env }
+            );
+        const out = `${r.stdout}${r.stderr}`;
+        assert.ok(
+          !out.includes(MARK.slice(0, 6)),
+          `a prefix leaked (pad ${n}):\n${out.slice(0, 600)}`
+        );
+      }
+    });
+  }
+
   const addCases = {
     '/500': [['-H', 'X-Api: ${CERT_ROW_TOKEN}'], '/500'],
     '/tok/401': [bearer, '/tok/401'],

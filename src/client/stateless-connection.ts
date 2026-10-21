@@ -103,10 +103,14 @@ function firstLine(text: string): string {
   return text.trim().split('\n')[0].trim().slice(0, 200);
 }
 
-async function authReason(res: Response): Promise<string | undefined> {
+async function authReason(
+  res: Response,
+  redact: (text: string) => string
+): Promise<{ raw?: string; reason?: string }> {
   const type = res.headers.get('content-type') ?? '';
-  if (!type.toLowerCase().startsWith('text/plain')) return undefined;
-  return firstLine(await res.text()) || undefined;
+  if (!type.toLowerCase().startsWith('text/plain')) return {};
+  const text = await res.text();
+  return { raw: firstLine(text), reason: firstLine(redact(text)) || undefined };
 }
 
 function selectSseFrame(body: Uint8Array, targetId: number): JsonRpcResponse {
@@ -192,6 +196,7 @@ export interface StatelessConnectionOptions {
   verbose?: VerboseLogger;
   authProvider?: AuthProvider;
   transportRefusals?: boolean;
+  redact?: (text: string) => string;
 }
 
 type RequestFn = (method: string, params: Record<string, unknown>) => Promise<unknown>;
@@ -287,6 +292,7 @@ export async function createStatelessConnection(
     verbose,
     authProvider,
     transportRefusals,
+    redact = (text: string) => text,
   } = options;
 
   let nextId = 1;
@@ -312,14 +318,14 @@ export async function createStatelessConnection(
 
   async function handleErrorStatus(res: Response, method: string): Promise<never> {
     if (res.status === 401 || res.status === 403) {
-      const reason = await authReason(res);
+      const { raw, reason } = await authReason(res, redact);
       if (
         transportRefusals &&
         res.status === 403 &&
         !res.headers.has('www-authenticate') &&
-        reason?.startsWith(KERNEL_REFUSAL)
+        raw?.startsWith(KERNEL_REFUSAL)
       ) {
-        throw new TransportRefusalError(403, reason);
+        throw new TransportRefusalError(403, reason ?? '');
       }
       if (authProvider) throw new AuthRetryableError(res, reason);
       throw new McpAuthError(res.status, url, reason);
@@ -331,7 +337,7 @@ export async function createStatelessConnection(
       if (p.error && typeof p.error.code === 'number') rpc = p.error;
     } catch {}
     if (rpc) throw new StatelessRpcError(rpc.code, rpc.message, rpc.data);
-    throw new StatelessHttpError(res.status, res.statusText, method, text.slice(0, 512));
+    throw new StatelessHttpError(res.status, res.statusText, method, redact(text).slice(0, 512));
   }
 
   async function doFetch(

@@ -880,6 +880,7 @@ async function probeServer(
     } else {
       return undefined;
     }
+    opts.redact = (text: string) => redactSecrets(text, secrets);
     const conn = await connect(platform, opts as Parameters<typeof connect>[1]);
     try {
       await conn.info();
@@ -1610,6 +1611,7 @@ async function runClientVerb(
       verbose,
       authProvider,
       roots,
+      redact,
     });
     activeConn = conn;
   } catch (err) {
