@@ -55,8 +55,9 @@ cpSync(join(root, 'scripts/cert-review'), join(repo, 'scripts/cert-review'), {
   recursive: true,
 });
 mkdirSync(join(repo, '.github/workflows'), { recursive: true });
-for (const f of ['ci.yml', 'cert-review.yml', 'release.yml'])
+for (const f of ['ci.yml', 'cert-review.yml', 'cert-verify.yml', 'release.yml'])
   cpSync(join(root, '.github/workflows', f), join(repo, '.github/workflows', f));
+cpSync(join(root, 'scripts/kernel-test-files.mjs'), join(repo, 'scripts/kernel-test-files.mjs'));
 writeFileSync(join(repo, 'README.md'), '1\n');
 mkdirSync(join(repo, 'src'), { recursive: true });
 writeFileSync(join(repo, 'src/a.ts'), '1\n');
@@ -123,6 +124,8 @@ describe("cert-review plan: a change to the gate gets the gate's full review", (
     ['cert-review.yml', '.github/workflows/cert-review.yml'],
     ['ci.yml', '.github/workflows/ci.yml'],
     ['the post-publish verify', 'scripts/cert-review/published.mjs'],
+    ['cert-verify.yml', '.github/workflows/cert-verify.yml'],
+    ['the kernel test set', 'scripts/kernel-test-files.mjs'],
   ]) {
     it(`reviews a pull request that changes only ${name}`, () => {
       const head = branch(`only-${name.replace(/\W/g, '-')}`, {

@@ -17,9 +17,11 @@ export const SHIPPED = [
 ];
 
 export const GATE = [
-  /^\.github\/workflows\/(ci|cert-review|release)\.ya?ml$/,
+  /^\.github\/workflows\/(ci|cert-review|cert-verify|release)\.ya?ml$/,
   /^scripts\/cert-review\//,
-  /^test\/integration\/cert-[^/]+\.test\.mjs$/,
+  /^scripts\/(cert|kernel-test-files|cert-count-reporter)\.mjs$/,
+  /^test\/integration\/cert(-[^/]+)?\.test\.mjs$/,
+  /^test\/integration\/[^/]+\.cert\.mjs$/,
   /^test\/integration\/helpers\//,
 ];
 
