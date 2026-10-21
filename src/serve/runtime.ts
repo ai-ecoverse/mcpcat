@@ -1,7 +1,8 @@
 import {
   containsPlaceholders,
-  expandHeaders,
+  expandPlaceholders,
   expandPlaceholdersStrict,
+  missingPlaceholders,
   placeholderValues,
 } from '../config/expand.ts';
 import { MergedConfigSource } from '../config/index.ts';
@@ -915,6 +916,27 @@ function resolveProxyUrl(
   return { url, headers, version };
 }
 
+function unsetIn(
+  header: string,
+  value: string,
+  env: Record<string, string | undefined>
+): string | undefined {
+  const missing = missingPlaceholders(value, env);
+  if (missing.length === 0) return undefined;
+  return `unset variable ${missing.join(', ')} in header '${header}'`;
+}
+
+function hide(
+  hidden: Set<string>,
+  template: string,
+  expanded: string,
+  env: Record<string, string | undefined>
+): void {
+  if (template) hidden.add(template);
+  if (expanded) hidden.add(expanded);
+  for (const p of placeholderValues(template, env)) hidden.add(p);
+}
+
 async function resolveProxyConfig(
   platform: Platform,
   target: string,
@@ -926,16 +948,14 @@ async function resolveProxyConfig(
   const entry = await config.get(target);
   if (!entry) return `unknown target '${target}'`;
   if ('url' in entry && entry.url) {
-    const expanded = expandHeaders(entry.headers, platform.env, (msg) => {
-      platform.write(2, `mcpcat serve --proxy: warning: ${msg}\n`).catch(() => {});
-    });
-    const merged = { ...expanded, ...connectHeaders };
-    if (entry.headers) {
-      for (const v of Object.values(entry.headers)) {
-        hiddenValues.add(v);
-        for (const p of placeholderValues(v, platform.env)) hiddenValues.add(p);
-      }
+    const expanded: Record<string, string> = {};
+    for (const [k, v] of Object.entries(entry.headers ?? {})) {
+      const missing = unsetIn(k, v, platform.env);
+      if (missing) return missing;
+      expanded[k] = expandPlaceholders(v, platform.env);
+      hide(hiddenValues, v, expanded[k], platform.env);
     }
+    const merged = { ...expanded, ...connectHeaders };
     return { url: entry.url, headers: merged, version };
   }
   if ('command' in entry && entry.command) {
@@ -960,12 +980,12 @@ async function buildProxyConnectOpts(
   const hiddenValues = new Set<string>();
 
   for (const [k, v] of options.proxyHeaders) {
-    const expanded = expandPlaceholdersStrict(v, platform.env);
-    if (expanded === undefined) return { error: `unset variable in header '${k}'` };
+    const missing = unsetIn(k, v, platform.env);
+    if (missing) return { error: missing };
+    const expanded = expandPlaceholders(v, platform.env);
     const key = k.toLowerCase() === 'authorization' ? 'Authorization' : k;
     connectHeaders[key] = expanded;
-    hiddenValues.add(expanded);
-    for (const p of placeholderValues(v, platform.env)) hiddenValues.add(p);
+    hide(hiddenValues, v, expanded, platform.env);
   }
 
   const isUrl =
