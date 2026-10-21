@@ -82,6 +82,24 @@ function createStdioJsonRpc(
     }
   }
 
+  function raceDeadline(
+    linePromise: Promise<string>,
+    method: string,
+    remaining: number
+  ): Promise<string> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    const stop = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new McpTimeoutError(method, timeoutMs)), remaining);
+      onAbort = () => reject(new McpTimeoutError(method, timeoutMs));
+      externalSignal?.addEventListener('abort', onAbort, { once: true });
+    });
+    return Promise.race([linePromise, stop]).finally(() => {
+      clearTimeout(timer);
+      if (onAbort) externalSignal?.removeEventListener('abort', onAbort);
+    });
+  }
+
   async function request(method: string, params: Record<string, unknown>): Promise<unknown> {
     const id = nextId++;
     const meta: Record<string, unknown> = {
@@ -107,11 +125,7 @@ function createStdioJsonRpc(
     while (Date.now() < deadline) {
       const remaining = deadline - Date.now();
       if (externalSignal?.aborted) throw new McpTimeoutError(method, timeoutMs);
-      const linePromise = readLine();
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new McpTimeoutError(method, timeoutMs)), remaining)
-      );
-      const line = await Promise.race([linePromise, timeoutPromise]);
+      const line = await raceDeadline(readLine(), method, remaining);
       const parsed = JSON.parse(line) as JsonRpcMessage;
       if (verbose?.enabled) verbose.response(line);
       if (parsed.id === id) {

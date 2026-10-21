@@ -139,26 +139,25 @@ function makeAbort(
   externalSignal?: AbortSignal
 ): {
   controller: AbortController;
-  timer: ReturnType<typeof setTimeout>;
+  stopTimer: () => void;
+  detach: () => void;
 } {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  if (externalSignal) {
-    if (externalSignal.aborted) {
+  const onAbort = () => {
+    clearTimeout(timer);
+    controller.abort();
+  };
+  if (externalSignal?.aborted) onAbort();
+  else externalSignal?.addEventListener('abort', onAbort, { once: true });
+  return {
+    controller,
+    stopTimer: () => clearTimeout(timer),
+    detach: () => {
       clearTimeout(timer);
-      controller.abort();
-    } else {
-      externalSignal.addEventListener(
-        'abort',
-        () => {
-          clearTimeout(timer);
-          controller.abort();
-        },
-        { once: true }
-      );
-    }
-  }
-  return { controller, timer };
+      externalSignal?.removeEventListener('abort', onAbort);
+    },
+  };
 }
 
 function logHeaders(
@@ -339,14 +338,14 @@ export async function createStatelessConnection(
     method: string,
     params: Record<string, unknown>,
     body: string
-  ): Promise<{ res: Response; token: string | undefined }> {
+  ): Promise<{ res: Response; token: string | undefined; detach: () => void }> {
     const token = await authProvider?.token();
     const headers = buildHeaders(method, params, token);
     if (verbose?.enabled) {
       verbose.request(method, body);
       logHeaders(verbose, '>', Object.entries(headers));
     }
-    const { controller, timer } = makeAbort(timeoutMs, externalSignal);
+    const { controller, stopTimer, detach } = makeAbort(timeoutMs, externalSignal);
     try {
       const res = await fetchImpl(url, {
         method: 'POST',
@@ -358,14 +357,15 @@ export async function createStatelessConnection(
         verbose.http('<', `HTTP/1.1 ${res.status} ${res.statusText}`);
         logHeaders(verbose, '<', res.headers.entries());
       }
-      return { res, token };
+      return { res, token, detach };
     } catch (err) {
+      detach();
       if (controller.signal.aborted && !externalSignal?.aborted) {
         throw new McpTimeoutError(method, timeoutMs);
       }
       throw err;
     } finally {
-      clearTimeout(timer);
+      stopTimer();
     }
   }
 
@@ -421,21 +421,22 @@ export async function createStatelessConnection(
     });
 
     for (let attempt = 0; attempt < 2; attempt++) {
-      const { res, token } = await doFetch(method, params, body);
-
-      if (res.status >= 400) {
-        try {
-          await handleErrorStatus(res, method);
-        } catch (err) {
-          if (err instanceof AuthRetryableError && attempt === 0) {
-            await handleAuthError(err, token);
-            continue;
+      const { res, token, detach } = await doFetch(method, params, body);
+      let retry: AuthRetryableError | undefined;
+      try {
+        if (res.status >= 400) {
+          try {
+            await handleErrorStatus(res, method);
+          } catch (err) {
+            if (!(err instanceof AuthRetryableError && attempt === 0)) throw err;
+            retry = err;
           }
-          throw err;
         }
+        if (!retry) return await parseResponse(res, id);
+      } finally {
+        detach();
       }
-
-      return parseResponse(res, id);
+      await handleAuthError(retry, token);
     }
     throw new McpAuthError(401, url);
   }
