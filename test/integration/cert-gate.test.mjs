@@ -131,7 +131,7 @@ describe("cert-review plan: a change to the gate gets the gate's full review", (
   for (const [name, file] of [
     ['cert-review.yml', '.github/workflows/cert-review.yml'],
     ['ci.yml', '.github/workflows/ci.yml'],
-    ['the post-publish verify', 'scripts/cert-review/published.mjs'],
+    ['the published-package check', 'scripts/cert-review/released.mjs'],
     ['cert-verify.yml', '.github/workflows/cert-verify.yml'],
     ['the kernel test set', 'scripts/kernel-test-files.mjs'],
   ]) {

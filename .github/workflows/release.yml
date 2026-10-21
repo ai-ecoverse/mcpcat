@@ -51,56 +51,9 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "release tag: ${TAG:-none}"
 
-  verify:
-    name: release / verify on npm
+  binaries:
     needs: detect-tag
     if: github.ref == 'refs/heads/main' && needs.detect-tag.outputs.tag != ''
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      issues: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      TAG: ${{ needs.detect-tag.outputs.tag }}
-      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          sparse-checkout: scripts/cert-review
-          persist-credentials: false
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          # renovate: datasource=node-version depName=node versioning=node
-          node-version: '26'
-
-      - name: The registry's bytes, the SLSA subject, provenance on main and gitHead = tag
-        run: |
-          version="${TAG#v}"
-          line=$(node scripts/cert-review/published.mjs --version "$version") && ok=1 || ok=0
-          [[ "$line" =~ ^verified\ @ai-ecoverse/mcpcat@$version\ sha256=[0-9a-f]{64}\  ]] || ok=0
-          [ -n "$line" ] || line="cert-ci: FAIL published @ai-ecoverse/mcpcat@$version: published.mjs printed no verdict"
-          { echo '```'; echo "$line"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          echo "$line"
-          [ "$ok" = 1 ] && exit 0
-          echo "::error title=supply-chain alert: $TAG on npm::$line"
-          {
-            echo "The post-publish check of @ai-ecoverse/mcpcat@$version failed in $RUN_URL."
-            echo
-            echo '```'
-            echo "$line"
-            echo '```'
-            echo
-            echo "Treat this as a supply-chain alert: the bytes on npm, their SLSA provenance or their gitHead do not match $TAG on main."
-          } > "$RUNNER_TEMP/alert.md"
-          gh issue create --title "supply-chain alert: @ai-ecoverse/mcpcat@$version on npm failed verification" --body-file "$RUNNER_TEMP/alert.md"
-          exit 1
-
-  binaries:
-    needs: [detect-tag, verify]
-    if: github.ref == 'refs/heads/main' && needs.detect-tag.outputs.tag != '' && needs.verify.result == 'success'
     permissions:
       contents: write
     uses: ./.github/workflows/binaries.yml

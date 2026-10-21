@@ -382,17 +382,25 @@ describe('cert-review record --source npm: the bytes already on npm', () => {
     assert.match(r.rec.line, /package\/package\.json: differs in more than gitHead/);
   });
   function published(env) {
-    const r = tool('published.mjs', ['--version', VERSION, '--repo', REPO, '--wait', '0'], env);
-    return { ...r, line: r.out.trim().split('\n').at(-1) };
+    const script = join(work, 'check-published.mjs');
+    writeFileSync(
+      script,
+      `import { checkPublished } from ${JSON.stringify(join(tools, 'released.mjs'))};\nconsole.log(JSON.stringify(await checkPublished({ version: ${JSON.stringify(VERSION)}, repo: ${JSON.stringify(REPO)}, wait: '0' })));\n`
+    );
+    const r = spawnSync(process.execPath, [script], {
+      encoding: 'utf8',
+      env: { ...process.env, NODE_NO_WARNINGS: '1', ...env },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    return JSON.parse(r.stdout.trim().split('\n').at(-1));
   }
 
-  it('verify: the registry bytes are the SLSA subject, built by release.yml on main from the tag', () => {
+  it('checkPublished: the registry bytes are the SLSA subject, built by release.yml on main from the tag', () => {
     const r = published(registry('pub-ok'));
-    assert.equal(r.code, 0, r.out);
-    assert.equal(
-      r.line,
-      `verified ${NAME}@${VERSION} sha256=${onNpm.sha256} on npm: ${integrity}, provenance .github/workflows/release.yml@refs/heads/main commit ${COMMIT} = gitHead = tag v${VERSION}, on main`
-    );
+    assert.deepEqual([...r.problems, ...r.missing], []);
+    assert.equal(r.facts.sha256, onNpm.sha256);
+    assert.equal(r.facts.integrity, integrity);
+    assert.equal(r.facts.provenance.gitCommit, COMMIT);
   });
 
   for (const [what, opts, why] of [
@@ -423,11 +431,9 @@ describe('cert-review record --source npm: the bytes already on npm', () => {
     ],
     ['unverified attestation signatures', { signed: false }, /npm audit signatures failed/],
   ]) {
-    it(`verify: fails loudly on ${what}`, () => {
+    it(`checkPublished: fails on ${what}`, () => {
       const r = published(registry(`pub-${what.replace(/\W+/g, '-')}`, opts));
-      assert.equal(r.code, 1, r.out);
-      assert.match(r.line, /^cert-ci: FAIL published /);
-      assert.match(r.line, why);
+      assert.match(r.problems.join('; '), why);
     });
   }
 });
@@ -840,7 +846,7 @@ describe('cert-review shipped: which changes are behaviour', () => {
   for (const [name, file] of [
     ['cert-review workflow', '.github/workflows/cert-review.yml'],
     ['ci workflow', '.github/workflows/ci.yml'],
-    ['post-publish verify', 'scripts/cert-review/published.mjs'],
+    ['published-package check', 'scripts/cert-review/released.mjs'],
     ['post-release verify workflow', '.github/workflows/cert-verify.yml'],
     ['kernel cert driver', 'scripts/cert.mjs'],
     ['kernel test set', 'scripts/kernel-test-files.mjs'],
