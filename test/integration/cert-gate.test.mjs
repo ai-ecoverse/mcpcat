@@ -61,6 +61,11 @@ cpSync(join(root, 'scripts/kernel-test-files.mjs'), join(repo, 'scripts/kernel-t
 const KERNEL_TEST = "import { kernel } from './helpers/kernel.mjs';\nkernel();\n";
 mkdirSync(join(repo, 'test/integration'), { recursive: true });
 writeFileSync(join(repo, 'test/integration/on-kernel.test.mjs'), KERNEL_TEST);
+for (const f of ['kernel', 'config-mode', 'request-timers-bundle', 'sanitize-kernel'])
+  cpSync(
+    join(root, `test/integration/${f}.test.mjs`),
+    join(repo, `test/integration/${f}.test.mjs`)
+  );
 writeFileSync(join(repo, 'README.md'), '1\n');
 mkdirSync(join(repo, 'src'), { recursive: true });
 writeFileSync(join(repo, 'src/a.ts'), '1\n');
@@ -190,6 +195,17 @@ describe("cert-review plan: a change to the gate gets the gate's full review", (
     );
     assert.equal(r.out.go, 'true', r.log);
   });
+
+  for (const f of ['kernel', 'config-mode', 'request-timers-bundle', 'sanitize-kernel']) {
+    it(`reviews a pull request that changes only the kernel test ${f}.test.mjs`, () => {
+      const file = `test/integration/${f}.test.mjs`;
+      const label = `only-kernel-${f}`;
+      const r = runPlan(label, branch(label, { [file]: 'it.skip\n' }));
+      assert.equal(r.code, 0, r.log);
+      assert.match(r.log, new RegExp(`^gate: ${file.replace(/\./g, '\\.')}$`, 'm'));
+      assert.equal(r.out.go, 'true', r.log);
+    });
+  }
 
   it('reviews a pull request that adds a test the pinned kernels run', () => {
     const file = 'test/integration/new-kernel.test.mjs';
