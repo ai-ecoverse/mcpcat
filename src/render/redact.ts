@@ -20,15 +20,26 @@ export function redactWrites(platform: Platform, redact: Redactor): Platform {
 }
 
 export function secretMasker(secrets: Iterable<string>, mask: string): (text: string) => string {
-  const ordered = [...new Set(secrets)]
-    .filter((s) => s.length > 0)
-    .sort((a, b) => b.length - a.length);
+  const ordered = [...new Set(secrets)].filter((s) => s.length > 0);
   if (ordered.length === 0) return (text) => text;
-  const pattern = new RegExp(
-    ordered.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
-    'g'
-  );
-  return (text) => text.replace(pattern, () => mask);
+  return (text) => {
+    const hidden = new Uint8Array(text.length);
+    for (const secret of ordered) {
+      for (let at = text.indexOf(secret); at >= 0; at = text.indexOf(secret, at + 1)) {
+        hidden.fill(1, at, at + secret.length);
+      }
+    }
+    let out = '';
+    let start = 0;
+    while (start < text.length) {
+      let end = start;
+      const masked = hidden[start] === 1;
+      while (end < text.length && (hidden[end] === 1) === masked) end++;
+      out += masked ? mask : text.slice(start, end);
+      start = end;
+    }
+    return out;
+  };
 }
 
 export function redactSecrets(text: string, secrets: Iterable<string>): string {

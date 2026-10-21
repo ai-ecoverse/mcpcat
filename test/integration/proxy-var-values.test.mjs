@@ -8,7 +8,14 @@ import { homeEnv, launch, scratchHome, startFixture } from './helpers/rows.mjs';
 const MARK = 'proxyVarSecretQ7v3Zk9';
 const ID = 'proxyIdPfx01';
 const SUFFIX = 'SuffixLeak77';
-const vars = { PROXY_TOK: MARK, PROXY_ID: ID, PROXY_KEY: `${ID}${SUFFIX}` };
+const vars = {
+  PROXY_TOK: MARK,
+  PROXY_ID: ID,
+  PROXY_KEY: `${ID}${SUFFIX}`,
+  PROXY_HEAD: 'ShiftHeadQ7v',
+  PROXY_TAIL: 'JK',
+  PROXY_SHIFT: 'hiftHeadQ7vJK',
+};
 
 async function startProxy(args, env) {
   const child = launch(['serve', '--proxy', ...args, '--http', '0', '--no-auth', '--json'], {
@@ -52,6 +59,16 @@ describe('proxy: hides each ${VAR} value of a header', () => {
     const target = `${up.base}/tok/mcp`;
     proxies.header = await startProxy([target, '-H', 'Authorization: Bearer ${PROXY_TOK}'], env);
     proxies.config = await startProxy(['tok'], env);
+    proxies.shifted = await startProxy(
+      [
+        target,
+        '-H',
+        'Authorization: Bearer ${PROXY_HEAD}${PROXY_TAIL}',
+        '-H',
+        'X-Shift: ${PROXY_SHIFT}',
+      ],
+      env
+    );
     proxies.nested = await startProxy(
       [target, '-H', 'X-Id: ${PROXY_ID}', '-H', 'X-Key: ${PROXY_KEY}'],
       env
@@ -78,6 +95,13 @@ describe('proxy: hides each ${VAR} value of a header', () => {
       const text = await call(proxies.nested.url, tool);
       assert.ok(!text.includes(SUFFIX), text);
       assert.ok(text.includes('key ***'), text);
+    });
+  }
+
+  for (const tool of ['headers', 'err']) {
+    it(`never returns the tail of a value that overlaps another: ${tool}`, async () => {
+      const text = await call(proxies.shifted.url, tool);
+      assert.ok(text.includes('token *** key'), text);
     });
   }
 
