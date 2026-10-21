@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { commitAll, initFixtureRepo } from '@ai-ecoverse/slicc-shared-web/testing';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const tools = join(root, 'scripts/cert-review');
@@ -734,17 +735,13 @@ describe('cert-review shipped: which changes are behaviour', () => {
     return r.stdout.trim();
   };
   mkdirSync(repo, { recursive: true });
-  git('init', '-q', '-b', 'main');
-  git('config', 'user.email', 'test@example.com');
-  git('config', 'user.name', 'test');
-  git('config', 'commit.gpgsign', 'false');
+  initFixtureRepo(repo);
   const commit = (files) => {
     for (const [f, text] of Object.entries(files)) {
       mkdirSync(dirname(join(repo, f)), { recursive: true });
       writeFileSync(join(repo, f), text);
     }
-    git('add', '-A');
-    git('commit', '-q', '-m', 'x');
+    commitAll(repo, 'x');
     return git('rev-parse', 'HEAD');
   };
   const root0 = commit({ 'src/a.ts': '1', 'README.md': '1', 'docs/spec.html': '1' });
