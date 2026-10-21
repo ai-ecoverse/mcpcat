@@ -328,8 +328,10 @@ async function runCommand(
   timeoutMs: number,
   maxOutput: number,
   cwd: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  cancel?: AbortSignal
 ): Promise<ToolRunResult> {
+  if (cancel?.aborted) return { stdout: '', stderr: 'cancelled', exitCode: 124 };
   let proc: SpawnResult;
   try {
     proc = await platform.spawn({
@@ -344,15 +346,13 @@ async function runCommand(
 
   inflightProcs.add(proc);
 
-  if (stdin !== undefined) {
+  const feedStdin = async () => {
     const writer = proc.stdin.getWriter();
-    await writer.write(new TextEncoder().encode(stdin));
-    await writer.close();
-  } else {
     try {
-      await proc.stdin.getWriter().close();
+      if (stdin !== undefined) await writer.write(new TextEncoder().encode(stdin));
+      await writer.close();
     } catch {}
-  }
+  };
 
   const stdoutChunks: Uint8Array[] = [];
   const stderrChunks: Uint8Array[] = [];
@@ -372,6 +372,7 @@ async function runCommand(
 
   let timerId: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
+  let onCancel: (() => void) | undefined;
   const timer = new Promise<'timeout'>((resolve) => {
     timerId = setTimeout(() => resolve('timeout'), timeoutMs);
   });
@@ -387,35 +388,47 @@ async function runCommand(
       })
     : null;
 
+  const cancelPromise = cancel
+    ? new Promise<'cancel'>((resolve) => {
+        if (cancel.aborted) {
+          resolve('cancel');
+          return;
+        }
+        onCancel = () => resolve('cancel');
+        cancel.addEventListener('abort', onCancel, { once: true });
+      })
+    : null;
+
   const work = Promise.all([
     readStream(proc.stdout, stdoutChunks),
     readStream(proc.stderr, stderrChunks),
     proc.wait(),
+    feedStdin(),
   ]);
 
-  const racers: Promise<[void, void, { status: number; signal?: string }] | 'timeout'>[] = [
-    work,
-    timer,
-  ];
+  const racers: Promise<
+    [void, void, { status: number; signal?: string }, void] | 'timeout' | 'cancel'
+  >[] = [work, timer];
   if (abortPromise !== null) racers.push(abortPromise);
+  if (cancelPromise !== null) racers.push(cancelPromise);
   let result: Awaited<(typeof racers)[number]>;
   try {
     result = await Promise.race(racers);
   } finally {
     clearTimeout(timerId);
     if (onAbort) signal?.removeEventListener('abort', onAbort);
+    if (onCancel) cancel?.removeEventListener('abort', onCancel);
   }
 
-  if (result === 'timeout') {
-    await proc.kill('SIGTERM');
-    if (!signal?.aborted) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 5000));
-      try {
-        await proc.kill('SIGKILL');
-      } catch {}
+  if (result === 'timeout' || result === 'cancel') {
+    if (signal?.aborted) {
+      await proc.kill('SIGTERM');
+    } else {
+      await terminate(proc, CALL_KILL_GRACE_MS);
     }
     inflightProcs.delete(proc);
-    return { stdout: '', stderr: 'timed out', exitCode: 124 };
+    const stderr = result === 'cancel' ? 'cancelled' : 'timed out';
+    return { stdout: '', stderr, exitCode: 124 };
   }
 
   inflightProcs.delete(proc);
@@ -443,6 +456,30 @@ function concat(chunks: Uint8Array[]): Uint8Array {
 }
 
 const KILL_GRACE_MS = 2000;
+const CALL_KILL_GRACE_MS = 5000;
+
+async function terminate(proc: SpawnResult, graceMs: number): Promise<void> {
+  try {
+    await proc.kill('SIGTERM');
+  } catch {}
+  let graceId: ReturnType<typeof setTimeout> | undefined;
+  let exited: boolean;
+  try {
+    exited = await Promise.race([
+      proc.wait().then(() => true as const),
+      new Promise<false>((r) => {
+        graceId = setTimeout(() => r(false), graceMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(graceId);
+  }
+  if (!exited) {
+    try {
+      await proc.kill('SIGKILL');
+    } catch {}
+  }
+}
 
 const SIGNAL_EXIT = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const;
 
@@ -460,22 +497,7 @@ async function trapShutdown(
 async function killInflight(): Promise<void> {
   const procs = [...inflightProcs];
   if (procs.length === 0) return;
-  await Promise.all(
-    procs.map(async (proc) => {
-      try {
-        await proc.kill('SIGTERM');
-      } catch {}
-      const exited = await Promise.race([
-        proc.wait().then(() => true as const),
-        new Promise<false>((r) => setTimeout(() => r(false), KILL_GRACE_MS)),
-      ]);
-      if (!exited) {
-        try {
-          await proc.kill('SIGKILL');
-        } catch {}
-      }
-    })
-  );
+  await Promise.all(procs.map((proc) => terminate(proc, KILL_GRACE_MS)));
   inflightProcs.clear();
 }
 
@@ -589,8 +611,10 @@ async function discoverCli(
   return { name: cliPrefix(helpText, filePath, explicitName), path: filePath, commands };
 }
 
+type ToolCall = (name: string, args: unknown, cancel?: AbortSignal) => Promise<ToolRunResult>;
+
 interface ToolExecutor {
-  invoke: (name: string, args: unknown) => Promise<ToolRunResult>;
+  invoke: ToolCall;
   rpcTools: RpcTool[];
 }
 
@@ -623,7 +647,11 @@ function createToolExecutor(
     return run;
   }
 
-  function invokeTemplateTool(tool: ServeTool, args: unknown): Promise<ToolRunResult> {
+  function invokeTemplateTool(
+    tool: ServeTool,
+    args: unknown,
+    cancel?: AbortSignal
+  ): Promise<ToolRunResult> {
     const templateArgs: Record<string, string> = {};
     if (args && typeof args === 'object') {
       for (const [k, v] of Object.entries(args as Record<string, unknown>)) {
@@ -640,7 +668,9 @@ function createToolExecutor(
         undefined,
         options.callTimeout,
         options.maxOutput,
-        serveCwd
+        serveCwd,
+        undefined,
+        cancel
       )
     );
   }
@@ -648,7 +678,8 @@ function createToolExecutor(
   async function executeTool(
     tool: ServeTool,
     cli: PublishedCli,
-    args: unknown
+    args: unknown,
+    cancel?: AbortSignal
   ): Promise<ToolRunResult> {
     if (tool.kind === 'help') {
       const result = await runCommand(
@@ -659,7 +690,9 @@ function createToolExecutor(
         undefined,
         options.callTimeout,
         options.maxOutput,
-        serveCwd
+        serveCwd,
+        undefined,
+        cancel
       );
       if (result.exitCode === 0) return result;
       return runCommand(
@@ -670,7 +703,9 @@ function createToolExecutor(
         undefined,
         options.callTimeout,
         options.maxOutput,
-        serveCwd
+        serveCwd,
+        undefined,
+        cancel
       );
     }
 
@@ -686,7 +721,9 @@ function createToolExecutor(
         parsed.stdin,
         options.callTimeout,
         options.maxOutput,
-        serveCwd
+        serveCwd,
+        undefined,
+        cancel
       );
     }
 
@@ -703,22 +740,24 @@ function createToolExecutor(
       planned.stdin,
       options.callTimeout,
       options.maxOutput,
-      serveCwd
+      serveCwd,
+      undefined,
+      cancel
     );
   }
 
-  async function invoke(name: string, args: unknown): Promise<ToolRunResult> {
+  async function invoke(name: string, args: unknown, cancel?: AbortSignal): Promise<ToolRunResult> {
     const tool = allTools.find((t) => t.name === name);
     if (!tool) return { stdout: '', stderr: `unknown tool ${name}`, exitCode: 1 };
 
     if (tool.cli === '' && tool.commandPath.length === 0) {
-      return invokeTemplateTool(tool, args);
+      return invokeTemplateTool(tool, args, cancel);
     }
 
     const cli = clis.find((c) => c.name === tool.cli);
     if (!cli) return { stdout: '', stderr: `unknown cli ${tool.cli}`, exitCode: 1 };
 
-    return enqueue(cli.name, () => executeTool(tool, cli, args));
+    return enqueue(cli.name, () => executeTool(tool, cli, args, cancel));
   }
 
   return { invoke, rpcTools };
@@ -1634,7 +1673,7 @@ async function runHttpServer(
   platform: Platform,
   options: ServeOptions,
   tools: RpcTool[],
-  call: (name: string, args: unknown) => Promise<ToolRunResult>,
+  call: ToolCall,
   serverName: string,
   version: string,
   resolvedBearer: string | undefined,
@@ -1663,11 +1702,14 @@ async function runHttpServer(
   let tokenFilePath: string | undefined;
   let shutdownRequested = false;
   let inflightDone: Promise<void> | undefined;
+  const stopCalls = new AbortController();
+  const activeCalls = new Set<Promise<HttpResponse>>();
 
   const shutdown = () => {
     if (shutdownRequested) return;
     shutdownRequested = true;
     listener.close();
+    stopCalls.abort();
     inflightDone = killInflight();
     if (tokenFilePath) {
       platform.fs.unlink?.(tokenFilePath).catch(() => {});
@@ -1697,18 +1739,30 @@ async function runHttpServer(
     await platform.write(2, `mcpcat serve: listening on ${listenUrl}\n`);
   }
 
-  const handler = (request: HttpRequest): Promise<HttpResponse> =>
-    handleMcpRequest(
+  const handler = (request: HttpRequest, signal: AbortSignal): Promise<HttpResponse> => {
+    const cancel = new AbortController();
+    const relay = () => cancel.abort();
+    signal.addEventListener('abort', relay, { once: true });
+    stopCalls.signal.addEventListener('abort', relay, { once: true });
+    if (signal.aborted || stopCalls.signal.aborted) relay();
+    const pending = handleMcpRequest(
       request,
       tools,
-      call,
+      (name, args) => call(name, args, cancel.signal),
       serverName,
       version,
       serverOrigins,
       allowedOrigins,
       allowedHosts,
       resolvedBearer
-    );
+    ).finally(() => {
+      signal.removeEventListener('abort', relay);
+      stopCalls.signal.removeEventListener('abort', relay);
+      activeCalls.delete(pending);
+    });
+    activeCalls.add(pending);
+    return pending;
+  };
 
   try {
     for await (const connection of listener) {
@@ -1735,6 +1789,7 @@ async function runHttpServer(
       await inflightDone;
     } catch {}
   }
+  await Promise.allSettled([...activeCalls]);
 
   return 0;
 }

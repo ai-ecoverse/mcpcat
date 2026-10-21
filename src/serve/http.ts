@@ -18,10 +18,14 @@ export interface HttpResponse {
   body: string;
 }
 
-export type HttpHandler = (request: HttpRequest) => Promise<HttpResponse>;
+export type HttpHandler = (request: HttpRequest, signal: AbortSignal) => Promise<HttpResponse>;
+
+interface ChunkReader {
+  read(): Promise<ReadableStreamReadResult<Uint8Array>>;
+}
 
 export async function readUntil(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  reader: ChunkReader,
   buf: Uint8Array<ArrayBuffer>,
   bufLen: number,
   sentinel: string,
@@ -45,7 +49,7 @@ export async function readUntil(
 }
 
 export async function readExact(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  reader: ChunkReader,
   buf: Uint8Array<ArrayBuffer>,
   bufLen: number,
   needed: number
@@ -92,7 +96,40 @@ export async function handleConnection(
   writable: WritableStream<Uint8Array>,
   handler: HttpHandler
 ): Promise<void> {
-  const reader = readable.getReader();
+  const raw = readable.getReader();
+  let ahead: Promise<ReadableStreamReadResult<Uint8Array>> | null = null;
+  const parked: ReadableStreamReadResult<Uint8Array>[] = [];
+  const reader: ChunkReader = {
+    read() {
+      const queued = parked.shift();
+      if (queued) return Promise.resolve(queued);
+      const next = ahead ?? raw.read();
+      ahead = null;
+      return next;
+    },
+  };
+  const watch = async (live: { on: boolean }, disconnect: AbortController) => {
+    let held = 0;
+    while (held <= MAX_HEADER_SIZE + MAX_BODY_SIZE) {
+      const pending: Promise<ReadableStreamReadResult<Uint8Array>> = ahead ?? raw.read();
+      ahead = pending;
+      let result: ReadableStreamReadResult<Uint8Array>;
+      try {
+        result = await pending;
+      } catch {
+        if (live.on) disconnect.abort();
+        return;
+      }
+      if (!live.on) return;
+      ahead = null;
+      parked.push(result);
+      if (result.done) {
+        disconnect.abort();
+        return;
+      }
+      held += result.value.length;
+    }
+  };
   const writer = writable.getWriter();
   let buf = new Uint8Array(4096);
   let bufLen = 0;
@@ -145,7 +182,16 @@ export async function handleConnection(
         body,
       };
 
-      const response = await handler(request);
+      const disconnect = new AbortController();
+      const live = { on: true };
+      void watch(live, disconnect);
+      let response: HttpResponse;
+      try {
+        response = await handler(request, disconnect.signal);
+      } finally {
+        live.on = false;
+      }
+      if (disconnect.signal.aborted) break;
       await writeResponse(writer, response);
 
       const connectionHeader = (parsed.headers.connection ?? '').toLowerCase();
@@ -164,7 +210,7 @@ export async function handleConnection(
       }
     }
   } finally {
-    reader.releaseLock();
+    raw.releaseLock();
     try {
       await writer.close();
     } catch {}
