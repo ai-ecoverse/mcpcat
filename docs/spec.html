@@ -458,7 +458,7 @@ mcpcat serve --tool 'disk_usage: du -sh {path}' --tool 'uptime: uptime' --http 8
 <ul>
   <li>Each call spawns the command once with argv from the schema mapping (positionals in order, then flags), stdin from <code>stdin</code>, cwd as given by <code>--cwd</code> (default: where <code>serve</code> started), env filtered (<code>--env K</code>/<code>--env K=V</code>, plus <code>PATH</code>, <code>HOME</code>, <code>LANG</code>).</li>
   <li>Calls for one command run one at a time unless <code>--concurrency n</code> (six's rule).</li>
-  <li><code>--call-timeout</code> (default 120 s): on expiry the call returns <code>isError</code>, the child gets SIGTERM, then SIGKILL after 5 s.</li>
+  <li><code>--call-timeout</code> (default 120 s): on expiry the call returns <code>isError</code>, the child gets SIGTERM, then SIGKILL if it is still running 5 s later. An HTTP client that disconnects mid-call aborts it the same way, and a call still queued behind another never starts.</li>
   <li>Result: stdout as text (or as <code>structuredContent</code> when it parses as JSON and the tool declares an <code>outputSchema</code>), stderr appended under a <code>stderr:</code> marker when non-empty, exit status in <code>_meta</code>. A non-zero exit is <code>isError: true</code>. Output over <code>--max-output</code> (default 1 MiB) is cut in the middle.</li>
   <li>Cancellation from the client kills the child.</li>
   <li>Signals: a SIGHUP, SIGINT or SIGTERM while <code>serve</code> is still discovering its commands kills the discovery children and exits 129, 130 or 143, like the client verbs; once serving, the same signals shut the server down (in-flight children killed, token file removed) and it exits 0.</li>
