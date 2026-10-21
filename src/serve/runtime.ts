@@ -370,9 +370,11 @@ async function runCommand(
     }
   };
 
-  const timer = new Promise<'timeout'>((resolve) =>
-    setTimeout(() => resolve('timeout'), timeoutMs)
-  );
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const timer = new Promise<'timeout'>((resolve) => {
+    timerId = setTimeout(() => resolve('timeout'), timeoutMs);
+  });
 
   const abortPromise = signal
     ? new Promise<'timeout'>((resolve) => {
@@ -380,7 +382,8 @@ async function runCommand(
           resolve('timeout');
           return;
         }
-        signal.addEventListener('abort', () => resolve('timeout'), { once: true });
+        onAbort = () => resolve('timeout');
+        signal.addEventListener('abort', onAbort, { once: true });
       })
     : null;
 
@@ -395,7 +398,13 @@ async function runCommand(
     timer,
   ];
   if (abortPromise !== null) racers.push(abortPromise);
-  const result = await Promise.race(racers);
+  let result: Awaited<(typeof racers)[number]>;
+  try {
+    result = await Promise.race(racers);
+  } finally {
+    clearTimeout(timerId);
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
+  }
 
   if (result === 'timeout') {
     await proc.kill('SIGTERM');
