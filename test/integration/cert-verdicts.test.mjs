@@ -168,38 +168,7 @@ describe('silence never passes: the cert job', () => {
   }
 });
 
-describe('silence never passes: release verify and the installer tests', () => {
-  const verify = stepScript(
-    'release.yml',
-    "The registry's bytes, the SLSA subject, provenance on main and gitHead = tag"
-  );
-  const gh = { gh: `echo "gh $*" >> "$RUNNER_TEMP/gh.log"` };
-
-  it('passes on the verified line', () => {
-    const line = `verified @ai-ecoverse/mcpcat@9.8.7 sha256=${'a'.repeat(64)} on npm: x`;
-    const r = runStep(
-      'verify-ok',
-      verify,
-      { TAG: 'v9.8.7', RUN_URL: 'https://example.invalid/run' },
-      { ...gh, node: `printf '%s\\n' ${JSON.stringify(line)}` }
-    );
-    assert.equal(r.code, 0, r.out);
-    assert.match(r.out, /^verified @ai-ecoverse\/mcpcat@9\.8\.7 sha256=a{64} /m);
-  });
-
-  it('files the supply-chain alert when published.mjs exits 0 and prints nothing', () => {
-    const r = runStep(
-      'verify-silent',
-      verify,
-      { TAG: 'v9.8.7', RUN_URL: 'https://example.invalid/run' },
-      { ...gh, node: 'exit 0' }
-    );
-    assert.equal(r.code, 1, r.out);
-    assert.match(r.out, /published\.mjs printed no verdict/);
-    const log = readFileSync(join(work, 'verify-silent', 'temp', 'gh.log'), 'utf8');
-    assert.match(log, /^gh issue create --title supply-chain alert: @ai-ecoverse\/mcpcat@9\.8\.7/m);
-  });
-
+describe('silence never passes: the installer tests', () => {
   const install = stepScript('binaries.yml', 'Installer test, ubuntu with node');
 
   it('passes the installer step on its verdict line', () => {

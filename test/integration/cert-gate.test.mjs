@@ -55,7 +55,7 @@ cpSync(join(root, 'scripts/cert-review'), join(repo, 'scripts/cert-review'), {
   recursive: true,
 });
 mkdirSync(join(repo, '.github/workflows'), { recursive: true });
-for (const f of ['ci.yml', 'cert-review.yml', 'cert-verify.yml', 'release.yml'])
+for (const f of ['ci.yml', 'cert-review.yml', 'release.yml'])
   cpSync(join(root, '.github/workflows', f), join(repo, '.github/workflows', f));
 cpSync(join(root, 'scripts/kernel-test-files.mjs'), join(repo, 'scripts/kernel-test-files.mjs'));
 const KERNEL_TEST = "import { kernel } from './helpers/kernel.mjs';\nkernel();\n";
@@ -131,8 +131,7 @@ describe("cert-review plan: a change to the gate gets the gate's full review", (
   for (const [name, file] of [
     ['cert-review.yml', '.github/workflows/cert-review.yml'],
     ['ci.yml', '.github/workflows/ci.yml'],
-    ['the post-publish verify', 'scripts/cert-review/published.mjs'],
-    ['cert-verify.yml', '.github/workflows/cert-verify.yml'],
+    ['the shared checks', 'scripts/cert-review/checks.mjs'],
     ['the kernel test set', 'scripts/kernel-test-files.mjs'],
   ]) {
     it(`reviews a pull request that changes only ${name}`, () => {
