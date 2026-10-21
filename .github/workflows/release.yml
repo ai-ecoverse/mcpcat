@@ -20,7 +20,7 @@ jobs:
       issues: write
       pull-requests: write
       id-token: write
-    uses: ai-ecoverse/slicc-shared-web/.github/workflows/node-release.yml@v1.30.2
+    uses: ai-ecoverse/slicc-shared-web/.github/workflows/node-release.yml@v1.30.3
     with:
       # renovate: datasource=node-version depName=node versioning=node
       node-version: '26'
