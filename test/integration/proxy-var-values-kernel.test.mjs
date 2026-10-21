@@ -18,6 +18,7 @@ const env = {
   PROXY_HEAD: 'ShiftHeadQ7v',
   PROXY_TAIL: 'JK',
   PROXY_SHIFT: 'hiftHeadQ7vJK',
+  PROXY_SHORT: 'abc1234',
 };
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
@@ -82,6 +83,11 @@ describe('kernel: proxy hides each ${VAR} value of a header', () => {
       JSON.stringify({
         mcpServers: {
           tok: { url: target, headers: { Authorization: 'Bearer ${PROXY_TOK}' } },
+          short: { url: target, headers: { 'X-Key': '${PROXY_SHORT}' } },
+          unset: {
+            url: target,
+            headers: { Authorization: 'Bearer ${PROXY_UNSET}', 'X-Other': '${PROXY_ID}' },
+          },
         },
       })
     );
@@ -89,6 +95,7 @@ describe('kernel: proxy hides each ${VAR} value of a header', () => {
     const variants = {
       header: [target, '-H', 'Authorization: Bearer ${PROXY_TOK}'],
       config: ['tok'],
+      short: ['short'],
       nested: [target, '-H', 'X-Id: ${PROXY_ID}', '-H', 'X-Key: ${PROXY_KEY}'],
       shifted: [
         target,
@@ -144,6 +151,48 @@ describe('kernel: proxy hides each ${VAR} value of a header', () => {
       const r = await call(urls.shifted, tool);
       const out = `${r.stdout}${r.stderr}`;
       assert.ok(out.includes('token *** key'), out.slice(0, 600));
+    });
+  }
+
+  for (const tool of ['headers', 'err']) {
+    it(`never returns a short mcp.json header value: ${tool}`, async () => {
+      const r = await call(urls.short, tool);
+      const out = `${r.stdout}${r.stderr}`;
+      assert.ok(!out.includes('abc1234'), out.slice(0, 600));
+      assert.ok(out.includes('key ***'), out.slice(0, 600));
+    });
+  }
+
+  const unsetCases = {
+    'mcp.json': () => ['unset'],
+    '-H': () => [
+      `${hostUrl(up.port)}/tok/mcp`,
+      '-H',
+      'Authorization: Bearer ${PROXY_UNSET}',
+      '-H',
+      'X-Other: ${PROXY_ID}',
+    ],
+  };
+
+  for (const [via, args] of Object.entries(unsetCases)) {
+    it(`refuses a header with an unset \${VAR}: ${via}`, async () => {
+      const before = (await (await fetch(`${up.base}/seen`)).json()).length;
+      const r = await Promise.race([
+        kernel.run(['mcpcat', 'serve', '--proxy', ...args(), '--http', '0', '--no-auth'], {
+          stdout: 'pipe',
+          stderr: 'pipe',
+          env,
+        }),
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ status: 'hung', stdout: '', stderr: '' }), 10_000)
+        ),
+      ]);
+      assert.equal(r.status, 2, r.stderr);
+      assert.match(r.stderr, /unset variable PROXY_UNSET in header 'Authorization'/);
+      assert.ok(!r.stderr.includes(ID), r.stderr);
+      assert.equal(r.stdout, '');
+      const seen = await (await fetch(`${up.base}/seen`)).json();
+      assert.equal(seen.length, before);
     });
   }
 
