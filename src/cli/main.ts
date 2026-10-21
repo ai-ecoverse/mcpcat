@@ -22,6 +22,7 @@ import { releaseAllLocks } from '../config/lock.ts';
 import type { McpOAuthConfig, McpServerConfig } from '../config/types.ts';
 import { runAddCandidate, runDiscover, runFromDiscovery, runInbox } from '../discovery/verbs.ts';
 import type { Platform } from '../platform/types.ts';
+import { redactDeep, redactWrites } from '../render/redact.ts';
 import {
   type Redactor,
   renderCallResult,
@@ -1453,15 +1454,19 @@ async function handleInputRequired(
   redact: Redactor
 ): Promise<number> {
   const parsed2 = JSON.parse(err.requestJson) as Record<string, unknown>;
-  const shown = redactDeep(parsed2, redact) as Record<string, unknown>;
-  const requestOut = sanitizeJson(JSON.stringify(shown, null, 2));
-  const inputReq = parseInputRequest((shown.result as Record<string, unknown>) ?? shown);
+  const requestOut = sanitizeJson(JSON.stringify(redactDeep(parsed2, redact), null, 2));
+  const inputReq = parseInputRequest((parsed2.result as Record<string, unknown>) ?? parsed2);
   if (!inputReq) {
     await platform.write(2, `${requestOut}\n`);
     return EXIT_INPUT_REQUIRED;
   }
   const isTty = platform.kind === 'host' && platform.isatty(0) && platform.isatty(2);
-  const elicitResult = await handleElicitation(platform, inputReq, isTty, respondData);
+  const elicitResult = await handleElicitation(
+    redactWrites(platform, redact),
+    inputReq,
+    isTty,
+    respondData
+  );
   if ('exitCode' in elicitResult) {
     await platform.write(2, `${requestOut}\n`);
     return EXIT_INPUT_REQUIRED;
@@ -1477,17 +1482,6 @@ async function handleInputRequired(
     await writeErrRedacted(platform, json, e2.kind, e2.msg, redact);
     return e2.code;
   }
-}
-
-function redactDeep(value: unknown, redact: Redactor): unknown {
-  if (typeof value === 'string') return redact(value);
-  if (Array.isArray(value)) return value.map((v) => redactDeep(v, redact));
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([k, v]) => [redact(k), redactDeep(v, redact)])
-    );
-  }
-  return value;
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: client dispatch with auth, redaction and error classification

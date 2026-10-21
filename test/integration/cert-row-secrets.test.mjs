@@ -1,9 +1,11 @@
 import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { filesUnder, homeEnv, run, scratchHome, startFixture } from './helpers/rows.mjs';
+import { isStandalone, mcpcatBin } from './helpers/bin.mjs';
+import { filesUnder, homeEnv, root, run, scratchHome, startFixture } from './helpers/rows.mjs';
 
 const MARK = 'certrowSecretQ7v3Zk9';
 
@@ -121,6 +123,43 @@ describe('cert row: secrets redaction', () => {
       if (json) JSON.parse(r.stderr);
     });
   }
+
+  const ttyCases = {
+    'the input prompt quoting -H': () => [...header, 'call', `${srv.base}/ask`, 'ask'],
+    'the input prompt quoting mcp.json ${VAR}': () => ['call', 'rask', 'ask'],
+  };
+
+  for (const [name, args] of Object.entries(ttyCases)) {
+    it(`redacts the value: ${name}`, { skip: isStandalone }, () => {
+      const r = spawnSync(
+        process.execPath,
+        ['--import', join(root, 'test/integration/helpers/fake-tty.mjs'), mcpcatBin, ...args()],
+        { env, input: 'y\n', timeout: 30_000, encoding: 'utf8' }
+      );
+      const out = `${r.stdout}${r.stderr}`;
+      assert.equal(r.status, 5, out.slice(0, 600));
+      assert.ok(!out.includes(MARK), `the secret leaked (exit ${r.status}):\n${out.slice(0, 600)}`);
+      assert.match(r.stderr, /need input [^\n]*\[REDACTED\]/);
+      assert.match(r.stderr, /answer - about [^\n]*\[REDACTED\]/);
+    });
+  }
+
+  it('retries when the value matches a protocol key', () => {
+    const r = run(
+      [
+        '-H',
+        'X-Api: ${CERT_ROW_KEY}',
+        '--respond',
+        '{"answer":"y"}',
+        'call',
+        `${srv.base}/ask`,
+        'ask',
+      ],
+      { env: { ...env, CERT_ROW_KEY: 'input' } }
+    );
+    assert.equal(r.status, 5, r.stderr.slice(0, 600));
+    assert.ok(r.stderr.includes('retry failed'), r.stderr.slice(0, 600));
+  });
 
   it('delivers the expanded value to the server', async () => {
     const r = run([...header, 'call', `${srv.base}/mcp`, 'echo', '-d', '{"message":"x"}'], { env });

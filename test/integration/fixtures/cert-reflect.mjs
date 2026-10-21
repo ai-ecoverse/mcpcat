@@ -81,7 +81,10 @@ const server = createServer((req, res) => {
     } else if (req.url.startsWith('/ask') && method === 'tools/call') {
       const ask = {
         message: `need input ${quoted}`,
-        schema: { type: 'object', properties: { answer: { type: 'string' } } },
+        schema: {
+          type: 'object',
+          properties: { answer: { type: 'string', description: `about ${quoted}` } },
+        },
       };
       out = params?.arguments?._meta?.inputResponses
         ? rpcError(id, -32000, `retry failed ${quoted}`)
