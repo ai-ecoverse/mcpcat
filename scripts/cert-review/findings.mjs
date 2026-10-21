@@ -60,7 +60,7 @@ function negativeBase(stage, out) {
   const named = SHA.test(n.tests ?? '') && SHA.test(n.base ?? '');
   if (!named || n.tests !== stage.subject?.commit || n.base !== stage.base?.commit)
     out.gaps.push("the NEGATIVE doesn't name the subject's tests and the base's sha it ran on");
-  for (const part of ['dist', 'scripts', '.github/workflows'])
+  for (const part of ['dist', 'scripts', 'src', '.github'])
     if (!out.negative.fromBase.includes(part))
       out.gaps.push(`the NEGATIVE didn't take ${part} from the base`);
 }

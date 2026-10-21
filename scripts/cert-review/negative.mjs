@@ -1,19 +1,21 @@
-import { cpSync, existsSync, rmSync, symlinkSync } from 'node:fs';
+import { cpSync, existsSync, readdirSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
-export const FROM_BASE = ['dist', 'scripts', '.github/workflows'];
+export const FROM_SUBJECT = 'test';
+const SKIP = new Set([FROM_SUBJECT, 'node_modules', '.git']);
 
 export function negativeTree({ subject, base, out, nodeModules }) {
   rmSync(out, { recursive: true, force: true });
-  cpSync(subject, out, {
-    recursive: true,
-    filter: (src) => !/[/\\](node_modules|dist|\.git)$/.test(src),
-  });
+  const fromBase = readdirSync(base)
+    .filter((part) => !SKIP.has(part))
+    .sort();
+  for (const part of fromBase)
+    cpSync(join(base, part), join(out, part), {
+      recursive: true,
+      filter: (src) => !/[/\\](node_modules|\.git)$/.test(src),
+    });
+  if (existsSync(join(subject, FROM_SUBJECT)))
+    cpSync(join(subject, FROM_SUBJECT), join(out, FROM_SUBJECT), { recursive: true });
   symlinkSync(nodeModules, join(out, 'node_modules'), 'dir');
-  for (const part of FROM_BASE) {
-    rmSync(join(out, part), { recursive: true, force: true });
-    if (existsSync(join(base, part)))
-      cpSync(join(base, part), join(out, part), { recursive: true });
-  }
-  return FROM_BASE;
+  return fromBase;
 }
