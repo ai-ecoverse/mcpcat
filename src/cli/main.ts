@@ -16,13 +16,18 @@ import { killAllStdio } from '../client/stdio-registry.ts';
 import { resolveTarget } from '../client/targets.ts';
 import { runDescribeTs, runGrep } from '../codemode/describe.ts';
 import { runCode } from '../codemode/run.ts';
-import { expandHeaders, expandPlaceholders, missingPlaceholders } from '../config/expand.ts';
+import {
+  expandHeaders,
+  expandPlaceholders,
+  missingPlaceholders,
+  placeholderValues,
+} from '../config/expand.ts';
 import { MergedConfigSource } from '../config/index.ts';
 import { releaseAllLocks } from '../config/lock.ts';
 import type { McpOAuthConfig, McpServerConfig } from '../config/types.ts';
 import { runAddCandidate, runDiscover, runFromDiscovery, runInbox } from '../discovery/verbs.ts';
 import type { Platform } from '../platform/types.ts';
-import { redactDeep, redactWrites } from '../render/redact.ts';
+import { redactDeep, redactSecrets, redactWrites } from '../render/redact.ts';
 import {
   type Redactor,
   renderCallResult,
@@ -1284,7 +1289,7 @@ function expandAndCollect(
     }
     const e = expandPlaceholders(v, env);
     result[k] = e;
-    if (e !== v) secrets.push(e);
+    if (e !== v) secrets.push(e, ...placeholderValues(v, env));
     if (v.length > 0) secrets.push(v);
   }
   return { expanded: result, secrets, unset };
@@ -1557,13 +1562,7 @@ async function runClientVerb(
   for (const s of configSecrets) verbose.secrets.add(s);
 
   const allSecrets = new Set([...secrets, ...configSecrets]);
-  const redact: Redactor = (text: string) => {
-    let result = text;
-    for (const secret of allSecrets) {
-      if (secret.length > 0) result = result.replaceAll(secret, '[REDACTED]');
-    }
-    return result;
-  };
+  const redact: Redactor = (text: string) => redactSecrets(text, allSecrets);
 
   const mergedHeaders = { ...configHeaders, ...expanded };
   const hasAuthHeader = 'Authorization' in mergedHeaders;
@@ -1687,7 +1686,7 @@ function collectConfigSecrets(
   const secrets: string[] = [];
   for (const [, v] of Object.entries(headers)) {
     const expanded = expandPlaceholders(v, env);
-    if (expanded !== v && expanded.length > 0) secrets.push(expanded);
+    if (expanded !== v && expanded.length > 0) secrets.push(expanded, ...placeholderValues(v, env));
     if (v.length > 0 && v !== expanded) secrets.push(v);
   }
   return secrets;
