@@ -50,7 +50,7 @@ function evidence(name, version, sha256, change = (_stage, _suites) => {}) {
     negative: {
       tests: '1'.repeat(40),
       base: '2'.repeat(40),
-      fromBase: ['dist', 'scripts', '.github/workflows'],
+      fromBase: ['.github', 'dist', 'scripts', 'src'],
     },
     artifact: { sha256 },
     kernels,
@@ -1063,7 +1063,7 @@ describe('cert-review verdict: a run without a recorded verdict still leaves a c
   }
 });
 
-describe("cert-review NEGATIVE: the subject's tests on the base's dist, scripts and workflows", () => {
+describe("cert-review NEGATIVE: the subject's tests on the base's src, dist, scripts and workflows", () => {
   const tree = (name, files) => {
     const dir = join(work, name);
     for (const [path, text] of Object.entries(files)) {
@@ -1106,9 +1106,9 @@ describe("cert-review NEGATIVE: the subject's tests on the base's dist, scripts 
     const { negativeTree } = await import(join(tools, 'negative.mjs'));
     const out = join(work, 'neg-out');
     assert.deepEqual(negativeTree({ subject, base, out, nodeModules: modules }), [
+      '.github',
       'dist',
       'scripts',
-      '.github/workflows',
     ]);
     assert.equal(
       readFileSync(join(out, 'scripts/cert-review/tool.mjs'), 'utf8'),
@@ -1119,6 +1119,36 @@ describe("cert-review NEGATIVE: the subject's tests on the base's dist, scripts 
     assert.equal(readFileSync(join(out, 'test/integration/cert-tool.test.mjs'), 'utf8'), test);
     assert.equal(readFileSync(join(out, 'node_modules/x/package.json'), 'utf8'), '{}');
     assert.equal(run(subject), 0);
+    assert.notEqual(run(out), 0);
+  });
+
+  it("takes the base's src, so a changed test that imports src bites", async () => {
+    const { negativeTree } = await import(join(tools, 'negative.mjs'));
+    const srcTest = [
+      "import assert from 'node:assert/strict';",
+      "import { it } from 'node:test';",
+      "import { word } from '../../src/x.ts';",
+      "it('src says new', () => assert.equal(word(), 'new'));",
+      '',
+    ].join('\n');
+    const head = tree('neg-src-subject', {
+      'src/x.ts': "export const word = (): string => 'new';\n",
+      'test/integration/cert-tool.test.mjs': srcTest,
+    });
+    const prev = tree('neg-src-base', {
+      'src/x.ts': "export const word = (): string => 'old';\n",
+      'test/integration/cert-tool.test.mjs': 'old test\n',
+    });
+    const out = join(work, 'neg-src-out');
+    assert.deepEqual(negativeTree({ subject: head, base: prev, out, nodeModules: modules }), [
+      'src',
+    ]);
+    assert.equal(
+      readFileSync(join(out, 'src/x.ts'), 'utf8'),
+      "export const word = (): string => 'old';\n"
+    );
+    assert.equal(readFileSync(join(out, 'test/integration/cert-tool.test.mjs'), 'utf8'), srcTest);
+    assert.equal(run(head), 0);
     assert.notEqual(run(out), 0);
   });
 });
