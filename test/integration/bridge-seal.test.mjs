@@ -512,6 +512,16 @@ describe('kernel: transport 403 (loopback refused) exits 3, not 4', {
     assert.ok(stderr.includes('host.slicc.internal'), `stderr: ${stderr}`);
     assert.ok(!stderr.includes('mcpcat login'), 'should not suggest login for transport refusal');
   });
+  it('exits 3 when a header value occurs in the refusal', async () => {
+    const url = hostUrl(server.port);
+    const { status, stderr } = await kernel.run(['mcpcat', '-H', 'X-T: node', 'info', url], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.equal(status, 3, `expected exit 3, got ${status}; stderr: ${stderr}`);
+    assert.ok(stderr.includes('host.slicc.internal'), `stderr: ${stderr}`);
+    assert.ok(!stderr.includes('mcpcat login'), `stderr: ${stderr}`);
+  });
 });
 
 describe("kernel: an upstream server's 403 Forbidden exits 4", () => {

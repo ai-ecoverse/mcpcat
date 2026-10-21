@@ -106,10 +106,11 @@ function firstLine(text: string): string {
 async function authReason(
   res: Response,
   redact: (text: string) => string
-): Promise<string | undefined> {
+): Promise<{ raw?: string; reason?: string }> {
   const type = res.headers.get('content-type') ?? '';
-  if (!type.toLowerCase().startsWith('text/plain')) return undefined;
-  return firstLine(redact(await res.text())) || undefined;
+  if (!type.toLowerCase().startsWith('text/plain')) return {};
+  const text = await res.text();
+  return { raw: firstLine(text), reason: firstLine(redact(text)) || undefined };
 }
 
 function selectSseFrame(body: Uint8Array, targetId: number): JsonRpcResponse {
@@ -317,14 +318,14 @@ export async function createStatelessConnection(
 
   async function handleErrorStatus(res: Response, method: string): Promise<never> {
     if (res.status === 401 || res.status === 403) {
-      const reason = await authReason(res, redact);
+      const { raw, reason } = await authReason(res, redact);
       if (
         transportRefusals &&
         res.status === 403 &&
         !res.headers.has('www-authenticate') &&
-        reason?.startsWith(KERNEL_REFUSAL)
+        raw?.startsWith(KERNEL_REFUSAL)
       ) {
-        throw new TransportRefusalError(403, reason);
+        throw new TransportRefusalError(403, reason ?? '');
       }
       if (authProvider) throw new AuthRetryableError(res, reason);
       throw new McpAuthError(res.status, url, reason);
