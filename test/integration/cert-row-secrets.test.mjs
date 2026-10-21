@@ -28,6 +28,18 @@ describe('cert row: secrets redaction', () => {
           r403: { url: `${srv.base}/403`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
           r401: { url: `${srv.base}/401`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
           rask: { url: `${srv.base}/ask`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
+          rtok: {
+            url: `${srv.base}/tok/mcp`,
+            headers: { Authorization: 'Bearer ${CERT_ROW_TOKEN}' },
+          },
+          rtok500: {
+            url: `${srv.base}/tok/500`,
+            headers: { Authorization: 'Bearer ${CERT_ROW_TOKEN}' },
+          },
+          rtokask: {
+            url: `${srv.base}/tok/ask`,
+            headers: { Authorization: 'Bearer ${CERT_ROW_TOKEN}' },
+          },
         },
       })
     );
@@ -181,6 +193,55 @@ describe('cert row: secrets redaction', () => {
       });
       assert.notEqual(r.status, null, `mcpcat did not exit: ${r.signal}`);
       assert.ok(r.stderr.includes('[REDACTED]'), r.stderr.slice(0, 600));
+    });
+  }
+
+  const bearer = ['-H', 'Authorization: Bearer ${CERT_ROW_TOKEN}'];
+  const SUFFIX = 'SuffixLeak77';
+  const tokEnv = () => ({
+    ...env,
+    CERT_ROW_ID: 'certrowIdPfx01',
+    CERT_ROW_KEY2: `certrowIdPfx01${SUFFIX}`,
+  });
+  const tokenCases = {
+    '-H Bearer ${VAR}, JSON-RPC error': () => [...bearer, 'call', `${srv.base}/tok/mcp`, 'err'],
+    '-H Bearer ${VAR}, JSON-RPC error, --json': () => [
+      ...bearer,
+      '--json',
+      'call',
+      `${srv.base}/tok/mcp`,
+      'err',
+    ],
+    '-H Bearer ${VAR}, JSON-RPC error, -v': () => [
+      ...bearer,
+      '-v',
+      'call',
+      `${srv.base}/tok/mcp`,
+      'err',
+    ],
+    '-H Bearer ${VAR}, HTTP 500': () => [...bearer, 'call', `${srv.base}/tok/500`, 'echo'],
+    '-H Bearer ${VAR}, input request': () => [...bearer, 'call', `${srv.base}/tok/ask`, 'ask'],
+    'mcp.json Bearer ${VAR}, JSON-RPC error': () => ['call', 'rtok', 'err'],
+    'mcp.json Bearer ${VAR}, HTTP 500, -v': () => ['-v', 'call', 'rtok500', 'echo'],
+    'mcp.json Bearer ${VAR}, input request, --json': () => ['--json', 'call', 'rtokask', 'ask'],
+    'a ${VAR} value that extends another': () => [
+      '-H',
+      'X-Id: ${CERT_ROW_ID}',
+      '-H',
+      'X-Key: ${CERT_ROW_KEY2}',
+      'call',
+      `${srv.base}/tok/mcp`,
+      'err',
+    ],
+  };
+
+  for (const [name, args] of Object.entries(tokenCases)) {
+    it(`redacts the ${'${VAR}'} value: ${name}`, async () => {
+      const r = run(args(), { env: tokEnv() });
+      const out = `${r.stdout}${r.stderr}`;
+      assert.ok(!out.includes(MARK), `the secret leaked (exit ${r.status}):\n${out.slice(0, 600)}`);
+      assert.ok(!out.includes(SUFFIX), `a suffix leaked (exit ${r.status}):\n${out.slice(0, 600)}`);
+      assert.ok(out.includes('[REDACTED]'), out.slice(0, 600));
     });
   }
 

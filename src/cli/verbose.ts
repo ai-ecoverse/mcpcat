@@ -1,4 +1,5 @@
 import type { Platform } from '../platform/types.ts';
+import { redactSecrets } from '../render/redact.ts';
 import { sanitizeTerminal } from '../render/sanitize.ts';
 
 const SENSITIVE_HEADER_RE = /^(authorization|cookie|proxy-authorization)$/i;
@@ -21,15 +22,7 @@ export interface VerboseLogger {
 }
 
 function redact(text: string, secrets: Set<string>): string {
-  let result = text;
-  for (const secret of secrets) {
-    if (secret.length > 0) {
-      while (result.includes(secret)) {
-        result = result.replace(secret, '[REDACTED]');
-      }
-    }
-  }
-  return result;
+  return redactSecrets(text, secrets);
 }
 
 export function createVerboseLogger(platform: Platform, enabled: boolean): VerboseLogger {

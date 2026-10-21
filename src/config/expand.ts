@@ -12,6 +12,20 @@ export function expandPlaceholders(value: string, env: Record<string, string | u
   return value.replace(PLACEHOLDER, (_, name: string) => env[name] ?? '');
 }
 
+export const MIN_VAR_SECRET = 8;
+
+export function placeholderValues(
+  value: string,
+  env: Record<string, string | undefined>
+): string[] {
+  const values: string[] = [];
+  for (const m of value.matchAll(PLACEHOLDER)) {
+    const v = env[m[1]];
+    if (v !== undefined && v.length >= MIN_VAR_SECRET) values.push(v);
+  }
+  return values;
+}
+
 export function missingPlaceholders(
   value: string,
   env: Record<string, string | undefined>
