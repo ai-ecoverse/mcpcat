@@ -1477,10 +1477,11 @@ async function handleInputRequired(
     return EXIT_INPUT_REQUIRED;
   }
   try {
-    const retryResult = await conn.callTool(parsed2.name as string, {
-      ...(parsed2.arguments as Record<string, unknown>),
-      _meta: { inputResponses: elicitResult.answers },
-    });
+    const retryResult = await conn.callTool(
+      parsed2.name as string,
+      parsed2.arguments as Record<string, unknown>,
+      { inputResponses: elicitResult.answers }
+    );
     return renderCallResult(platform, retryResult, { json });
   } catch (retryErr) {
     const e2 = classifyError(retryErr);
