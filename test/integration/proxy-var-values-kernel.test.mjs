@@ -15,6 +15,9 @@ const env = {
   PROXY_TOK: MARK,
   PROXY_ID: ID,
   PROXY_KEY: `${ID}${SUFFIX}`,
+  PROXY_HEAD: 'ShiftHeadQ7v',
+  PROXY_TAIL: 'JK',
+  PROXY_SHIFT: 'hiftHeadQ7vJK',
 };
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
@@ -87,6 +90,13 @@ describe('kernel: proxy hides each ${VAR} value of a header', () => {
       header: [target, '-H', 'Authorization: Bearer ${PROXY_TOK}'],
       config: ['tok'],
       nested: [target, '-H', 'X-Id: ${PROXY_ID}', '-H', 'X-Key: ${PROXY_KEY}'],
+      shifted: [
+        target,
+        '-H',
+        'Authorization: Bearer ${PROXY_HEAD}${PROXY_TAIL}',
+        '-H',
+        'X-Shift: ${PROXY_SHIFT}',
+      ],
     };
     for (const [name, args] of Object.entries(variants)) {
       const s = startServe(client, args);
@@ -126,6 +136,14 @@ describe('kernel: proxy hides each ${VAR} value of a header', () => {
       const out = `${r.stdout}${r.stderr}`;
       assert.ok(!out.includes(SUFFIX), out.slice(0, 600));
       assert.ok(out.includes('key ***'), out.slice(0, 600));
+    });
+  }
+
+  for (const tool of ['headers', 'err']) {
+    it(`never returns the tail of a value that overlaps another: ${tool}`, async () => {
+      const r = await call(urls.shifted, tool);
+      const out = `${r.stdout}${r.stderr}`;
+      assert.ok(out.includes('token *** key'), out.slice(0, 600));
     });
   }
 

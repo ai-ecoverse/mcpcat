@@ -202,6 +202,9 @@ describe('cert row: secrets redaction', () => {
     ...env,
     CERT_ROW_ID: 'certrowIdPfx01',
     CERT_ROW_KEY2: `certrowIdPfx01${SUFFIX}`,
+    CERT_ROW_HEAD: 'ShiftHeadQ7v',
+    CERT_ROW_TAIL: 'JK',
+    CERT_ROW_SHIFT: 'hiftHeadQ7vJK',
   });
   const tokenCases = {
     '-H Bearer ${VAR}, JSON-RPC error': () => [...bearer, 'call', `${srv.base}/tok/mcp`, 'err'],
@@ -234,6 +237,25 @@ describe('cert row: secrets redaction', () => {
       'err',
     ],
   };
+
+  for (const flag of [[], ['-v'], ['--json']]) {
+    it(`masks a ${'${VAR}'} value that overlaps another at a shift: ${flag.join(' ') || 'plain'}`, async () => {
+      const argv = [
+        '-H',
+        'Authorization: Bearer ${CERT_ROW_HEAD}${CERT_ROW_TAIL}',
+        '-H',
+        'X-Shift: ${CERT_ROW_SHIFT}',
+        ...flag,
+        'call',
+        `${srv.base}/tok/mcp`,
+        'err',
+      ];
+      const r = run(argv, { env: tokEnv() });
+      const out = `${r.stdout}${r.stderr}`;
+      assert.ok(!/\[REDACTED\]JK/.test(out), out.slice(0, 600));
+      assert.match(out, /token \[REDACTED\] key/);
+    });
+  }
 
   for (const [name, args] of Object.entries(tokenCases)) {
     it(`redacts the ${'${VAR}'} value: ${name}`, async () => {
