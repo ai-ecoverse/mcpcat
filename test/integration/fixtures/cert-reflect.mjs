@@ -72,7 +72,25 @@ const server = createServer((req, res) => {
       return;
     }
     let out;
-    if (method === 'initialize') {
+    if (req.url.startsWith('/ask') && method === 'server/discover') {
+      out = rpc(id, {
+        supportedVersions: ['2026-07-28'],
+        serverInfo: { name: 'cert-reflect', version: '1.0.0' },
+        capabilities: { tools: {} },
+      });
+    } else if (req.url.startsWith('/ask') && method === 'tools/call') {
+      const ask = {
+        message: `need input ${quoted}`,
+        schema: { type: 'object', properties: { answer: { type: 'string' } } },
+      };
+      out = params?.arguments?._meta?.inputResponses
+        ? rpcError(id, -32000, `retry failed ${quoted}`)
+        : rpc(id, {
+            resultType: 'input_required',
+            content: [{ type: 'text', text: quoted }],
+            ...(params?.arguments?.bare ? {} : { inputRequest: ask }),
+          });
+    } else if (method === 'initialize') {
       out = rpc(id, {
         protocolVersion: '2025-11-25',
         capabilities: { tools: {} },

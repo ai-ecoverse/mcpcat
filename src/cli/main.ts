@@ -1449,18 +1449,21 @@ async function handleInputRequired(
   conn: McpConnection,
   err: InputRequiredError,
   respondData: Record<string, unknown> | undefined,
-  json: boolean
+  json: boolean,
+  redact: Redactor
 ): Promise<number> {
   const parsed2 = JSON.parse(err.requestJson) as Record<string, unknown>;
-  const inputReq = parseInputRequest((parsed2.result as Record<string, unknown>) ?? parsed2);
+  const shown = redactDeep(parsed2, redact) as Record<string, unknown>;
+  const requestOut = sanitizeJson(JSON.stringify(shown, null, 2));
+  const inputReq = parseInputRequest((shown.result as Record<string, unknown>) ?? shown);
   if (!inputReq) {
-    await platform.write(2, `${sanitizeJson(err.requestJson)}\n`);
+    await platform.write(2, `${requestOut}\n`);
     return EXIT_INPUT_REQUIRED;
   }
   const isTty = platform.kind === 'host' && platform.isatty(0) && platform.isatty(2);
   const elicitResult = await handleElicitation(platform, inputReq, isTty, respondData);
   if ('exitCode' in elicitResult) {
-    await platform.write(2, `${sanitizeJson(err.requestJson)}\n`);
+    await platform.write(2, `${requestOut}\n`);
     return EXIT_INPUT_REQUIRED;
   }
   try {
@@ -1471,9 +1474,20 @@ async function handleInputRequired(
     return renderCallResult(platform, retryResult, { json });
   } catch (retryErr) {
     const e2 = classifyError(retryErr);
-    await writeErr(platform, json, e2.kind, e2.msg);
+    await writeErrRedacted(platform, json, e2.kind, e2.msg, redact);
     return e2.code;
   }
+}
+
+function redactDeep(value: unknown, redact: Redactor): unknown {
+  if (typeof value === 'string') return redact(value);
+  if (Array.isArray(value)) return value.map((v) => redactDeep(v, redact));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [redact(k), redactDeep(v, redact)])
+    );
+  }
+  return value;
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: client dispatch with auth, redaction and error classification
@@ -1639,7 +1653,7 @@ async function runClientVerb(
       return termExitCode;
     }
     if (err instanceof InputRequiredError) {
-      return handleInputRequired(platform, conn, err, respondData, parsed.jsonOutput);
+      return handleInputRequired(platform, conn, err, respondData, parsed.jsonOutput, redact);
     }
     const e = classifyError(err);
     await writeErrRedacted(platform, parsed.jsonOutput, e.kind, e.msg, redact);

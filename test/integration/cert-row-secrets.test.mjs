@@ -25,6 +25,7 @@ describe('cert row: secrets redaction', () => {
           r500: { url: `${srv.base}/500`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
           r403: { url: `${srv.base}/403`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
           r401: { url: `${srv.base}/401`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
+          rask: { url: `${srv.base}/ask`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
         },
       })
     );
@@ -82,6 +83,42 @@ describe('cert row: secrets redaction', () => {
       assert.notEqual(r.status, null, `mcpcat did not exit: ${r.signal}`);
       const out = r.stdout + r.stderr;
       assert.ok(!out.includes(MARK), `the secret leaked (exit ${r.status}):\n${out.slice(0, 600)}`);
+    });
+  }
+
+  const inputCases = {
+    'an input request quoting -H': [() => [...header, 'call', `${srv.base}/ask`, 'ask'], 6, false],
+    'an input request quoting -H, --json': [
+      () => [...header, '--json', 'call', `${srv.base}/ask`, 'ask'],
+      6,
+      true,
+    ],
+    'a bare input request quoting -H': [
+      () => [...header, 'call', `${srv.base}/ask`, 'ask', '-d', '{"bare":true}'],
+      6,
+      true,
+    ],
+    'an input request quoting mcp.json ${VAR}': [() => ['call', 'rask', 'ask'], 6, false],
+    'a retried call failing with -H, --respond': [
+      () => [...header, '--respond', '{"answer":"y"}', 'call', `${srv.base}/ask`, 'ask'],
+      5,
+      false,
+    ],
+    'a retried call failing with -H, --respond, --json': [
+      () => [...header, '--json', '--respond', '{"answer":"y"}', 'call', `${srv.base}/ask`, 'ask'],
+      5,
+      true,
+    ],
+  };
+
+  for (const [name, [args, status, json]] of Object.entries(inputCases)) {
+    it(`redacts the value: ${name}`, async () => {
+      const r = run(args(), { env });
+      const out = `${r.stdout}${r.stderr}`;
+      assert.equal(r.status, status, out.slice(0, 600));
+      assert.ok(!out.includes(MARK), `the secret leaked (exit ${r.status}):\n${out.slice(0, 600)}`);
+      assert.ok(r.stderr.includes('[REDACTED]'), r.stderr.slice(0, 600));
+      if (json) JSON.parse(r.stderr);
     });
   }
 
