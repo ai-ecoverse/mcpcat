@@ -59,6 +59,13 @@ describe('proxy: hides each ${VAR} value of a header', () => {
     const target = `${up.base}/tok/mcp`;
     proxies.header = await startProxy([target, '-H', 'Authorization: Bearer ${PROXY_TOK}'], env);
     proxies.config = await startProxy(['tok'], env);
+    for (const n of [0, 4, 8, 12, 16]) {
+      const pad = n === 0 ? [] : ['-H', `X-A: ${'p'.repeat(n)}`];
+      proxies[`cut${n}`] = await startProxy(
+        [`${up.base}/401`, ...pad, '-H', 'X-Api: ${PROXY_TOK}'],
+        env
+      );
+    }
     proxies.shifted = await startProxy(
       [
         target,
@@ -104,6 +111,14 @@ describe('proxy: hides each ${VAR} value of a header', () => {
       assert.ok(text.includes('token *** key'), text);
     });
   }
+
+  it('redacts an upstream error body before it truncates it', async () => {
+    for (const n of [0, 4, 8, 12, 16]) {
+      const text = await call(proxies[`cut${n}`].url, 'echo');
+      assert.ok(text.includes('authentication required'), text);
+      assert.ok(!text.includes(MARK.slice(0, 6)), `a prefix leaked (pad ${n}):\n${text}`);
+    }
+  });
 
   it('sends the expanded mcp.json header upstream', async () => {
     const seen = await (await fetch(`${up.base}/seen`)).json();
