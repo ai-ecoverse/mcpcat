@@ -19,9 +19,18 @@ export function redactWrites(platform: Platform, redact: Redactor): Platform {
   });
 }
 
+export function secretMasker(secrets: Iterable<string>, mask: string): (text: string) => string {
+  const ordered = [...new Set(secrets)]
+    .filter((s) => s.length > 0)
+    .sort((a, b) => b.length - a.length);
+  if (ordered.length === 0) return (text) => text;
+  const pattern = new RegExp(
+    ordered.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
+    'g'
+  );
+  return (text) => text.replace(pattern, () => mask);
+}
+
 export function redactSecrets(text: string, secrets: Iterable<string>): string {
-  const ordered = [...secrets].filter((s) => s.length > 0).sort((a, b) => b.length - a.length);
-  let result = text;
-  for (const secret of ordered) result = result.replaceAll(secret, '[REDACTED]');
-  return result;
+  return secretMasker(secrets, '[REDACTED]')(text);
 }
