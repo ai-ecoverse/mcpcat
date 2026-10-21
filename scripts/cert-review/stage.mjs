@@ -12,6 +12,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import * as esbuild from 'esbuild';
+import { delta } from './classify.mjs';
 import { compareTarballs } from './compare.mjs';
 import { negativeTree } from './negative.mjs';
 import {
@@ -266,6 +267,7 @@ const changedTests = sh(
 )
   .split('\n')
   .filter((f) => /^test\/integration\/[^/]+\.test\.mjs$/.test(f));
+const covered = delta(root, prevCommit, tag.commit);
 const stage = {
   name: NAME,
   version,
@@ -275,6 +277,7 @@ const stage = {
   base: { ref: baseRef, commit: prevCommit },
   prevCommit,
   changedTests,
+  delta: { shipped: covered.shipped, gate: covered.gate },
   negative: { tests: tag.commit, base: prevCommit, fromBase: negFromBase },
   tools: sh('git', ['rev-parse', 'HEAD'], { cwd: root }).trim(),
   node: process.version,

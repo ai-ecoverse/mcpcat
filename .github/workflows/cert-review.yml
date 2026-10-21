@@ -131,11 +131,17 @@ jobs:
             [[ "$commit" =~ $sha ]] && [[ "$base_in" =~ $sha ]] || { echo "::error::no head or base sha"; exit 1; }
             git cat-file -e "$commit^{commit}" 2> /dev/null || git fetch --no-tags origin "$commit"
             git cat-file -e "$base_in^{commit}" 2> /dev/null || git fetch --no-tags origin "$base_in"
-            node scripts/cert-review/shipped.mjs --base "$base_in" --head "$commit" | tee "$RUNNER_TEMP/shipped.txt"
-            head -1 "$RUNNER_TEMP/shipped.txt" | grep -qE '^(behaviour|not behaviour): ' \
-              || { echo "::error::INCOMPLETE: shipped.mjs printed no behaviour verdict"; exit 1; }
             base=$(git merge-base "$base_in" "$commit")
-            if ! head -1 "$RUNNER_TEMP/shipped.txt" | grep -q '^behaviour:'; then
+            node scripts/cert-review/shipped.mjs --base "$base_in" --head "$commit" | tee "$RUNNER_TEMP/shipped.txt"
+            mkdir -p "$RUNNER_TEMP/base-gate"
+            git archive "$base" scripts/cert-review | tar -x -C "$RUNNER_TEMP/base-gate"
+            env -u GITHUB_OUTPUT node "$RUNNER_TEMP/base-gate/scripts/cert-review/shipped.mjs" --repo . --base "$base_in" --head "$commit" \
+              | sed 's/^/base gate: /' | tee "$RUNNER_TEMP/shipped-base.txt"
+            for said in shipped.txt shipped-base.txt; do
+              head -1 "$RUNNER_TEMP/$said" | grep -qE '^(base gate: )?(behaviour|not behaviour): ' \
+                || { echo "::error::INCOMPLETE: shipped.mjs printed no behaviour verdict ($said)"; exit 1; }
+            done
+            if ! head -1 "$RUNNER_TEMP/shipped.txt" | grep -q '^behaviour:' && ! head -1 "$RUNNER_TEMP/shipped-base.txt" | grep -q '^base gate: behaviour:'; then
               skip not-behaviour "not behaviour (skipped)" "$(head -1 "$RUNNER_TEMP/shipped.txt") ($(git diff --name-only "$base" "$commit" | wc -l | tr -d ' ') files against ${base:0:7}); no review is needed."
             fi
             if [ "$fork" = true ]; then
@@ -367,6 +373,7 @@ jobs:
             - `rebuilt`: `trees.tag` is the subject's tree, where `npm ci; npm version ${{ env.VERSION }} --no-git-tag-version; npm pkg set gitHead=<commit>; MCPCAT_STRIP_SCRIPTS=1 npm pack` ran, as the pack job does. `reproducible` and `differingFiles` compare it with `artifact`; both are unpacked in `${{ env.WORK }}/pub/x/package` and `${{ env.WORK }}/rebuilt/x/package`. After the rebuild, `trees.tag/dist` was replaced by the artifact's dist, so the subject's own tests run on the bytes under review. `rebuildDiff` compares the two file by file: `identical`, `explained` (package.json differing only in `gitHead`) and `unexplained` (everything else).
             - **Source: `${{ env.SOURCE }}`.** When it is `npm`, the artifact is `npm pack @ai-ecoverse/mcpcat@${{ env.VERSION }}`, the exact bytes already on npm. Their package.json has no `gitHead`, while the rebuild writes the tag's commit, so `reproducible` is false and `rebuildDiff.explained` lists package.json's gitHead: that one difference is explained. A later job checks, in code, the registry's gitHead, the SLSA provenance commit and npm's `dist.integrity` against the tag and the artifact: don't repeat those.
             - `base.commit` (`trees.prev`) is the base built from source; `trees.neg` is the subject's tests, helpers and fixtures with the base's `dist`, `scripts/` and `.github/workflows/`, all taken from `base.commit` (the NEGATIVE: the subject's tests on the base's code, including the base's cert tooling; `negative` in stage.json names both shas); `trees.previousPublished` is npm's `${{ env.PREV }}`, unpacked. `surface.base` is the base's build, `surface.published` is npm's `${{ env.PREV }}`.
+            - `delta`: the files the delta changes that this review covers, from `scripts/cert-review/classify.mjs`: `shipped` (what goes into the tarball or publishes it) and `gate` (the gate itself: `.github/workflows/ci.yml`, `cert-review.yml`, `release.yml` and `scripts/cert-review/**`). The plan reviews a change when the subject's classifier or the base's says it is behaviour.
             - `changedTests`: the integration test files the delta adds or changes. `suites.json` → `negative` ran each of them on the subject (`head`) and on the base's code (`base`, in `trees.neg`): `bites` is true when it passes on the head and fails on the base.
             - `trees.rows` is the checkout's tests with the artifact's dist: the security rows, listed in `scripts/cert-review/rows.json` (row → test files in `test/integration/`). They are committed integration tests; you review and run them, you never design probes.
             - `kernels`: the pinned slicc-kernels (the `kernel-cert-*` devDependencies and slicc-bios's kernel), each with its `tgz` and an installed `dir`.
@@ -383,6 +390,8 @@ jobs:
             4. **The delta and the NEGATIVE.** Read every commit and pull request in `compare/${{ env.FROM }}...${{ env.TO }}`. Every new or changed test in `changedTests` must fail on the base and pass on the head (`negative[].bites`); for one that doesn't, read both logs and say why. For each fix, name the committed test that covers it and show it bites. A fix without such a test, or whose test also passes in `trees.neg`, is a test gap. A change that alters shipped behaviour with no committed test is a test gap.
             5. **Security rows**, from rows.json and its suites: secrets redaction (`${VAR}` in headers and mcp.json, error paths, `-v`, `--json`); OAuth (DCR, PKCE, state, redirect, rotation, redaction, the store at 0600); serve and proxy (loopback bind, bearer, Origin and Host, no CORS, the proxy pinned to its upstream); webmcp (no tool shared between origins, issue `#96`); DAC under users enforce (alice and bob); lifecycle (no orphans, including SIGKILL on kernels ≥ 1.88); the code-mode sandbox (the globals, import and Function blocked, the wall-time bound); the discovery canary (0 hits). Say for each row whether its tests ran and passed on the host and on every kernel. When the delta touches a row's surface and no committed test covers the change, that is a test gap: report it, don't improvise a probe. If a provider safety filter stops you, don't rephrase or work around it: stop, say so in comment.md and answer `fail` with that reason.
             6. **Release path.** When the delta changes `.github/workflows/release.yml`, `binaries.yml`, `.releaserc.json` or `package.json`'s `publishConfig`/`fledgling`, check that main still publishes with provenance through trusted publishing from `release.yml` on `refs/heads/main`, and that nothing else can publish.
+
+            7. **The gate.** When `delta.gate` is not empty, this change edits the gate that certifies it, and the jobs of this run (plan, stage, suites, record, verdict) already run the subject's version of it: judge the gate from its diff, not from its output. The gate must stay fail-closed: every change to a shipped or gate file gets this review; a fork, a draft, a missing artifact, evidence, status or verdict, a failed suite, row or changed test, and a reviewer's `fail` each block the merge; the line comes from code over the artifact and the evidence, never from the reviewer alone; `all-green` in `ci.yml` still requires `cert-review`; and `release.yml` still publishes only what merged to main. A change that loosens any of these, or lets a change skip or pass this review without its evidence, is a FAIL, whatever else it fixes. When `delta.shipped` is empty, it is a gate-only change: the artifact is the base's shipped sources packed again, so checks 1 to 3 and 5 hold as they did for the base, and certified means the changed gate is still fail-closed and each changed gate test bites in the NEGATIVE, which runs it on the base's `scripts/` and `.github/workflows/`. A gate change that alters what the gate decides with no committed test that bites is a test gap.
 
             SEVERITY (Lars, 2026-10-14: roll forward, don't reject over minor issues)
             FAIL only for: a security or secret exposure; data loss or corruption; a supply-chain integrity problem (a sha mismatch, an unexplained non-reproducible build, a release path that publishes something unreviewed); a license violation; a crash or boot failure; or a regression that breaks a common workflow with no workaround. Everything else is "certified with known issues": answer `certified` and list them, each filed as a GitHub issue with a repro and the test that would catch it. **File every known issue that isn't filed yet**, with a repro and the behaviour-level integration test that would catch it. Search first, open and closed: `gh issue list -R ${{ github.repository }} --state all --search …` and `gh issue list -R ai-ecoverse/slicc-kernel --state all --search …`, and cite a match as `#<n>` or `ai-ecoverse/slicc-kernel#<n>` instead of filing again. Then `gh issue create -R ${{ github.repository }}` with the repro, the subject and kernel it fails on, and the test; for a slicc-kernel problem, say so in the title.
@@ -632,10 +641,10 @@ jobs:
           if [ "$GO" != true ]; then
             case "$REASON" in
               not-behaviour)
-                say not-behaviour "cert-review: not behaviour, skipped: no shipped file changed"
+                say not-behaviour "cert-review: not behaviour, skipped: no shipped or gate file changed"
                 if [ "$MODE" != dispatch ] && [ -n "$COMMIT" ]; then
                   gh api "repos/$GH_REPO/statuses/$COMMIT" -f state=success -f context=cert-review -f target_url="$RUN_URL" \
-                    -f description="not behaviour: no shipped file changed, so no review (skipped)" --jq '"status \(.state) on \(.url)"' \
+                    -f description="not behaviour: no shipped or gate file changed, so no review (skipped)" --jq '"status \(.state) on \(.url)"' \
                     || echo "::warning::no cert-review status on $COMMIT (a read-only token)"
                 fi
                 exit 0 ;;

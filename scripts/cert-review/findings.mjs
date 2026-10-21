@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { one } from './checks.mjs';
+import { CHANGE } from './tarball.mjs';
 
 const read = (dir, file) => {
   if (!dir || !existsSync(join(dir, file))) return undefined;
@@ -85,6 +86,17 @@ function surface(stage, version, rebuild, out) {
     out.defects.push(`not reproducible: ${one(d)}`);
 }
 
+function covered(stage, version, out) {
+  const d = stage.delta;
+  if (!Array.isArray(d?.shipped) || !Array.isArray(d?.gate)) {
+    out.gaps.push("the evidence doesn't say which shipped and gate files the delta changes");
+    return;
+  }
+  out.delta = { shipped: d.shipped.map(one), gate: d.gate.map(one) };
+  if (CHANGE.test(version ?? '') && !d.shipped.length && !d.gate.length)
+    out.gaps.push('the delta changes no shipped or gate file, so there is nothing to certify');
+}
+
 export function codeFindings({ dir, rows, version, sha256, rebuild = true }) {
   const out = { defects: [], gaps: [], notes: [] };
   const stage = read(dir, 'stage.json');
@@ -98,6 +110,7 @@ export function codeFindings({ dir, rows, version, sha256, rebuild = true }) {
   results(stage, suites, out);
   securityRows(suites, rows, out);
   negative(stage, suites, out);
+  covered(stage, version, out);
   surface(stage, version, rebuild, out);
   return out;
 }
