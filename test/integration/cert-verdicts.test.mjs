@@ -93,7 +93,7 @@ describe('silence never passes: all-green', () => {
       /host-floor=none/,
     ],
     [
-      'a missing coordinator approval',
+      'a verdict all-green does not know',
       { ...green, VERDICT: 'needs-coordinator-review' },
       /\(needs-coordinator-review\)/,
     ],
@@ -244,7 +244,6 @@ describe('a draft is not reviewed, and its cert-review is red', () => {
 
   it('the verdict job fails a draft with its line', () => {
     const r = runStep('draft-verdict', verdict, {
-      GUARD: 'success',
       PLAN: 'success',
       GO: 'false',
       REASON: 'draft',
@@ -284,14 +283,131 @@ describe('a draft is not reviewed, and its cert-review is red', () => {
     const ci = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8');
     assert.match(
       ci,
-      /types: \[opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled\]/
+      /types: \[opened, synchronize, reopened, ready_for_review, converted_to_draft\]\n/
     );
     assert.match(
       ci,
       /^ {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.event\.pull_request\.number \|\| github\.ref \}\}\n {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}$/m,
-      'one concurrency group per pull request: converted_to_draft cancels every run, label runs included'
+      'one concurrency group per pull request: converted_to_draft cancels every run'
     );
     const workflow = readFileSync(join(root, '.github/workflows/cert-review.yml'), 'utf8');
     assert.match(workflow, /PR_DRAFT: \$\{\{ github\.event\.pull_request\.draft \}\}/);
+  });
+});
+
+describe('a cert-path change needs no label: the verdict reads the review alone', () => {
+  const verdict = stepScript('cert-review.yml', 'The outcome all-green reads');
+  const fallback = stepScript(
+    'cert-review.yml',
+    'A run that ends without a recorded verdict still leaves a cert-review status, so the required check never waits forever'
+  );
+  const workflows = ['cert-review.yml', 'ci.yml'].map((f) =>
+    readFileSync(join(root, '.github/workflows', f), 'utf8')
+  );
+  const reviewed = {
+    PLAN: 'success',
+    GO: 'true',
+    REASON: 'review',
+    MODE: 'pr',
+    RECORD: 'success',
+    VERDICT: 'certified',
+    LINE: 'certified pull request #1',
+  };
+  const run = (name, env) =>
+    runStep(name, verdict, {
+      ...env,
+      GITHUB_OUTPUT: join(work, `${name}.out`),
+    });
+
+  it('certifies a reviewed head with no guard job and no label', () => {
+    const r = run('nolabel-certified', reviewed);
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /^certified pull request #1$/m);
+    assert.match(readFileSync(join(work, 'nolabel-certified.out'), 'utf8'), /^verdict=certified$/m);
+  });
+
+  for (const [what, env, out, why] of [
+    [
+      'a failed review',
+      { RECORD: 'success', VERDICT: 'fail', LINE: 'cert-ci: FAIL x' },
+      'fail',
+      /^cert-ci: FAIL x$/m,
+    ],
+    [
+      'a record job that failed',
+      { RECORD: 'failure', VERDICT: '', LINE: '' },
+      'incomplete',
+      /INCOMPLETE no cert-review line \(record failure\)/,
+    ],
+    [
+      'a record job that never ran',
+      { RECORD: 'skipped', VERDICT: '', LINE: '' },
+      'incomplete',
+      /INCOMPLETE no cert-review line \(record skipped\)/,
+    ],
+    [
+      'a certified verdict from a failed record',
+      { RECORD: 'failure' },
+      'incomplete',
+      /^certified pull request #1$/m,
+    ],
+    [
+      'a plan that failed',
+      { PLAN: 'failure' },
+      'incomplete',
+      /INCOMPLETE the plan job ended failure/,
+    ],
+    [
+      'a plan with no reason',
+      { GO: 'false', REASON: '' },
+      'incomplete',
+      /INCOMPLETE the plan gave no reason/,
+    ],
+  ]) {
+    it(`still fails closed on ${what}`, () => {
+      const name = `nolabel-${what.replace(/\W+/g, '-')}`;
+      const r = run(name, { ...reviewed, ...env });
+      assert.equal(r.code, 1, r.out);
+      assert.match(r.out, why);
+      assert.match(
+        readFileSync(join(work, `${name}.out`), 'utf8'),
+        new RegExp(`^verdict=${out}$`, 'm')
+      );
+    });
+  }
+
+  it('posts error, never pending, when a run ends without a verdict', () => {
+    const r = runStep(
+      'nolabel-fallback',
+      fallback,
+      {
+        HEAD_SHA: 'a'.repeat(40),
+        OUTCOME: 'needs-coordinator-review',
+        GH_REPO: 'o/r',
+        RUN_URL: 'u',
+      },
+      { gh: 'printf "%s\\n" "$*" >> "$(dirname "$0")/gh.log"' }
+    );
+    assert.equal(r.code, 0, r.out);
+    const log = readFileSync(join(r.bin, 'gh.log'), 'utf8');
+    assert.match(log, /-f state=error -f context=cert-review/);
+    assert.doesNotMatch(log, /state=pending/);
+  });
+
+  it('has no guard job, no approval label and no label-change reruns', () => {
+    const [review, ci] = workflows;
+    for (const yml of workflows) {
+      assert.doesNotMatch(
+        yml,
+        /cert-review-approved|cert-self-guard|needs-coordinator-review|needs\.guard/
+      );
+      assert.doesNotMatch(yml, /\blabeled\b|\bunlabeled\b|reused/);
+    }
+    assert.doesNotMatch(review, /\n {2}guard:\n/);
+    assert.match(
+      review,
+      /\n {4}name: cert-review \/ \$\{\{ needs\.plan\.outputs\.label \|\| 'verdict' \}\}\n {4}needs: \[plan, record\]\n/
+    );
+    assert.match(ci, /\n {4}needs: \[runner, ci, host-floor, cert, cert-review\]\n/);
   });
 });
