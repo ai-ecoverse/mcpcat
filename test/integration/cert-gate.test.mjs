@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { commitAll, initFixtureRepo } from '@ai-ecoverse/slicc-shared-web/testing';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const work = mkdtempSync(join(tmpdir(), 'mcpcat-cert-gate-plan-'));
@@ -47,10 +48,7 @@ const git = (...args) => {
   return r.stdout.trim();
 };
 mkdirSync(repo, { recursive: true });
-git('init', '-q', '-b', 'main');
-git('config', 'user.email', 'test@example.com');
-git('config', 'user.name', 'test');
-git('config', 'commit.gpgsign', 'false');
+initFixtureRepo(repo);
 cpSync(join(root, 'scripts/cert-review'), join(repo, 'scripts/cert-review'), {
   recursive: true,
 });
@@ -69,8 +67,7 @@ for (const f of ['kernel', 'config-mode', 'request-timers-bundle', 'sanitize-ker
 writeFileSync(join(repo, 'README.md'), '1\n');
 mkdirSync(join(repo, 'src'), { recursive: true });
 writeFileSync(join(repo, 'src/a.ts'), '1\n');
-git('add', '-A');
-git('commit', '-q', '-m', 'base');
+commitAll(repo, 'base');
 const base = git('rev-parse', 'HEAD');
 
 function branch(name, files) {
@@ -79,8 +76,7 @@ function branch(name, files) {
     mkdirSync(dirname(join(repo, f)), { recursive: true });
     writeFileSync(join(repo, f), text);
   }
-  git('add', '-A');
-  git('commit', '-q', '-m', name);
+  commitAll(repo, name);
   return git('rev-parse', 'HEAD');
 }
 
