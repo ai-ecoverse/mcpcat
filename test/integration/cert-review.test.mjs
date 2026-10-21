@@ -381,61 +381,6 @@ describe('cert-review record --source npm: the bytes already on npm', () => {
     assert.equal(r.code, 1, r.out);
     assert.match(r.rec.line, /package\/package\.json: differs in more than gitHead/);
   });
-  function published(env) {
-    const script = join(work, 'check-published.mjs');
-    writeFileSync(
-      script,
-      `import { checkPublished } from ${JSON.stringify(join(tools, 'released.mjs'))};\nconsole.log(JSON.stringify(await checkPublished({ version: ${JSON.stringify(VERSION)}, repo: ${JSON.stringify(REPO)}, wait: '0' })));\n`
-    );
-    const r = spawnSync(process.execPath, [script], {
-      encoding: 'utf8',
-      env: { ...process.env, NODE_NO_WARNINGS: '1', ...env },
-    });
-    assert.equal(r.status, 0, r.stderr);
-    return JSON.parse(r.stdout.trim().split('\n').at(-1));
-  }
-
-  it('checkPublished: the registry bytes are the SLSA subject, built by release.yml on main from the tag', () => {
-    const r = published(registry('pub-ok'));
-    assert.deepEqual([...r.problems, ...r.missing], []);
-    assert.equal(r.facts.sha256, onNpm.sha256);
-    assert.equal(r.facts.integrity, integrity);
-    assert.equal(r.facts.provenance.gitCommit, COMMIT);
-  });
-
-  for (const [what, opts, why] of [
-    [
-      'bytes other than the SLSA subject',
-      { served: rebuilt.tgz },
-      /dist\.integrity is .*, the tarball is/,
-    ],
-    [
-      'a provenance from another workflow',
-      { path: '.github/workflows/ci.yml' },
-      /provenance workflow is \.github\/workflows\/ci\.yml/,
-    ],
-    [
-      'a provenance from another ref',
-      { ref: 'refs/heads/evil' },
-      /provenance ref is refs\/heads\/evil/,
-    ],
-    [
-      'a gitHead other than the provenance commit',
-      { gitHead: 'e'.repeat(40) },
-      /isn't the package's gitHead/,
-    ],
-    [
-      'a provenance commit other than the tag',
-      { gitCommit: 'e'.repeat(40), gitHead: 'e'.repeat(40) },
-      new RegExp(`tag v${VERSION} is ${COMMIT}, provenance says ${'e'.repeat(40)}`),
-    ],
-    ['unverified attestation signatures', { signed: false }, /npm audit signatures failed/],
-  ]) {
-    it(`checkPublished: fails on ${what}`, () => {
-      const r = published(registry(`pub-${what.replace(/\W+/g, '-')}`, opts));
-      assert.match(r.problems.join('; '), why);
-    });
-  }
 });
 
 describe('cert-review record --commit: a pull request or merge group under review', () => {
@@ -846,8 +791,7 @@ describe('cert-review shipped: which changes are behaviour', () => {
   for (const [name, file] of [
     ['cert-review workflow', '.github/workflows/cert-review.yml'],
     ['ci workflow', '.github/workflows/ci.yml'],
-    ['published-package check', 'scripts/cert-review/released.mjs'],
-    ['post-release verify workflow', '.github/workflows/cert-verify.yml'],
+    ['shared checks', 'scripts/cert-review/checks.mjs'],
     ['kernel cert driver', 'scripts/cert.mjs'],
     ['kernel test set', 'scripts/kernel-test-files.mjs'],
     ['cert count reporter', 'scripts/cert-count-reporter.mjs'],
