@@ -155,6 +155,41 @@ function openSocket(url) {
   return new Promise((resolve) => socket.on('connect', () => resolve(socket)));
 }
 
+function splitResponses(text) {
+  const out = [];
+  let rest = text;
+  for (;;) {
+    const end = rest.indexOf('\r\n\r\n');
+    if (end < 0) return out;
+    const head = rest.slice(0, end);
+    const length = Number(/content-length:\s*(\d+)/i.exec(head)?.[1] ?? 0);
+    const body = rest.slice(end + 4, end + 4 + length);
+    if (body.length < length) return out;
+    const data = body.startsWith('{') ? body : /^data: (.*)$/m.exec(body)?.[1];
+    out.push({ status: Number(head.split(' ')[1]), message: JSON.parse(data) });
+    rest = rest.slice(end + 4 + length);
+  }
+}
+
+function assertPipelined(text, secondText) {
+  const responses = splitResponses(text);
+  assert.equal(responses.length, 2, text.slice(0, 2000));
+  const [first, second] = responses;
+  assert.equal(first.status, 200);
+  assert.equal(first.message.id, 1);
+  assert.notEqual(first.message.result?.isError, true, JSON.stringify(first.message));
+  assert.equal(second.status, 200);
+  assert.equal(second.message.id, 2);
+  assert.notEqual(
+    second.message.result?.isError,
+    true,
+    JSON.stringify(second.message).slice(0, 2000)
+  );
+  assert.equal(second.message.result?.content?.[0]?.text?.trim(), secondText);
+}
+
+const pipelinedText = `two-${'y'.repeat(60_000)}-end`;
+
 async function assertKilledWithin(pid, started, withinMs) {
   await waitUntil(() => !pidAlive(pid), `tool ${pid} to be killed on disconnect`, withinMs);
   const elapsed = Date.now() - started;
@@ -308,6 +343,34 @@ describe('serve on the host: --call-timeout and abort paths clear their timers (
     const started = Date.now();
     socket.destroy();
     await assertKilledWithin(pid, started, 3_000);
+    await stopClean(serve);
+  });
+
+  it('http: a request pipelined behind a running call is parked and answered after it, in order (#393)', async () => {
+    const pidFile = join(home, 'http-pipelined.pid');
+    const serve = startHostHttp([
+      `slow: ${process.execPath} ${termCli} ${pidFile} 1500`,
+      `say: ${process.execPath} ${serveCli} echo {text}`,
+    ]);
+    const url = await serve.url;
+    const socket = await openSocket(url);
+    socket.write(rawRequest(url, call(1, 'slow')));
+    await waitUntil(() => readPid(pidFile), 'the slow tool to record its pid');
+    const second = rawRequest(url, call(2, 'say', { text: pipelinedText }));
+    const split = second.indexOf('\r\n\r\n') + 4;
+    const middle = split + Math.floor((second.length - split) / 2);
+    socket.write(second.slice(0, split));
+    await new Promise((r) => setTimeout(r, 200));
+    socket.write(second.slice(split, middle));
+    await new Promise((r) => setTimeout(r, 200));
+    socket.write(second.slice(middle));
+    await waitUntil(
+      () => splitResponses(socket.received).length === 2,
+      'both pipelined responses',
+      10_000
+    );
+    socket.destroy();
+    assertPipelined(socket.received, pipelinedText);
     await stopClean(serve);
   });
 
@@ -611,6 +674,29 @@ describe('serve in the kernel: --call-timeout and abort paths clear their timers
 
   it('http: a disconnect after the client sent more bytes still kills the tool (#384)', () =>
     kernelDisconnectKills('mcpcat-test-term', 'http-extra', 3_000, { mode: 'extra' }));
+
+  it('http: a request pipelined behind a running call is parked and answered after it, in order (#393)', async () => {
+    const pidFile = '/tmp/kernel-pipelined.pid';
+    const serve = await spawnHttpServe([
+      `slow: mcpcat-test-term ${pidFile} 1500`,
+      'say: mcpcat-test-serve-cli echo {text}',
+    ]);
+    const sent = await kernel.run(
+      [
+        'mcpcat-test-http-call',
+        serve.port,
+        'slow',
+        pidFile,
+        'pipeline',
+        JSON.stringify({ text: pipelinedText }),
+        'say',
+      ],
+      { stdout: 'pipe', stderr: 'pipe' }
+    );
+    assert.equal(sent.status, 0, sent.stderr);
+    assertPipelined(sent.stdout, pipelinedText);
+    await stopKernelClean(serve);
+  });
 
   it('http: a call queued behind another whose client disconnects never spawns (#389)', async () => {
     const firstPid = '/tmp/kernel-queue-first.pid';
