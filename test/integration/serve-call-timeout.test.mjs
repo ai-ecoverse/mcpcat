@@ -2,6 +2,7 @@ import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -19,6 +20,8 @@ const serveCli = join(fixturesDir, 'serve-cli.mjs');
 const hangCli = join(fixturesDir, 'serve-hang-cli.mjs');
 const slowDiscoveryCli = join(fixturesDir, 'serve-slow-discovery-cli.mjs');
 const termCli = join(fixturesDir, 'serve-term-cli.mjs');
+const stdinCli = join(fixturesDir, 'serve-stdin-cli.mjs');
+const bigStdin = 'x'.repeat(4 << 20);
 const longTimeout = 30;
 const longTimeoutMs = longTimeout * 1000;
 const callGraceMs = 5000;
@@ -98,7 +101,7 @@ function assertNoCallTimer(probe, ms, stderr) {
   assert.ok(!probe.timers.includes(ms), `a ${ms} ms call timer outlived serve: ${stderr}`);
 }
 
-function startHostHttp(tools) {
+function startHostHttp(tools, clis = []) {
   const serve = startHost([
     'serve',
     '--http',
@@ -107,6 +110,7 @@ function startHostHttp(tools) {
     '--call-timeout',
     String(longTimeout),
     ...tools.flatMap((t) => ['--tool', t]),
+    ...clis,
   ]);
   serve.url = waitUntil(
     () => /listening on (http:\/\/\S+)/.exec(serve.stderr)?.[1],
@@ -125,6 +129,46 @@ function post(url, body, signal) {
     body: JSON.stringify(body),
     signal,
   });
+}
+
+function rawRequest(url, body) {
+  const json = JSON.stringify(body);
+  return [
+    'POST /mcp HTTP/1.1',
+    `host: ${new URL(url).host}`,
+    'content-type: application/json',
+    'accept: application/json, text/event-stream',
+    `content-length: ${Buffer.byteLength(json)}`,
+    '',
+    json,
+  ].join('\r\n');
+}
+
+function openSocket(url) {
+  const { hostname, port } = new URL(url);
+  const socket = connect(Number(port), hostname);
+  socket.received = '';
+  socket.on('data', (c) => {
+    socket.received += c;
+  });
+  socket.on('error', () => {});
+  return new Promise((resolve) => socket.on('connect', () => resolve(socket)));
+}
+
+async function assertKilledWithin(pid, started, withinMs) {
+  await waitUntil(() => !pidAlive(pid), `tool ${pid} to be killed on disconnect`, withinMs);
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < withinMs, `tool outlived its disconnected client by ${elapsed} ms`);
+}
+
+async function stopClean(serve) {
+  serve.child.kill('SIGTERM');
+  const { signal } = await serve.exited;
+  assert.equal(signal, null, serve.stderr);
+  const probe = probeOf(serve.stderr);
+  assertNoCallTimer(probe, longTimeoutMs, serve.stderr);
+  assertNoCallTimer(probe, callGraceMs, serve.stderr);
+  assert.equal(probe.abortListeners, 0, `abort listeners left behind: ${serve.stderr}`);
 }
 
 async function hostDisconnectKills(cli, label, withinMs) {
@@ -157,7 +201,7 @@ async function hostDisconnectKills(cli, label, withinMs) {
 
 describe('serve on the host: --call-timeout and abort paths clear their timers (#381)', {
   skip: isStandalone && 'needs node --import to load the leak probe',
-  timeout: 60_000,
+  timeout: 120_000,
 }, () => {
   it('stdio: a hung tool is SIGTERMed then SIGKILLed, replies timed out, and the next call leaves no timer', async () => {
     const pidFile = join(home, 'stdio-hang.pid');
@@ -237,6 +281,87 @@ describe('serve on the host: --call-timeout and abort paths clear their timers (
   it('http: a client disconnect SIGKILLs a SIGTERM-ignoring tool after the grace, not at --call-timeout (#384)', () =>
     hostDisconnectKills(hangCli, 'http-ignore', callGraceMs + 4_000));
 
+  it('http: a disconnect while the tool is still being fed stdin kills it (#384)', async () => {
+    const pidFile = join(home, 'http-stdin.pid');
+    const serve = startHostHttp([], [`s=${stdinCli}`]);
+    const url = await serve.url;
+    const abort = new AbortController();
+    const args = { argv: ['hold', pidFile], stdin: bigStdin };
+    const held = post(url, call(1, 's_invoke', args), abort.signal).catch((err) => err);
+    const pid = await waitUntil(() => readPid(pidFile), 'the tool to record its pid');
+    const started = Date.now();
+    abort.abort();
+    assert.equal((await held).name, 'AbortError');
+    await assertKilledWithin(pid, started, 3_000);
+    await stopClean(serve);
+  });
+
+  it('http: a disconnect after the client sent more bytes still kills the tool (#384)', async () => {
+    const pidFile = join(home, 'http-extra.pid');
+    const serve = startHostHttp([`held: ${process.execPath} ${termCli} ${pidFile}`]);
+    const url = await serve.url;
+    const socket = await openSocket(url);
+    socket.write(rawRequest(url, call(1, 'held')));
+    const pid = await waitUntil(() => readPid(pidFile), 'the tool to record its pid');
+    socket.write('POST /mcp HTTP/1.1\r\n');
+    await new Promise((r) => setTimeout(r, 200));
+    const started = Date.now();
+    socket.destroy();
+    await assertKilledWithin(pid, started, 3_000);
+    await stopClean(serve);
+  });
+
+  it('http: a call queued behind another whose client disconnects never spawns (#389)', async () => {
+    const firstPid = join(home, 'http-queue-first.pid');
+    const queuedPid = join(home, 'http-queue-second.pid');
+    const serve = startHostHttp([
+      `first: ${process.execPath} ${termCli} ${firstPid} 1500`,
+      `queued: ${process.execPath} ${termCli} ${queuedPid}`,
+    ]);
+    const url = await serve.url;
+    const first = post(url, call(1, 'first')).then((r) => r.text());
+    await waitUntil(() => readPid(firstPid), 'the first tool to record its pid');
+    const abort = new AbortController();
+    const queued = post(url, call(2, 'queued'), abort.signal).catch((err) => err);
+    await new Promise((r) => setTimeout(r, 200));
+    abort.abort();
+    assert.equal((await queued).name, 'AbortError');
+    await first;
+    await new Promise((r) => setTimeout(r, 500));
+    assert.ok(!existsSync(queuedPid), 'the queued call spawned after its client left');
+    await stopClean(serve);
+  });
+
+  it('http: a request on a kept-alive socket after SIGTERM never spawns and does not hold serve (#384)', async () => {
+    const pidFile = join(home, 'http-late-stubborn.pid');
+    const latePid = join(home, 'http-late.pid');
+    const serve = startHostHttp([
+      `stubborn: ${process.execPath} ${hangCli} ${pidFile}`,
+      `late: ${process.execPath} ${termCli} ${latePid}`,
+      `say: ${process.execPath} ${serveCli} echo {text}`,
+    ]);
+    const url = await serve.url;
+    const idle = await openSocket(url);
+    idle.write(rawRequest(url, call(1, 'say', { text: 'warm' })));
+    await waitUntil(() => /warm/.test(idle.received), 'the kept-alive socket to be served');
+    const busy = await openSocket(url);
+    busy.write(rawRequest(url, call(2, 'stubborn')));
+    await waitUntil(() => readPid(pidFile), 'the stubborn tool to record its pid');
+    const started = Date.now();
+    serve.child.kill('SIGTERM');
+    await new Promise((r) => setTimeout(r, 100));
+    idle.write(rawRequest(url, call(3, 'late')));
+    await serve.exited;
+    const elapsed = Date.now() - started;
+    idle.destroy();
+    busy.destroy();
+    assert.ok(!existsSync(latePid), 'a request after shutdown spawned its tool');
+    assert.ok(elapsed < shutdownGraceMs + 1_500, `serve took ${elapsed} ms to exit`);
+    const probe = probeOf(serve.stderr);
+    assertNoCallTimer(probe, longTimeoutMs, serve.stderr);
+    assert.equal(probe.abortListeners, 0, `abort listeners left behind: ${serve.stderr}`);
+  });
+
   it('http: SIGTERM with a call in flight exits at once and leaves no kill-grace timer (#386)', async () => {
     const pidFile = join(home, 'http-shutdown.pid');
     const serve = startHostHttp([`held: ${process.execPath} ${termCli} ${pidFile}`]);
@@ -311,10 +436,11 @@ const kernelCommands = [
   ['mcpcat-test-slow-discovery', 'kernel-slow-discovery-cli.mjs'],
   ['mcpcat-test-term', 'kernel-term-cli.mjs'],
   ['mcpcat-test-http-call', 'kernel-http-call-client.mjs'],
+  ['mcpcat-test-stdin', 'kernel-stdin-cli.mjs'],
 ];
 
 describe('serve in the kernel: --call-timeout and abort paths clear their timers (#381)', {
-  timeout: 60_000,
+  timeout: 120_000,
 }, () => {
   let kernel;
   let client;
@@ -354,6 +480,15 @@ describe('serve in the kernel: --call-timeout and abort paths clear their timers
     }
   }
 
+  async function kernelExists(file) {
+    try {
+      await kernel.readFile(file);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async function kernelAlive(pid) {
     return (await client.ps()).some((p) => p.pid === pid && p.state !== 'Z');
   }
@@ -387,7 +522,7 @@ describe('serve in the kernel: --call-timeout and abort paths clear their timers
     assertNoCallTimer(probeOf(stderr), callTimeoutMs, stderr);
   });
 
-  async function spawnHttpServe(tools) {
+  async function spawnHttpServe(tools, clis = []) {
     const out = { stderr: '' };
     out.sp = await client.spawn(
       [
@@ -399,6 +534,7 @@ describe('serve in the kernel: --call-timeout and abort paths clear their timers
         '--call-timeout',
         String(longTimeout),
         ...tools.flatMap((t) => ['--tool', t]),
+        ...clis,
       ],
       {
         stdin: 'pipe',
@@ -415,13 +551,32 @@ describe('serve in the kernel: --call-timeout and abort paths clear their timers
     return out;
   }
 
-  async function kernelDisconnectKills(command, label, withinMs) {
+  async function stopKernelClean(serve) {
+    serve.sp.signal('SIGTERM');
+    await serve.sp.exited;
+    const probe = probeOf(serve.stderr);
+    assertNoCallTimer(probe, longTimeoutMs, serve.stderr);
+    assertNoCallTimer(probe, callGraceMs, serve.stderr);
+    assert.equal(probe.abortListeners, 0, `abort listeners left behind: ${serve.stderr}`);
+  }
+
+  async function kernelDisconnectKills(command, label, withinMs, options = {}) {
     const pidFile = `/tmp/kernel-${label}.pid`;
-    const serve = await spawnHttpServe([`held: ${command} ${pidFile}`]);
-    const sent = await kernel.run(['mcpcat-test-http-call', serve.port, 'held', pidFile, 'close'], {
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
+    const serve = await spawnHttpServe(
+      options.clis ? [] : [`held: ${command} ${pidFile}`],
+      options.clis ?? []
+    );
+    const sent = await kernel.run(
+      [
+        'mcpcat-test-http-call',
+        serve.port,
+        options.tool ?? 'held',
+        pidFile,
+        options.mode ?? 'close',
+        JSON.stringify(options.args?.(pidFile) ?? {}),
+      ],
+      { stdout: 'pipe', stderr: 'pipe' }
+    );
     assert.equal(sent.status, 0, sent.stderr);
     const pid = await kernelPid(pidFile);
     assert.ok(pid, 'the tool should have recorded its pid');
@@ -446,6 +601,65 @@ describe('serve in the kernel: --call-timeout and abort paths clear their timers
 
   it('http: a client disconnect kills a SIGTERM-ignoring tool after the grace, not at --call-timeout (#384)', () =>
     kernelDisconnectKills('mcpcat-test-hang', 'http-ignore', callGraceMs + 4_000));
+
+  it('http: a disconnect while the tool is still being fed stdin kills it (#384)', () =>
+    kernelDisconnectKills('', 'http-stdin', 3_000, {
+      clis: ['s=mcpcat-test-stdin'],
+      tool: 's_invoke',
+      args: (pidFile) => ({ argv: ['hold', pidFile], stdin: bigStdin }),
+    }));
+
+  it('http: a disconnect after the client sent more bytes still kills the tool (#384)', () =>
+    kernelDisconnectKills('mcpcat-test-term', 'http-extra', 3_000, { mode: 'extra' }));
+
+  it('http: a call queued behind another whose client disconnects never spawns (#389)', async () => {
+    const firstPid = '/tmp/kernel-queue-first.pid';
+    const queuedPid = '/tmp/kernel-queue-second.pid';
+    const serve = await spawnHttpServe([
+      `first: mcpcat-test-term ${firstPid} 1500`,
+      `queued: mcpcat-test-term ${queuedPid}`,
+    ]);
+    const first = kernel.run(['mcpcat-test-http-call', serve.port, 'first', firstPid, 'hold'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const pid = await waitUntil(() => kernelPid(firstPid), 'the first tool to record its pid');
+    const queued = await kernel.run(
+      ['mcpcat-test-http-call', serve.port, 'queued', firstPid, 'close'],
+      { stdout: 'pipe', stderr: 'pipe' }
+    );
+    assert.equal(queued.status, 0, queued.stderr);
+    await waitUntil(async () => !(await kernelAlive(pid)), 'the first tool to finish', 5_000);
+    await new Promise((r) => setTimeout(r, 500));
+    assert.equal(await kernelPid(queuedPid), 0, 'the queued call spawned after its client left');
+    await stopKernelClean(serve);
+    await first;
+  });
+
+  it('http: a request on a kept-alive socket after SIGTERM never spawns and does not hold serve (#384)', async () => {
+    const pidFile = '/tmp/kernel-late-stubborn.pid';
+    const latePid = '/tmp/kernel-late.pid';
+    const goFile = '/tmp/kernel-late.go';
+    const serve = await spawnHttpServe([
+      `stubborn: mcpcat-test-hang ${pidFile}`,
+      `late: mcpcat-test-term ${latePid}`,
+    ]);
+    const clientRun = kernel.run(
+      ['mcpcat-test-http-call', serve.port, 'stubborn', pidFile, 'late', '{}', 'late', goFile],
+      { stdout: 'pipe', stderr: 'pipe' }
+    );
+    await waitUntil(() => kernelExists(`${pidFile}.ready`), 'the client to be ready');
+    const started = Date.now();
+    serve.sp.signal('SIGTERM');
+    await new Promise((r) => setTimeout(r, 100));
+    await kernel.writeFile(goFile, 'go');
+    await serve.sp.exited;
+    const elapsed = Date.now() - started;
+    await clientRun;
+    assert.equal(await kernelPid(latePid), 0, 'a request after shutdown spawned its tool');
+    assert.ok(elapsed < shutdownGraceMs + 1_500, `serve took ${elapsed} ms to exit`);
+    assertNoCallTimer(probeOf(serve.stderr), longTimeoutMs, serve.stderr);
+  });
 
   it('http: SIGTERM with a call in flight exits at once and leaves no kill-grace timer (#386)', async () => {
     const pidFile = '/tmp/kernel-http-shutdown.pid';

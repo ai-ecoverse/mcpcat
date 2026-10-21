@@ -98,12 +98,37 @@ export async function handleConnection(
 ): Promise<void> {
   const raw = readable.getReader();
   let ahead: Promise<ReadableStreamReadResult<Uint8Array>> | null = null;
+  const parked: ReadableStreamReadResult<Uint8Array>[] = [];
   const reader: ChunkReader = {
     read() {
+      const queued = parked.shift();
+      if (queued) return Promise.resolve(queued);
       const next = ahead ?? raw.read();
       ahead = null;
       return next;
     },
+  };
+  const watch = async (live: { on: boolean }, disconnect: AbortController) => {
+    let held = 0;
+    while (held <= MAX_HEADER_SIZE + MAX_BODY_SIZE) {
+      const pending: Promise<ReadableStreamReadResult<Uint8Array>> = ahead ?? raw.read();
+      ahead = pending;
+      let result: ReadableStreamReadResult<Uint8Array>;
+      try {
+        result = await pending;
+      } catch {
+        if (live.on) disconnect.abort();
+        return;
+      }
+      if (!live.on) return;
+      ahead = null;
+      parked.push(result);
+      if (result.done) {
+        disconnect.abort();
+        return;
+      }
+      held += result.value.length;
+    }
   };
   const writer = writable.getWriter();
   let buf = new Uint8Array(4096);
@@ -158,22 +183,13 @@ export async function handleConnection(
       };
 
       const disconnect = new AbortController();
-      let handling = true;
-      const watch: Promise<ReadableStreamReadResult<Uint8Array>> = ahead ?? raw.read();
-      ahead = watch;
-      watch.then(
-        (r) => {
-          if (handling && r.done) disconnect.abort();
-        },
-        () => {
-          if (handling) disconnect.abort();
-        }
-      );
+      const live = { on: true };
+      void watch(live, disconnect);
       let response: HttpResponse;
       try {
         response = await handler(request, disconnect.signal);
       } finally {
-        handling = false;
+        live.on = false;
       }
       if (disconnect.signal.aborted) break;
       await writeResponse(writer, response);

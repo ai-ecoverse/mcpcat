@@ -1,6 +1,6 @@
 export default async function main(ctx) {
   await new Promise((resolve) => {
-    const handle = setTimeout(resolve, 60_000);
+    const handle = setTimeout(resolve, Number(ctx.argv[2] ?? 60_000));
     ctx.signals.on('SIGTERM', () => {
       clearTimeout(handle);
       resolve();

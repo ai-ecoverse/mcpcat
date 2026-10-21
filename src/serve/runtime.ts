@@ -346,15 +346,13 @@ async function runCommand(
 
   inflightProcs.add(proc);
 
-  if (stdin !== undefined) {
+  const feedStdin = async () => {
     const writer = proc.stdin.getWriter();
-    await writer.write(new TextEncoder().encode(stdin));
-    await writer.close();
-  } else {
     try {
-      await proc.stdin.getWriter().close();
+      if (stdin !== undefined) await writer.write(new TextEncoder().encode(stdin));
+      await writer.close();
     } catch {}
-  }
+  };
 
   const stdoutChunks: Uint8Array[] = [];
   const stderrChunks: Uint8Array[] = [];
@@ -392,6 +390,10 @@ async function runCommand(
 
   const cancelPromise = cancel
     ? new Promise<'cancel'>((resolve) => {
+        if (cancel.aborted) {
+          resolve('cancel');
+          return;
+        }
         onCancel = () => resolve('cancel');
         cancel.addEventListener('abort', onCancel, { once: true });
       })
@@ -401,10 +403,11 @@ async function runCommand(
     readStream(proc.stdout, stdoutChunks),
     readStream(proc.stderr, stderrChunks),
     proc.wait(),
+    feedStdin(),
   ]);
 
   const racers: Promise<
-    [void, void, { status: number; signal?: string }] | 'timeout' | 'cancel'
+    [void, void, { status: number; signal?: string }, void] | 'timeout' | 'cancel'
   >[] = [work, timer];
   if (abortPromise !== null) racers.push(abortPromise);
   if (cancelPromise !== null) racers.push(cancelPromise);
@@ -1741,6 +1744,7 @@ async function runHttpServer(
     const relay = () => cancel.abort();
     signal.addEventListener('abort', relay, { once: true });
     stopCalls.signal.addEventListener('abort', relay, { once: true });
+    if (signal.aborted || stopCalls.signal.aborted) relay();
     const pending = handleMcpRequest(
       request,
       tools,
