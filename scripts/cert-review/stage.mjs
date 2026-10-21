@@ -12,7 +12,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import * as esbuild from 'esbuild';
-import { delta } from './classify.mjs';
+import { CHANGED_TEST, delta } from './classify.mjs';
 import { compareTarballs } from './compare.mjs';
 import { negativeTree } from './negative.mjs';
 import {
@@ -266,7 +266,7 @@ const changedTests = sh(
   { cwd: root }
 )
   .split('\n')
-  .filter((f) => /^test\/integration\/[^/]+\.test\.mjs$/.test(f));
+  .filter((f) => CHANGED_TEST.test(f));
 const covered = delta(root, prevCommit, tag.commit);
 const stage = {
   name: NAME,

@@ -40,14 +40,35 @@ function rowTestsAt(git, rev) {
   }
 }
 
+export const CHANGED_TEST = /^test\/integration\/[^/]+\.(test|cert)\.mjs$/;
+
+const KERNEL_HELPER = /from '\.\/helpers\/kernel\.mjs'/;
+
+function kernelTestsAt(git, rev, files) {
+  return files.filter((f) => {
+    try {
+      return KERNEL_HELPER.test(git(['show', `${rev}:${f}`]));
+    } catch {
+      return false;
+    }
+  });
+}
+
 export function delta(repo, base, head) {
-  const git = (args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  const git = (args) =>
+    execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: 'pipe' }).trim();
   const from = git(['merge-base', base, head]);
   const changed = git(['diff', '--name-only', '--no-renames', from, head])
     .split('\n')
     .filter(Boolean);
   const shipped = changed.filter(isShipped);
-  const rowTests = new Set([...rowTestsAt(git, from), ...rowTestsAt(git, head)]);
+  const tests = changed.filter((f) => /^test\/integration\/[^/]+\.test\.mjs$/.test(f));
+  const rowTests = new Set([
+    ...rowTestsAt(git, from),
+    ...rowTestsAt(git, head),
+    ...kernelTestsAt(git, from, tests),
+    ...kernelTestsAt(git, head, tests),
+  ]);
   const gate = changed.filter((f) => isGate(f, rowTests));
   return {
     base: from,
