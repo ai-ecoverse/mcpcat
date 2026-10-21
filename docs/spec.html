@@ -477,7 +477,7 @@ mcpcat serve --proxy docs --stdio                      # HTTP server → stdio, 
 <ul>
   <li>Keeps one upstream connection for its lifetime (the opt-in session of <a href="#d4">D4</a>), reconnects on failure, refreshes tokens.</li>
   <li>Forwards tools, resources and prompts; translates between the client's and the upstream's protocol versions (e.g. serve 2026-07-28 to the agent while the upstream is a 2024-11-05 stdio server).</li>
-  <li>Never forwards upstream credentials or headers to clients (mcpc's <code>--proxy</code> model).</li>
+  <li>Never forwards upstream credentials or headers to clients (mcpc's <code>--proxy</code> model): results and errors show <code>***</code> for each header value and each <code>${VAR}</code> value of 8 or more characters in it, longest first, as in <a href="#security">§19</a>.</li>
   <li><code>--allow-tool glob</code> / <code>--deny-tool glob</code> filter what is re-exposed; <code>--read-only</code> keeps only tools annotated <code>readOnlyHint</code>.</li>
 </ul>
 

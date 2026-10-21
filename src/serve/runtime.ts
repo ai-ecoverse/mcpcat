@@ -1,4 +1,9 @@
-import { containsPlaceholders, expandPlaceholdersStrict } from '../config/expand.ts';
+import {
+  containsPlaceholders,
+  expandHeaders,
+  expandPlaceholdersStrict,
+  placeholderValues,
+} from '../config/expand.ts';
 import { MergedConfigSource } from '../config/index.ts';
 import { stateDir } from '../config/paths.ts';
 import type { Platform, SpawnResult } from '../platform/types.ts';
@@ -921,9 +926,15 @@ async function resolveProxyConfig(
   const entry = await config.get(target);
   if (!entry) return `unknown target '${target}'`;
   if ('url' in entry && entry.url) {
-    const merged = { ...entry.headers, ...connectHeaders };
+    const expanded = expandHeaders(entry.headers, platform.env, (msg) => {
+      platform.write(2, `mcpcat serve --proxy: warning: ${msg}\n`).catch(() => {});
+    });
+    const merged = { ...expanded, ...connectHeaders };
     if (entry.headers) {
-      for (const v of Object.values(entry.headers)) hiddenValues.add(v);
+      for (const v of Object.values(entry.headers)) {
+        hiddenValues.add(v);
+        for (const p of placeholderValues(v, platform.env)) hiddenValues.add(p);
+      }
     }
     return { url: entry.url, headers: merged, version };
   }
@@ -954,6 +965,7 @@ async function buildProxyConnectOpts(
     const key = k.toLowerCase() === 'authorization' ? 'Authorization' : k;
     connectHeaders[key] = expanded;
     hiddenValues.add(expanded);
+    for (const p of placeholderValues(v, platform.env)) hiddenValues.add(p);
   }
 
   const isUrl =

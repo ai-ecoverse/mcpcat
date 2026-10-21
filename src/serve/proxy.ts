@@ -1,6 +1,7 @@
 import { type ConnectOptions, connect } from '../client/connect.ts';
 import type { McpConnection, ServerInfo } from '../client/connection.ts';
 import type { Platform } from '../platform/types.ts';
+import { secretMasker } from '../render/redact.ts';
 
 export interface ProxyOptions {
   target: string;
@@ -57,27 +58,17 @@ function rpcError(id: RpcId, code: number, message: string): RpcOutcome {
   };
 }
 
-function scrubValue(value: unknown, secrets: Set<string>): unknown {
-  if (typeof value === 'string') return scrubString(value, secrets);
-  if (Array.isArray(value)) return value.map((v) => scrubValue(v, secrets));
+function scrubValue(value: unknown, scrub: (s: string) => string): unknown {
+  if (typeof value === 'string') return scrub(value);
+  if (Array.isArray(value)) return value.map((v) => scrubValue(v, scrub));
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = scrubValue(v, secrets);
+      out[k] = scrubValue(v, scrub);
     }
     return out;
   }
   return value;
-}
-
-function scrubString(s: string, secrets: Set<string>): string {
-  let result = s;
-  for (const h of secrets) {
-    if (result.includes(h)) {
-      result = result.replaceAll(h, '***');
-    }
-  }
-  return result;
 }
 
 function translateCapabilities(info: ServerInfo): Record<string, unknown> {
@@ -108,7 +99,7 @@ export function createProxyHandler(options: ProxyOptions): {
   let conn: McpConnection | null = null;
   let cachedInfo: ServerInfo | null = null;
   let connecting: Promise<McpConnection> | null = null;
-  const secrets = options.hiddenHeaders;
+  const scrub = secretMasker(options.hiddenHeaders, '***');
 
   async function doConnect(): Promise<McpConnection> {
     const c = await connect(options.platform, options.connectOpts);
@@ -140,11 +131,11 @@ export function createProxyHandler(options: ProxyOptions): {
   }
 
   function scrubOk(id: RpcId, result: unknown): RpcOutcome {
-    return rpcOk(id, scrubValue(result, secrets));
+    return rpcOk(id, scrubValue(result, scrub));
   }
 
   function scrubErr(id: RpcId, code: number, message: string): RpcOutcome {
-    return rpcError(id, code, scrubString(message, secrets));
+    return rpcError(id, code, scrub(message));
   }
 
   function handleInitialize(id: RpcId, params: unknown): RpcOutcome {

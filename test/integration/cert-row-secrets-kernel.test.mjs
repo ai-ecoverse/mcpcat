@@ -152,6 +152,9 @@ describe('cert row: secrets redaction in the kernel', () => {
     ...env,
     CERT_ROW_ID: 'certrowIdPfx01',
     CERT_ROW_KEY2: `certrowIdPfx01${SUFFIX}`,
+    CERT_ROW_HEAD: 'ShiftHeadQ7v',
+    CERT_ROW_TAIL: 'JK',
+    CERT_ROW_SHIFT: 'hiftHeadQ7vJK',
   };
   const tokenCases = {
     '-H Bearer ${VAR}, JSON-RPC error': () => [...bearer, 'call', `${base}/tok/mcp`, 'err'],
@@ -185,6 +188,29 @@ describe('cert row: secrets redaction in the kernel', () => {
     ],
   };
 
+  for (const flag of [[], ['-v'], ['--json']]) {
+    it(`masks a ${'${VAR}'} value that overlaps another at a shift: ${flag.join(' ') || 'plain'}`, async () => {
+      const argv = [
+        '-H',
+        'Authorization: Bearer ${CERT_ROW_HEAD}${CERT_ROW_TAIL}',
+        '-H',
+        'X-Shift: ${CERT_ROW_SHIFT}',
+        ...flag,
+        'call',
+        `${base}/tok/mcp`,
+        'err',
+      ];
+      const r = await kernel.run(['mcpcat', ...argv], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: tokEnv,
+      });
+      const out = `${r.stdout}${r.stderr}`;
+      assert.ok(!/\[REDACTED\]JK/.test(out), out.slice(0, 600));
+      assert.match(out, /token \[REDACTED\] key/);
+    });
+  }
+
   for (const [name, args] of Object.entries(tokenCases)) {
     it(`redacts the ${'${VAR}'} value: ${name}`, async () => {
       const r = await kernel.run(['mcpcat', ...args()], {
@@ -196,6 +222,33 @@ describe('cert row: secrets redaction in the kernel', () => {
       assert.ok(!out.includes(MARK), `the secret leaked (exit ${r.status}):\n${out.slice(0, 600)}`);
       assert.ok(!out.includes(SUFFIX), `a suffix leaked (exit ${r.status}):\n${out.slice(0, 600)}`);
       assert.ok(out.includes('[REDACTED]'), out.slice(0, 600));
+    });
+  }
+
+  const addCases = {
+    '/500': [['-H', 'X-Api: ${CERT_ROW_TOKEN}'], '/500'],
+    '/tok/401': [bearer, '/tok/401'],
+    '/tok/403': [bearer, '/tok/403'],
+    '/tok/500': [bearer, '/tok/500'],
+    'a value that extends another': [
+      ['-H', 'X-Id: ${CERT_ROW_ID}', '-H', 'X-Key: ${CERT_ROW_KEY2}'],
+      '/tok/401',
+    ],
+  };
+
+  for (const [name, [h, path]] of Object.entries(addCases)) {
+    it(`redacts the probe failure of add: ${name}`, async () => {
+      const file = `${AGENT_DIR}/add-${name.replaceAll('/', '-')}.json`;
+      const r = await kernel.run(['mcpcat', 'add', '--config', file, 'p', `${base}${path}`, ...h], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: tokEnv,
+      });
+      const out = `${r.stdout}${r.stderr}`;
+      assert.equal(r.status, 3, out.slice(0, 600));
+      assert.ok(!out.includes(MARK), `the secret leaked:\n${out.slice(0, 600)}`);
+      assert.ok(!out.includes(SUFFIX), `a suffix leaked:\n${out.slice(0, 600)}`);
+      assert.match(r.stderr, /probe failed: [^\n]*\[REDACTED\]/);
     });
   }
 

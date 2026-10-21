@@ -862,13 +862,15 @@ async function probeServer(
   config: McpServerConfig,
   platform: Platform
 ): Promise<string | undefined> {
+  let secrets: string[] = [];
   try {
     const opts: Record<string, unknown> = { version: 'probe' };
     if ('url' in config && config.url) {
       opts.url = config.url;
-      if ('headers' in config) {
-        const expanded = expandHeaders(config.headers, platform.env);
-        if (expanded) opts.headers = expanded;
+      if ('headers' in config && config.headers) {
+        const collected = expandAndCollect(config.headers, platform.env);
+        secrets = collected.secrets;
+        if (Object.keys(collected.expanded).length > 0) opts.headers = collected.expanded;
       }
     } else if ('command' in config && config.command) {
       opts.command = config.command;
@@ -888,7 +890,7 @@ async function probeServer(
     }
     return undefined;
   } catch (err) {
-    return (err as Error).message;
+    return redactSecrets((err as Error).message, secrets);
   }
 }
 
