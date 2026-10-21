@@ -63,7 +63,7 @@
     "trust:dry": "npx fledgling sync --dry-run -y --skip-publish"
   },
   "devDependencies": {
-    "@ai-ecoverse/slicc-bios": "1.35.0",
+    "@ai-ecoverse/slicc-bios": "1.36.1",
     "@ai-ecoverse/slicc-kernel": "1.141.2",
     "@ai-ecoverse/slicc-shared-web": "1.29.2",
     "@biomejs/biome": "2.5.15",
