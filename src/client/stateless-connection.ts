@@ -139,26 +139,23 @@ function makeAbort(
   externalSignal?: AbortSignal
 ): {
   controller: AbortController;
-  timer: ReturnType<typeof setTimeout>;
+  cleanup: () => void;
 } {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  if (externalSignal) {
-    if (externalSignal.aborted) {
+  const onAbort = () => {
+    clearTimeout(timer);
+    controller.abort();
+  };
+  if (externalSignal?.aborted) onAbort();
+  else externalSignal?.addEventListener('abort', onAbort, { once: true });
+  return {
+    controller,
+    cleanup: () => {
       clearTimeout(timer);
-      controller.abort();
-    } else {
-      externalSignal.addEventListener(
-        'abort',
-        () => {
-          clearTimeout(timer);
-          controller.abort();
-        },
-        { once: true }
-      );
-    }
-  }
-  return { controller, timer };
+      externalSignal?.removeEventListener('abort', onAbort);
+    },
+  };
 }
 
 function logHeaders(
@@ -346,7 +343,7 @@ export async function createStatelessConnection(
       verbose.request(method, body);
       logHeaders(verbose, '>', Object.entries(headers));
     }
-    const { controller, timer } = makeAbort(timeoutMs, externalSignal);
+    const { controller, cleanup } = makeAbort(timeoutMs, externalSignal);
     try {
       const res = await fetchImpl(url, {
         method: 'POST',
@@ -365,7 +362,7 @@ export async function createStatelessConnection(
       }
       throw err;
     } finally {
-      clearTimeout(timer);
+      cleanup();
     }
   }
 
