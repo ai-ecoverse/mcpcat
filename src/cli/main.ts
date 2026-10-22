@@ -149,12 +149,14 @@ Configuration verbs:
 
 Server and code verbs:
   serve [--stdio|--http] …   Expose commands or proxy upstream as MCP server
+  serve --webmcp …           Expose a browser tab's WebMCP tools via playwright-cli
   code [-e src|file.js]      Run a codemode script
   grep <pattern> [target…]   Search tools by name or description
   discover <url>             Find MCP servers at a URL
   inbox [--json]             List discovery candidates
   help                       Show this help
   help --skill               Print the agent skill (SKILL.md) for this version
+  help serve                 Serve options (also: serve --help)
 
 Options:
   --json                     JSON output
@@ -177,6 +179,61 @@ Options:
   --no-input                 Never prompt (non-TTY implies it)
   -V, --version              Print version
   -h, --help                 Show this help
+
+WebMCP (serve --webmcp, see serve --help):
+  --webmcp                   Serve the tab's WebMCP tools
+  --cdp <url>                Browser DevTools endpoint for playwright-cli
+  --tab <targetId>           Tab to serve (default: the current tab)
+  --allow-consequential      Show and allow tools with consequentialHint
+  --webmcp-ttl <s>           Cache the tool list for <s> seconds (default 5)
+  --playwright-cli <path>    playwright-cli binary (default: from PATH)
+`;
+}
+
+function serveHelpText(version: string): string {
+  return `mcpcat ${version} – serve
+
+Usage: mcpcat serve [--stdio | --http [host:]port] [options] <cmd>…
+       mcpcat serve --proxy <target> [--stdio | --http [host:]port] [options]
+       mcpcat serve --webmcp [--cdp <url>] [--tab <targetId>] [--http [host:]port] [options]
+
+Transport:
+  --stdio                    Serve over stdio (default)
+  --http [host:]port         Serve Streamable HTTP on /mcp (host 127.0.0.1, port 0 picks one)
+  --bearer '\${NAME}'         Require this bearer token (needed off loopback)
+  --no-auth                  No token on loopback (host default: a generated token)
+  --allow-origin <origin>    Also accept this Origin (repeatable)
+  --allow-host <host>        Also accept this Host (repeatable)
+  --json                     Print the listening URL and token as JSON
+
+Commands:
+  <cmd> | <name>=<cmd>       Expose a command's --mcp descriptor or --help as tools
+  --tool '<name>: <cmd>'     Expose one templated command line as a tool (repeatable)
+  --cwd <dir>                Working directory for calls
+  --env K | K=V              Pass an environment variable to calls (repeatable)
+  --call-timeout <s>         Per-call timeout (default 120)
+  --concurrency <n>          Parallel calls (default 1)
+  --max-output <bytes>       Cap a call's output (default 1048576)
+
+Proxy:
+  --proxy <target>           Re-expose an upstream server (URL, stdio: or mcp.json name)
+  -H, --header 'N: V'        Extra upstream header
+
+WebMCP:
+  --webmcp                   Serve a browser tab's WebMCP tools through playwright-cli
+  --cdp <url>                Browser DevTools endpoint (default: SLICC_CDP_URL, else
+                             playwright-cli's own choice)
+  --tab <targetId>           Tab to serve (default: the current tab at startup,
+                             see playwright-cli tab-list)
+  --allow-consequential      Show and allow tools the page marks consequentialHint
+                             (hidden by default; advisory, the page sets the hint)
+  --webmcp-ttl <s>           Cache the page's tool list for <s> seconds (default 5)
+  --playwright-cli <path>    playwright-cli binary (default: playwright-cli on PATH)
+
+Examples:
+  mcpcat serve --http 8808 ./scripts/jira.jsh
+  mcpcat serve --proxy https://mcp.example.com/mcp --http 8811 --bearer '\${LOCAL}'
+  mcpcat serve --webmcp --cdp http://127.0.0.1:9333 --http 8812 --no-auth
 `;
 }
 
@@ -475,9 +532,23 @@ function parseArgs(args: string[]): ParsedArgs {
   };
 }
 
+function annotationTags(tool: Tool): string {
+  const ann = (tool as { annotations?: Record<string, unknown> }).annotations;
+  if (!ann || typeof ann !== 'object') return '';
+  const tags: string[] = [];
+  if (ann.readOnlyHint === true) tags.push('read-only');
+  if (ann.destructiveHint === true && ann.readOnlyHint !== true && ann.consequentialHint !== true) {
+    tags.push('destructive');
+  }
+  if (ann.idempotentHint === true) tags.push('idempotent');
+  if (ann.untrustedContentHint === true) tags.push('untrusted');
+  if (ann.consequentialHint === true) tags.push('consequential');
+  return tags.length > 0 ? ` [${tags.join(', ')}]` : '';
+}
+
 function formatToolLine(tool: Tool): string {
   const desc = tool.description ? `  ${tool.description}` : '';
-  return `${tool.name}${desc}`;
+  return `${tool.name}${annotationTags(tool)}${desc}`;
 }
 
 function formatToolSchema(tool: Tool): string {
@@ -1192,7 +1263,16 @@ export async function run(platform: Platform, version: string, args: string[]): 
 
 declare const MCPCAT_SKILL: string | undefined;
 
+function wantsServeHelp(args: string[]): boolean {
+  if (args[0] === 'help') return args[1] === 'serve';
+  return parseArgs(args).verb === 'serve';
+}
+
 async function help(platform: Platform, version: string, args: string[]): Promise<number> {
+  if (wantsServeHelp(args)) {
+    await platform.write(1, serveHelpText(version));
+    return 0;
+  }
   if (args[0] !== 'help' || !args.includes('--skill')) {
     await platform.write(1, helpText(version));
     return 0;
