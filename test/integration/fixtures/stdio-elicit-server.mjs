@@ -23,7 +23,7 @@ export function createHandler() {
     }
     if (method === 'tools/call') {
       calls += 1;
-      const answers = params?._meta?.inputResponses;
+      const answers = params?.inputResponses;
       if (calls > 1 && answers) {
         return reply(id, {
           content: [{ type: 'text', text: `call ${calls} answers ${JSON.stringify(answers)}` }],

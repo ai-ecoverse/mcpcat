@@ -90,7 +90,7 @@ const server = createServer((req, res) => {
           properties: { answer: { type: 'string', description: `about ${quoted}` } },
         },
       };
-      out = params?._meta?.inputResponses
+      out = params?.inputResponses
         ? rpcError(id, -32000, `retry failed ${quoted}`)
         : rpc(id, {
             resultType: 'input_required',

@@ -1,4 +1,5 @@
 import * as readline from 'node:readline';
+import { modernViolation } from './kernel-stdio-2026-strict.mjs';
 
 const SERVER_INFO = {
   name: 'test-stdio-2026',
@@ -30,6 +31,7 @@ function jsonRpcError(id, code, message, data) {
   });
 }
 
+let legacy = false;
 const rl = readline.createInterface({ input: process.stdin, terminal: false });
 
 rl.on('line', (line) => {
@@ -43,6 +45,14 @@ rl.on('line', (line) => {
   }
 
   const { id, method, params } = parsed;
+  if (method === 'initialize') legacy = true;
+  const violation = legacy || id === undefined ? null : modernViolation(parsed);
+  if (violation) {
+    process.stdout.write(
+      `${jsonRpcError(id, violation.code, violation.message, violation.data)}\n`
+    );
+    return;
+  }
 
   if (method === 'notifications/initialized') return;
 

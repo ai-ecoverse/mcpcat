@@ -16,8 +16,16 @@ import type {
   PromptInfo,
   ServerInfo,
 } from './connection.ts';
+import {
+  encodeHeaderValue,
+  isModernErrorCode,
+  META_SERVER_INFO,
+  MODERN_PROTOCOL_VERSION,
+  modernRequestParams,
+  UNSUPPORTED_PROTOCOL_VERSION,
+} from './modern.ts';
 
-export const STATELESS_PROTOCOL_VERSION = '2026-07-28';
+export const STATELESS_PROTOCOL_VERSION = MODERN_PROTOCOL_VERSION;
 
 interface JsonRpcResponse {
   jsonrpc?: string;
@@ -30,12 +38,39 @@ interface JsonRpcResponse {
 export class StatelessRpcError extends Error {
   readonly code: number;
   readonly data?: unknown;
-  constructor(code: number, message: string, data?: unknown) {
+  readonly httpStatus?: number;
+  constructor(code: number, message: string, data?: unknown, httpStatus?: number) {
     super(`MCP RPC error ${code}: ${message}`);
     this.name = 'StatelessRpcError';
     this.code = code;
     this.data = data;
+    this.httpStatus = httpStatus;
   }
+}
+
+export class UnsupportedModernVersionError extends Error {
+  constructor(version: string, supported: string[]) {
+    super(`Server does not support ${version} (advertised: ${supported.join(', ') || 'none'})`);
+    this.name = 'UnsupportedModernVersionError';
+  }
+}
+
+function supportedList(data: unknown): string[] | undefined {
+  const list = (data as { supported?: unknown } | null | undefined)?.supported;
+  return Array.isArray(list) ? list.filter((v): v is string => typeof v === 'string') : undefined;
+}
+
+export function indicatesLegacyServer(err: unknown, http: boolean): boolean {
+  if (err instanceof UnsupportedModernVersionError) return true;
+  if (http && err instanceof StatelessHttpError) return err.status >= 400 && err.status < 500;
+  if (!(err instanceof StatelessRpcError)) return false;
+  if (err.code === UNSUPPORTED_PROTOCOL_VERSION) {
+    const supported = supportedList(err.data);
+    return !!supported && !supported.includes(STATELESS_PROTOCOL_VERSION);
+  }
+  if (isModernErrorCode(err.code)) return false;
+  if (!http || err.code === -32601) return true;
+  return err.httpStatus !== undefined && err.httpStatus >= 400 && err.httpStatus < 500;
 }
 
 export class StatelessHttpError extends Error {
@@ -175,11 +210,21 @@ function logHeaders(
   }
 }
 
+export function discoverServerInfo(
+  discoverResult: Record<string, unknown> | null
+): Record<string, unknown> | undefined {
+  const meta = discoverResult?._meta as Record<string, unknown> | undefined;
+  return (meta?.[META_SERVER_INFO] ?? discoverResult?.serverInfo) as
+    | Record<string, unknown>
+    | undefined;
+}
+
 function buildServerInfo(discoverResult: Record<string, unknown> | null): ServerInfo {
+  const serverInfo = discoverServerInfo(discoverResult);
   return {
-    name: (discoverResult?.serverInfo as Record<string, unknown>)?.name as string | undefined,
-    version: (discoverResult?.serverInfo as Record<string, unknown>)?.version as string | undefined,
-    title: (discoverResult?.serverInfo as Record<string, unknown>)?.title as string | undefined,
+    name: serverInfo?.name as string | undefined,
+    version: serverInfo?.version as string | undefined,
+    title: serverInfo?.title as string | undefined,
     protocolVersion: STATELESS_PROTOCOL_VERSION,
     capabilities: (discoverResult?.capabilities as Record<string, unknown>) ?? {},
     instructions: discoverResult?.instructions as string | undefined,
@@ -314,7 +359,7 @@ export async function createStatelessConnection(
   } = options;
 
   let nextId = 1;
-  let negotiatedVersion: string | undefined;
+  const protocolVersion = STATELESS_PROTOCOL_VERSION;
 
   function buildHeaders(
     method: string,
@@ -324,12 +369,12 @@ export async function createStatelessConnection(
     const h: Record<string, string> = {
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
+      'MCP-Protocol-Version': protocolVersion,
       'Mcp-Method': method,
       ...extraHeaders,
     };
     const n = mcpNameForMethod(method, params);
-    if (n) h['Mcp-Name'] = n;
-    if (negotiatedVersion) h['Mcp-Protocol-Version'] = negotiatedVersion;
+    if (n) h['Mcp-Name'] = encodeHeaderValue(n);
     if (token) h['Authorization'] = `Bearer ${token}`;
     return h;
   }
@@ -354,7 +399,7 @@ export async function createStatelessConnection(
       const p = JSON.parse(text) as JsonRpcResponse;
       if (p.error && typeof p.error.code === 'number') rpc = p.error;
     } catch {}
-    if (rpc) throw new StatelessRpcError(rpc.code, rpc.message, rpc.data);
+    if (rpc) throw new StatelessRpcError(rpc.code, rpc.message, rpc.data, res.status);
     throw new StatelessHttpError(res.status, res.statusText, method, redact(text).slice(0, 512));
   }
 
@@ -403,7 +448,12 @@ export async function createStatelessConnection(
     }
     if (verbose?.enabled) verbose.response(JSON.stringify(frame));
     if (frame.error) {
-      throw new StatelessRpcError(frame.error.code, frame.error.message, frame.error.data);
+      throw new StatelessRpcError(
+        frame.error.code,
+        frame.error.message,
+        frame.error.data,
+        res.status
+      );
     }
     return frame.result;
   }
@@ -427,24 +477,10 @@ export async function createStatelessConnection(
   }
 
   async function request(method: string, params: Record<string, unknown>): Promise<unknown> {
-    const id = nextId++;
-    const meta: Record<string, unknown> = {
-      protocolVersion: negotiatedVersion ?? STATELESS_PROTOCOL_VERSION,
-      clientInfo,
-    };
-    const cleanParams = { ...params };
-    if (cleanParams._inputResponses) {
-      meta.inputResponses = cleanParams._inputResponses;
-      delete cleanParams._inputResponses;
-    }
-    const body = JSON.stringify({
-      jsonrpc: '2.0',
-      id,
-      method,
-      params: { ...cleanParams, _meta: meta },
-    });
-
+    const wireParams = modernRequestParams(params, protocolVersion, clientInfo);
     for (let attempt = 0; attempt < 2; attempt++) {
+      const id = nextId++;
+      const body = JSON.stringify({ jsonrpc: '2.0', id, method, params: wireParams });
       const { res, token, detach } = await doFetch(method, params, body);
       let retry: AuthRetryableError | undefined;
       try {
@@ -465,17 +501,14 @@ export async function createStatelessConnection(
     throw new McpAuthError(401, url);
   }
 
-  const discoverResult = (await request('server/discover', {
-    protocolVersion: STATELESS_PROTOCOL_VERSION,
-  })) as { supportedVersions?: string[] } | null;
+  const discoverResult = (await request('server/discover', {})) as {
+    supportedVersions?: string[];
+  } | null;
   const supported =
     discoverResult?.supportedVersions?.filter((v): v is string => typeof v === 'string') ?? [];
   if (!supported.includes(STATELESS_PROTOCOL_VERSION)) {
-    throw new Error(
-      `Server does not support ${STATELESS_PROTOCOL_VERSION} (advertised: ${supported.join(', ') || 'none'})`
-    );
+    throw new UnsupportedModernVersionError(STATELESS_PROTOCOL_VERSION, supported);
   }
-  negotiatedVersion = STATELESS_PROTOCOL_VERSION;
 
   const extra = buildStatelessMethods(request, discoverResult as Record<string, unknown> | null);
 

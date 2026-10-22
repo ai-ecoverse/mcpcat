@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { modernViolation } from './kernel-stdio-2026-strict.mjs';
 
 const SERVER_INFO = {
   name: 'test-2026',
@@ -129,14 +130,27 @@ function jsonRpcError(id, code, message, data) {
   });
 }
 
-function handleRequest(body) {
+function handleRequest(body, headers) {
   let parsed;
   try {
     parsed = JSON.parse(body);
   } catch {
-    return jsonRpcError(null, -32700, 'Parse error');
+    return { status: 400, body: jsonRpcError(null, -32700, 'Parse error') };
   }
+  const violation = modernViolation(parsed, headers);
+  if (violation) {
+    return {
+      status: violation.status,
+      body: jsonRpcError(parsed.id, violation.code, violation.message, violation.data),
+    };
+  }
+  const result = dispatch(parsed);
+  return result instanceof Promise
+    ? result.then((out) => ({ status: 200, body: out }))
+    : { status: 200, body: result };
+}
 
+function dispatch(parsed) {
   const { id, method, params } = parsed;
 
   switch (method) {
@@ -225,10 +239,11 @@ function handleRequest(body) {
         });
       }
       if (toolName === 'needs-input') {
-        const meta = params?._meta ?? {};
-        if (meta.inputResponses) {
+        if (params?.inputResponses) {
           return jsonRpc(id, {
-            content: [{ type: 'text', text: `Got answer: ${JSON.stringify(meta.inputResponses)}` }],
+            content: [
+              { type: 'text', text: `Got answer: ${JSON.stringify(params.inputResponses)}` },
+            ],
           });
         }
         return jsonRpc(id, {
@@ -311,9 +326,9 @@ const server = createServer((req, res) => {
   req.on('data', (chunk) => chunks.push(chunk));
   req.on('end', async () => {
     const body = Buffer.concat(chunks).toString();
-    const response = await handleRequest(body);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(response);
+    const response = await handleRequest(body, req.headers);
+    res.writeHead(response.status, { 'Content-Type': 'application/json' });
+    res.end(response.body);
   });
 });
 

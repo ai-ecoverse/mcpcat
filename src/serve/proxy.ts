@@ -1,5 +1,6 @@
 import { type ConnectOptions, connect } from '../client/connect.ts';
 import type { McpConnection, ServerInfo } from '../client/connection.ts';
+import { completeModernOutcome, modernDiscoverResult } from '../client/modern.ts';
 import type { Platform } from '../platform/types.ts';
 import { secretMasker } from '../render/redact.ts';
 
@@ -79,15 +80,19 @@ function translateCapabilities(info: ServerInfo): Record<string, unknown> {
   return caps;
 }
 
+function proxyServerInfo(info: ServerInfo): Record<string, unknown> {
+  return {
+    name: info.name ?? 'mcpcat-proxy',
+    version: info.version ?? '0.0.0',
+    ...(info.title ? { title: info.title } : {}),
+  };
+}
+
 function buildServerResult(info: ServerInfo, protocolVersion: string): Record<string, unknown> {
   return {
     protocolVersion,
     capabilities: translateCapabilities(info),
-    serverInfo: {
-      name: info.name ?? 'mcpcat-proxy',
-      version: info.version ?? '0.0.0',
-      ...(info.title ? { title: info.title } : {}),
-    },
+    serverInfo: proxyServerInfo(info),
     ...(info.instructions ? { instructions: info.instructions } : {}),
   };
 }
@@ -148,10 +153,16 @@ export function createProxyHandler(options: ProxyOptions): {
   }
 
   function handleDiscover(id: RpcId): RpcOutcome {
-    return scrubOk(id, {
-      ...buildServerResult(cachedInfo!, PROTOCOL_VERSIONS[0]),
-      supportedVersions: PROTOCOL_VERSIONS,
-    });
+    const info = cachedInfo!;
+    return scrubOk(
+      id,
+      modernDiscoverResult(
+        PROTOCOL_VERSIONS,
+        translateCapabilities(info),
+        proxyServerInfo(info),
+        info.instructions
+      )
+    );
   }
 
   async function forwardWithRetry(
@@ -232,7 +243,7 @@ export function createProxyHandler(options: ProxyOptions): {
     if (!hasOwn(parsed, 'id')) return { status: 202, contentType: 'text/plain', body: '' };
     const id = readId(parsed);
     const params = Object.getOwnPropertyDescriptor(parsed, 'params')?.value;
-    return dispatch(method, id, params);
+    return completeModernOutcome(await dispatch(method, id, params), params);
   }
 
   async function shutdown(): Promise<void> {
