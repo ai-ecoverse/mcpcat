@@ -56,7 +56,7 @@ export async function handleJsonRpc(
   const id = readId(parsed);
   const params = Object.getOwnPropertyDescriptor(parsed, 'params')?.value;
   return completeModernOutcome(
-    await dispatch(id, method, params, tools, call, serverName, serverVersion),
+    await dispatch(id, method, params, source, call, serverName, serverVersion),
     params
   );
 }
@@ -65,7 +65,7 @@ async function dispatch(
   id: RpcId,
   method: string,
   params: unknown,
-  tools: RpcTool[],
+  source: ToolSource,
   call: (name: string, args: unknown) => Promise<ToolRunResult>,
   serverName: string,
   serverVersion: string

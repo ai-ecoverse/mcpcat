@@ -2,6 +2,8 @@ import { createServer } from 'node:http';
 import { createStrictServer, parseOptions } from './kernel-stdio-2026-strict.mjs';
 
 const server = createStrictServer(parseOptions(process.argv));
+const sse = process.argv.includes('--sse');
+const notify = process.argv.includes('--notify');
 
 const http = createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/_test/log') {
@@ -35,6 +37,17 @@ const http = createServer((req, res) => {
     if (!response) {
       res.writeHead(202, headers);
       res.end();
+      return;
+    }
+    if (sse && status === 200) {
+      const note = {
+        jsonrpc: '2.0',
+        method: 'notifications/message',
+        params: { level: 'info', data: 'working' },
+      };
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', ...headers });
+      if (notify) res.write(`event: message\ndata: ${JSON.stringify(note)}\n\n`);
+      res.end(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
       return;
     }
     res.writeHead(status, { 'Content-Type': 'application/json', ...headers });

@@ -284,9 +284,17 @@ interface McpProbeHit {
   trust: TrustSignal[];
 }
 
-function sseData(text: string): string {
-  const line = text.split(/\r?\n/).find((l) => l.startsWith('data:'));
-  return line ? line.slice(5).trim() : '';
+function sseResponse(text: string, id: unknown): unknown {
+  for (const block of text.replace(/\r\n?/g, '\n').split('\n\n')) {
+    const data = block
+      .split('\n')
+      .filter((l) => l.startsWith('data:'))
+      .map((l) => l.slice(5).replace(/^ /, ''))
+      .join('\n');
+    const parsed = tryParseJson(data);
+    if (isRecord(parsed) && parsed.id === id) return parsed;
+  }
+  return undefined;
 }
 
 function mcpJsonRpc(method: string, params: unknown, id = 1): string {
@@ -337,7 +345,9 @@ async function tryMcpPost(
     if (resp.status === 200) {
       const text = await resp.text();
       const sse = (resp.headers.get('content-type') ?? '').includes('text/event-stream');
-      const parsed = tryParseJson(sse ? sseData(text) : text);
+      const parsed = sse
+        ? sseResponse(text, (tryParseJson(body) as { id?: unknown } | undefined)?.id)
+        : tryParseJson(text);
       if (isRecord(parsed) && isRecord(parsed.result)) {
         return { url, serverInfo: parseServerInfo(parsed.result), trust: [] };
       }

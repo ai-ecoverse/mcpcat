@@ -165,6 +165,31 @@ describe('2026-07-28 requests against a strict server (host)', () => {
   });
 });
 
+describe('discover probes a 2026-07-28 server that answers over SSE', () => {
+  const servers = [];
+
+  after(() => {
+    for (const s of servers) s.child.kill('SIGTERM');
+  });
+
+  for (const [label, args] of [
+    ['with only the result event', ['--sse']],
+    ['after a request-related notification', ['--sse', '--notify']],
+  ]) {
+    it(label, async () => {
+      const server = await startHttp(args);
+      servers.push(server);
+      const r = run(['discover', server.url], {
+        env: homeEnv(home, { XDG_STATE_HOME: join(home, `.state-${servers.length}`) }),
+      });
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /mcp\s+http:\/\/127\.0\.0\.1:\d+\/mcp\s+\(strict-modern\)/);
+      const discover = (await log(server.port)).find((e) => e.method === 'server/discover');
+      assert.equal(discover.protocolHeader, '2026-07-28');
+    });
+  }
+});
+
 describe('serve answers 2026-07-28 requests with spec-shaped results', () => {
   let child;
   let url;
