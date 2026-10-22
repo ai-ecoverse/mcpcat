@@ -72,8 +72,8 @@ for (const k of stage.kernels) {
       `subject cert kernel ${k.version}`,
       tag,
       'npm',
-      ['run', 'cert', '--', `--kernel=${k.tgz}`],
-      {},
+      ['run', 'cert'],
+      { MCPCAT_CERT_KERNEL_DIR: k.dir },
       k.version
     )
   );

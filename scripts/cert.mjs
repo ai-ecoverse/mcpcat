@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { execSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { kernelTestFiles } from './kernel-test-files.mjs';
 
@@ -22,8 +22,21 @@ if (kernelTgz) {
   mkdirSync(tmpDir, { recursive: true });
 
   console.log(`cert: installing kernel from ${kernelTgz}...`);
-  execSync('npm init -y', { cwd: tmpDir, stdio: 'pipe' });
-  execSync(`npm install ${kernelTgz}`, { cwd: tmpDir, stdio: 'inherit', timeout: 60_000 });
+  const local = existsSync(kernelTgz);
+  const flags = ['--no-audit', '--no-fund', '--no-package-lock', ...(local ? ['--offline'] : [])];
+  const timeout = Number(env.MCPCAT_CERT_INSTALL_TIMEOUT_MS) || 600_000;
+  try {
+    writeFileSync(join(tmpDir, 'package.json'), '{"private":true}\n');
+    execFileSync('npm', ['install', ...flags, local ? resolve(kernelTgz) : kernelTgz], {
+      cwd: tmpDir,
+      stdio: 'inherit',
+      timeout,
+    });
+  } catch (err) {
+    console.error(`cert: kernel install failed: ${err.message}`);
+    rmSync(tmpDir, { recursive: true, force: true });
+    process.exit(1);
+  }
 
   env.MCPCAT_CERT_KERNEL_DIR = join(tmpDir, 'node_modules/@ai-ecoverse/slicc-kernel');
 }
