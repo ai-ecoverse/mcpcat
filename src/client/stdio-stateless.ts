@@ -14,7 +14,12 @@ import type {
   PromptInfo,
   ServerInfo,
 } from './connection.ts';
-import { InputRequiredError, McpTimeoutError, StatelessRpcError } from './stateless-connection.ts';
+import {
+  InputRequiredError,
+  McpTimeoutError,
+  readHiddenTools,
+  StatelessRpcError,
+} from './stateless-connection.ts';
 import { reapStdio, trackStdio } from './stdio-registry.ts';
 
 const PROTOCOL_VERSION = '2026-07-28';
@@ -167,12 +172,18 @@ function buildConnectionMethods(
   discoverResult: Record<string, unknown> | null,
   proc: SpawnResult
 ): McpConnection {
+  let hidden: Record<string, string> = {};
   return {
     async info(): Promise<ServerInfo> {
       return buildServerInfo(discoverResult);
     },
     async listTools(): Promise<Tool[]> {
-      return ((await rpc.request('tools/list', {})) as { tools?: Tool[] } | null)?.tools ?? [];
+      const result = (await rpc.request('tools/list', {})) as { tools?: Tool[] } | null;
+      hidden = readHiddenTools(result);
+      return result?.tools ?? [];
+    },
+    hiddenTool(name: string): string | undefined {
+      return Object.hasOwn(hidden, name) ? hidden[name] : undefined;
     },
     async callTool(
       name: string,

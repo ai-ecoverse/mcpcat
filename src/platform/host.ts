@@ -23,6 +23,7 @@ import type {
   Platform,
   SpawnOptions,
   SpawnResult,
+  WebSocketChannel,
 } from './types.ts';
 
 const USE_PROCESS_GROUPS = process.platform !== 'win32';
@@ -240,6 +241,35 @@ function nodeListen(options: ListenOptions): Promise<Listener> {
   });
 }
 
+function hostWebSocket(url: string): Promise<WebSocketChannel> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    ws.binaryType = 'arraybuffer';
+    let feed!: ReadableStreamDefaultController<string | Uint8Array>;
+    const readable = new ReadableStream<string | Uint8Array>({
+      start(controller) {
+        feed = controller;
+      },
+    });
+    ws.onclose = () => feed.close();
+    ws.onerror = () => reject(new Error(`websocket ${url} failed`));
+    ws.onmessage = (event: MessageEvent) => {
+      feed.enqueue(typeof event.data === 'string' ? event.data : new Uint8Array(event.data));
+    };
+    ws.onopen = () => {
+      resolve({
+        readable,
+        writable: new WritableStream<string>({
+          write(chunk) {
+            ws.send(chunk);
+          },
+        }),
+        close: () => ws.close(),
+      });
+    };
+  });
+}
+
 export function createHostPlatform(): Platform {
   const encoder = new TextEncoder();
   return {
@@ -247,6 +277,7 @@ export function createHostPlatform(): Platform {
     fetch: globalThis.fetch,
     spawn: nodeSpawn,
     listen: nodeListen,
+    websocket: hostWebSocket,
     fs: hostFs,
     env: process.env as Record<string, string | undefined>,
     cwd: process.cwd(),

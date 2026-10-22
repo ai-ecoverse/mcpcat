@@ -7,6 +7,7 @@ import type {
   Platform,
   SpawnOptions,
   SpawnResult,
+  WebSocketChannel,
 } from './types.ts';
 
 interface KernelFile {
@@ -58,6 +59,7 @@ interface KernelContext {
     chmod?(path: string, mode: number): Promise<void>;
   };
   fetch: typeof globalThis.fetch;
+  websocket?(url: string): Promise<WebSocketChannel>;
   spawn(options: {
     argv: string[];
     env?: Record<string, string>;
@@ -477,6 +479,7 @@ export function createKernelPlatform(
     fetch: createKernelFetch(ctx) as typeof globalThis.fetch,
     spawn: (options: SpawnOptions) => kernelSpawn(ctx, options),
     listen: (options: ListenOptions) => kernelListen(ctx, options),
+    ...(ctx.websocket ? { websocket: (url: string) => ctx.websocket!(url) } : {}),
     fs: kernelFs(ctx),
     env: ctx.env,
     cwd: ctx.cwd,

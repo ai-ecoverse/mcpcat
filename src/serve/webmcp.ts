@@ -1,6 +1,6 @@
-import type { Platform, SpawnResult } from '../platform/types.ts';
+import type { Platform, SpawnResult, WebSocketChannel } from '../platform/types.ts';
 import type { JsonObjectSchema } from './catalog.ts';
-import type { RpcTool, ToolRunResult } from './jsonrpc.ts';
+import type { RpcTool, ToolListing, ToolRunResult } from './jsonrpc.ts';
 
 export interface WebMcpAnnotations {
   readOnlyHint?: boolean;
@@ -91,13 +91,212 @@ function capCollector(limit: number) {
   };
 }
 
+export const DIALOG_POLL_MS = 250;
+export const DIALOG_READY_MS = 1000;
+export const DIALOG_STALL_MS = 1000;
+
+type Watch = () => string | undefined;
+
+function watchLoop(watch: Watch): { result: Promise<string>; stop(): void } {
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const result = new Promise<string>((resolve) => {
+    timer = setInterval(() => {
+      const found = watch();
+      if (found) {
+        clearInterval(timer);
+        resolve(found);
+      }
+    }, DIALOG_POLL_MS);
+  });
+  return {
+    result,
+    stop() {
+      clearInterval(timer);
+    },
+  };
+}
+
+async function browserSocketUrl(platform: Platform, cdp: string): Promise<string | undefined> {
+  if (/^wss?:\/\//i.test(cdp)) return cdp;
+  if (!/^https?:\/\//i.test(cdp)) return undefined;
+  const res = await platform.fetch(`${cdp.replace(/\/+$/, '')}/json/version`, {
+    signal: AbortSignal.timeout(DIALOG_READY_MS),
+  });
+  const body = (await res.json()) as { webSocketDebuggerUrl?: unknown };
+  return typeof body.webSocketDebuggerUrl === 'string' ? body.webSocketDebuggerUrl : undefined;
+}
+
+interface CdpMessage {
+  id?: number;
+  method?: string;
+  result?: { sessionId?: unknown };
+  params?: { type?: unknown };
+}
+
+export interface DialogWatcher {
+  ready(): Promise<void>;
+  dialog(): string | undefined;
+  stalled(): boolean;
+  close(): void;
+}
+
+interface WatchState {
+  open?: string;
+  enableSentAt?: number;
+  channel?: WebSocketChannel;
+}
+
+function parseCdp(data: string | Uint8Array): CdpMessage | undefined {
+  try {
+    return JSON.parse(
+      typeof data === 'string' ? data : new TextDecoder().decode(data)
+    ) as CdpMessage;
+  } catch {
+    return undefined;
+  }
+}
+
+function applyCdp(
+  state: WatchState,
+  channel: WebSocketChannel,
+  send: (message: unknown) => void,
+  msg: CdpMessage,
+  settle: () => void
+): void {
+  if (msg.method === 'Page.javascriptDialogOpening') {
+    state.open = typeof msg.params?.type === 'string' ? msg.params.type : 'dialog';
+  } else if (msg.method === 'Page.javascriptDialogClosed') {
+    state.open = undefined;
+  } else if (msg.method === 'Target.detachedFromTarget') {
+    channel.close();
+  } else if (msg.id === 1) {
+    const sessionId = msg.result?.sessionId;
+    if (typeof sessionId !== 'string') {
+      channel.close();
+      return;
+    }
+    state.enableSentAt = Date.now();
+    send({ id: 2, sessionId, method: 'Page.enable' });
+  } else if (msg.id === 2) {
+    state.enableSentAt = undefined;
+    settle();
+  }
+}
+
+async function pump(
+  state: WatchState,
+  channel: WebSocketChannel,
+  send: (message: unknown) => void,
+  settle: () => void
+): Promise<void> {
+  const reader = channel.readable.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      const msg = parseCdp(value);
+      if (msg) applyCdp(state, channel, send, msg, settle);
+    }
+  } catch {
+    return;
+  }
+}
+
+async function attachSocket(
+  platform: Platform,
+  state: WatchState,
+  url: string,
+  targetId: string
+): Promise<void> {
+  const channel = await platform.websocket!(url).catch(() => undefined);
+  if (!channel) return;
+  state.channel = channel;
+  const writer = channel.writable.getWriter();
+  const send = (message: unknown) => {
+    writer.write(JSON.stringify(message)).catch(() => channel.close());
+  };
+  let settle!: () => void;
+  const settled = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  void pump(state, channel, send, settle).then(() => {
+    if (state.channel === channel) {
+      state.channel = undefined;
+      state.open = undefined;
+      state.enableSentAt = undefined;
+    }
+    channel.close();
+    settle();
+  });
+  send({ id: 1, method: 'Target.attachToTarget', params: { targetId, flatten: true } });
+  await settled;
+}
+
+export function watchJsDialogs(platform: Platform, cdp: string, targetId: string): DialogWatcher {
+  const state: WatchState = {};
+  let connecting: Promise<void> | undefined;
+  let closed = false;
+
+  const connect = async (): Promise<void> => {
+    if (!platform.websocket) return;
+    const url = await browserSocketUrl(platform, cdp).catch(() => undefined);
+    if (!url || closed) return;
+    await attachSocket(platform, state, url, targetId);
+  };
+
+  return {
+    async ready() {
+      if (closed || state.channel) return;
+      connecting ??= connect().finally(() => {
+        connecting = undefined;
+      });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        connecting,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, DIALOG_READY_MS);
+        }),
+      ]);
+      clearTimeout(timer);
+    },
+    dialog: () => state.open,
+    stalled: () =>
+      state.enableSentAt !== undefined && Date.now() - state.enableSentAt >= DIALOG_STALL_MS,
+    close() {
+      closed = true;
+      state.channel?.close();
+    },
+  };
+}
+
+function dialogMessage(tab: string, type: string): string {
+  return `tab ${tab} is blocked by a JavaScript ${type.replace(/[^a-z]/gi, '')} dialog; answer or dismiss it in the browser, then retry`;
+}
+
+function timeoutMessage(
+  verb: string,
+  timeoutMs: number,
+  tab: string | undefined,
+  watcher?: DialogWatcher
+): string {
+  const head = `${verb} timed out after ${Math.round(timeoutMs / 1000)}s`;
+  if (!watcher) {
+    return `${head}; if the page shows a JavaScript dialog (alert, confirm, prompt), answer it, and pass --cdp <url> so mcpcat can detect one`;
+  }
+  if (watcher.stalled()) {
+    return `${head}; tab ${tab} does not answer the DevTools protocol, so a JavaScript dialog opened before mcpcat attached may block it; answer it in the browser, then retry`;
+  }
+  return head;
+}
+
 async function runProcess(
   platform: Platform,
   argv: string[],
   stdin: string | undefined,
   timeoutMs: number,
-  limit: number
-): Promise<{ stdout: string; stderr: string; exitCode: number; cut: boolean }> {
+  limit: number,
+  watch?: Watch
+): Promise<{ stdout: string; stderr: string; exitCode: number; cut: boolean; blocked?: string }> {
   let proc: SpawnResult;
   try {
     proc = await platform.spawn({ argv });
@@ -149,12 +348,23 @@ async function runProcess(
     proc.wait(),
   ]);
 
-  const result = await Promise.race([work, timer]);
+  const watcher = watch ? watchLoop(watch) : undefined;
+  const blocked = watcher
+    ? watcher.result.then((type) => ({ blocked: type }))
+    : new Promise<never>(() => {});
+
+  const result = await Promise.race([work, timer, blocked]);
   clearTimeout(timeoutId);
+  watcher?.stop();
 
   if (result === 'timeout') {
     await proc.kill('SIGTERM');
     return { stdout: '', stderr: 'timed out', exitCode: 124, cut: false };
+  }
+
+  if (!Array.isArray(result)) {
+    await proc.kill('SIGTERM');
+    return { stdout: '', stderr: 'blocked', exitCode: 124, cut: false, blocked: result.blocked };
   }
 
   const [, , exitResult] = result;
@@ -168,10 +378,12 @@ async function runProcess(
   };
 }
 
-export async function resolveWebMcpTab(
+type TabRows = { rows: { id: string; active: boolean }[] } | { error: string; notFound?: boolean };
+
+async function listTabs(
   platform: Platform,
   options: Pick<WebMcpOptions, 'playwrightCli' | 'cdp' | 'callTimeoutMs'>
-): Promise<{ tab?: string; error?: string; notFound?: boolean }> {
+): Promise<TabRows> {
   const argv = [options.playwrightCli, 'tab-list'];
   if (options.cdp) argv.push('--cdp', options.cdp);
   const result = await runProcess(
@@ -198,6 +410,17 @@ export async function resolveWebMcpTab(
   if (new Set(rows.map((r) => r.id)).size !== rows.length || active.length > 1) {
     return { error: 'could not read playwright-cli tab-list' };
   }
+  return { rows };
+}
+
+export async function resolveWebMcpTab(
+  platform: Platform,
+  options: Pick<WebMcpOptions, 'playwrightCli' | 'cdp' | 'callTimeoutMs'>
+): Promise<{ tab?: string; error?: string; notFound?: boolean }> {
+  const listed = await listTabs(platform, options);
+  if ('error' in listed) return listed;
+  const { rows } = listed;
+  const active = rows.filter((r) => r.active);
   if (active.length === 1) return { tab: active[0]!.id };
   if (rows.length === 1) return { tab: rows[0]!.id };
   return {
@@ -273,25 +496,71 @@ function ambiguityError(name: string, peers: WebMcpTool[]): Error {
   );
 }
 
+async function blockedNow(
+  watcher: DialogWatcher | undefined,
+  tab: string | undefined
+): Promise<string | undefined> {
+  if (!watcher) return undefined;
+  await watcher.ready();
+  const open = watcher.dialog();
+  return open ? dialogMessage(tab!, open) : undefined;
+}
+
+async function tabGone(platform: Platform, options: WebMcpOptions): Promise<string | undefined> {
+  const { tab } = options;
+  if (!tab) return undefined;
+  const listed = await listTabs(platform, options);
+  if ('error' in listed || listed.rows.some((r) => r.id === tab)) return undefined;
+  return `tab ${tab} is gone (the browser restarted or the tab closed); restart mcpcat serve --webmcp, or pass --tab <targetId> (see playwright-cli tab-list)`;
+}
+
+export function hiddenToolMessage(name: string): string {
+  return `tool ${name} exists on the page but is hidden because it is consequential (consequentialHint); restart with mcpcat serve --webmcp --allow-consequential to expose it`;
+}
+
 export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) {
   let cache: CacheEntry | undefined;
   const baseArgs = buildBaseArgs(options);
 
   const listLimit = Math.max(options.maxOutput, WEBMCP_LIST_FLOOR);
+  const { cdp, tab } = options;
+  const watcher = cdp && tab ? watchJsDialogs(platform, cdp, tab) : undefined;
+  const watch: Watch | undefined = watcher ? () => watcher.dialog() : undefined;
 
   async function listRaw(
     fresh = false
   ): Promise<{ tools: WebMcpTool[]; error?: string; notFound?: boolean }> {
+    const blocked = await blockedNow(watcher, tab);
+    if (blocked) return { tools: [], error: blocked };
+
     const now = Date.now();
     if (!fresh && cache && now < cache.expiresAt) {
       return { tools: cache.tools };
     }
 
     const argv = [options.playwrightCli, 'webmcp-list', '--json', ...baseArgs];
-    const result = await runProcess(platform, argv, undefined, options.callTimeoutMs, listLimit);
+    const result = await runProcess(
+      platform,
+      argv,
+      undefined,
+      options.callTimeoutMs,
+      listLimit,
+      watch
+    );
 
     if (result.exitCode === -1) {
       return { tools: [], error: result.stderr, notFound: true };
+    }
+
+    if (result.blocked) {
+      return { tools: [], error: dialogMessage(tab!, result.blocked) };
+    }
+
+    if (result.exitCode === 124) {
+      return {
+        tools: [],
+        error: timeoutMessage('webmcp-list', options.callTimeoutMs, tab, watcher),
+      };
     }
 
     if (result.exitCode !== 0) {
@@ -313,21 +582,28 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
       return { tools: [], error: 'webmcp-list did not return an array' };
     }
 
+    if (parsed.length === 0) {
+      const gone = await tabGone(platform, options);
+      if (gone) return { tools: [], error: gone };
+    }
+
     const tools = parsed as WebMcpTool[];
     cache = { tools, expiresAt: now + options.ttlMs };
     return { tools };
   }
 
-  async function getRpcTools(): Promise<RpcTool[] | null> {
+  async function getRpcTools(): Promise<ToolListing | null> {
     const { tools, error, notFound } = await listRaw();
     if (notFound) return null;
-    if (error) return [];
+    if (error) return { tools: [], error };
 
     const rpcTools: RpcTool[] = [];
+    const hidden: Record<string, string> = {};
 
     for (const { name, tool, peers } of exposedTools(tools)) {
       if (peers.length > 1) continue;
       if (tool.annotations?.consequentialHint && !options.allowConsequential) {
+        hidden[name] = hiddenToolMessage(name);
         continue;
       }
       const mapped = mapDescriptionAnnotations(tool.annotations);
@@ -339,7 +615,7 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
       });
     }
 
-    return rpcTools;
+    return { tools: rpcTools, hidden };
   }
 
   async function callTool(name: string, args: unknown): Promise<ToolRunResult> {
@@ -368,11 +644,20 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
       argv,
       stdinData,
       options.callTimeoutMs,
-      options.maxOutput
+      options.maxOutput,
+      watch
     );
 
     if (result.exitCode === -1) {
       throw new Error(result.stderr || 'playwright-cli not found');
+    }
+
+    if (result.blocked) {
+      throw new Error(dialogMessage(tab!, result.blocked));
+    }
+
+    if (result.exitCode === 124) {
+      throw new Error(timeoutMessage('webmcp-call', options.callTimeoutMs, tab, watcher));
     }
 
     if (result.exitCode === 2) {
@@ -401,5 +686,9 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
     cache = undefined;
   }
 
-  return { getRpcTools, callTool, invalidateCache };
+  function close(): void {
+    watcher?.close();
+  }
+
+  return { getRpcTools, callTool, invalidateCache, close };
 }

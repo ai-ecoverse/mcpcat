@@ -34,6 +34,12 @@ export interface Listener {
   [Symbol.asyncIterator](): AsyncIterableIterator<Connection>;
 }
 
+export interface WebSocketChannel {
+  readonly readable: ReadableStream<string | Uint8Array>;
+  readonly writable: WritableStream<string>;
+  close(): void;
+}
+
 export interface FsApi {
   readFile(path: string): Promise<Uint8Array>;
   writeFile(path: string, data: Uint8Array | string, options?: { mode?: number }): Promise<void>;
@@ -53,6 +59,7 @@ export interface Platform {
   fetch: typeof globalThis.fetch;
   spawn(options: SpawnOptions): Promise<SpawnResult>;
   listen?(options: ListenOptions): Promise<Listener>;
+  websocket?(url: string): Promise<WebSocketChannel>;
   fs: FsApi;
   env: Record<string, string | undefined>;
   cwd: string;

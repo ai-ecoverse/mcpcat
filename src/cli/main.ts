@@ -687,6 +687,11 @@ async function runCall(
   if (toolArgs.length > 0) {
     const tools = await conn.listTools();
     const tool = tools.find((t) => t.name === toolName);
+    const hidden = tool ? undefined : conn.hiddenTool?.(toolName);
+    if (hidden) {
+      await writeErr(platform, opts.json ?? false, 'usage', hidden);
+      return EXIT_USAGE;
+    }
     const schema = tool?.inputSchema ?? { type: 'object', properties: {} };
     const skipRequired = opts.noValidate || !!dataArg;
     const c = coerceArgsBySchema(toolArgs, schema, { noValidate: skipRequired });

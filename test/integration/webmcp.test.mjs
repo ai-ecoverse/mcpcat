@@ -742,7 +742,11 @@ describe('serve --webmcp', () => {
         ) + '\n';
       const result = runHost(['serve', '--webmcp', '--tab', 'T7', '--playwright-cli', fakePwCli], {
         input,
-        env: { FAKE_PWCLI_FIXTURE: singleOriginFixture, FAKE_PWCLI_LOG: log },
+        env: {
+          FAKE_PWCLI_FIXTURE: singleOriginFixture,
+          FAKE_PWCLI_LOG: log,
+          FAKE_PWCLI_TABS: JSON.stringify(['T7']),
+        },
       });
       assert.equal(result.status, 0, `stderr: ${result.stderr}`);
       const entries = readLog(log);

@@ -7,7 +7,7 @@ import {
 } from '../config/expand.ts';
 import { MergedConfigSource } from '../config/index.ts';
 import { stateDir } from '../config/paths.ts';
-import type { Platform, SpawnResult } from '../platform/types.ts';
+import type { Listener, Platform, SpawnResult } from '../platform/types.ts';
 import { sanitizeTerminal } from '../render/sanitize.ts';
 import {
   argvForCommand,
@@ -25,7 +25,7 @@ import {
   templateToArgv,
 } from './catalog.ts';
 import { type HttpRequest, type HttpResponse, handleConnection } from './http.ts';
-import { handleJsonRpc, type RpcTool, type ToolRunResult } from './jsonrpc.ts';
+import { handleJsonRpc, type RpcTool, type ToolListing, type ToolRunResult } from './jsonrpc.ts';
 import {
   buildAllowedHosts,
   buildServerOrigins,
@@ -1071,16 +1071,47 @@ async function buildProxyConnectOpts(
   return { connectOpts, hiddenValues };
 }
 
-function resolvePlaywrightCli(platform: Platform, explicit?: string): string | undefined {
+async function resolvePlaywrightCli(
+  platform: Platform,
+  explicit?: string
+): Promise<string | undefined> {
   if (explicit) return explicit;
   if (platform.kind === 'kernel') return 'playwright-cli';
   const pathEnv = platform.env.PATH ?? '';
-  const sep = pathEnv.includes(';') ? ';' : ':';
-  for (const dir of pathEnv.split(sep)) {
+  const windows = pathEnv.includes(';');
+  const names = windows
+    ? ['playwright-cli.exe', 'playwright-cli.cmd', 'playwright-cli']
+    : ['playwright-cli'];
+  for (const dir of pathEnv.split(windows ? ';' : ':')) {
     if (!dir) continue;
-    return 'playwright-cli';
+    for (const name of names) {
+      const candidate = `${dir.replace(/[\\/]+$/, '')}/${name}`;
+      if (await platform.fs.exists(candidate).catch(() => false)) return 'playwright-cli';
+    }
   }
   return undefined;
+}
+
+async function listenOrReport(
+  platform: Platform,
+  options: ServeOptions,
+  label: string
+): Promise<Listener | number> {
+  try {
+    return await platform.listen!({ host: options.host, port: options.port });
+  } catch (err) {
+    const { code, message } = err as { code?: unknown; message?: unknown };
+    const reason =
+      code === 'EADDRINUSE' || /EADDRINUSE/.test(String(message))
+        ? 'address already in use'
+        : String(message ?? err);
+    const host = options.host.includes(':') ? `[${options.host}]` : options.host;
+    await platform.write(
+      2,
+      sanitizeTerminal(`${label}: cannot listen on ${host}:${options.port}: ${reason}\n`)
+    );
+    return 3;
+  }
 }
 
 async function runWebMcpServe(
@@ -1090,11 +1121,11 @@ async function runWebMcpServe(
   resolvedBearer: string | undefined,
   generatedBearer: boolean
 ): Promise<number> {
-  const cliPath = resolvePlaywrightCli(platform, options.webmcpPlaywrightCli);
+  const cliPath = await resolvePlaywrightCli(platform, options.webmcpPlaywrightCli);
   if (!cliPath) {
     await platform.write(
       2,
-      'mcpcat serve --webmcp: playwright-cli not found. Install it with: curl -fsSL https://get.sliccy.ai/playwright-cli | sh\n'
+      'mcpcat serve --webmcp: playwright-cli not found on PATH. Install it with: curl -fsSL https://get.sliccy.ai/playwright-cli | sh\n'
     );
     return 3;
   }
@@ -1132,6 +1163,28 @@ async function runWebMcpServe(
     maxOutput: options.maxOutput,
   });
 
+  try {
+    return await serveWebMcpHandler(
+      platform,
+      options,
+      handler,
+      version,
+      resolvedBearer,
+      generatedBearer
+    );
+  } finally {
+    handler.close();
+  }
+}
+
+async function serveWebMcpHandler(
+  platform: Platform,
+  options: ServeOptions,
+  handler: ReturnType<typeof createWebMcpHandler>,
+  version: string,
+  resolvedBearer: string | undefined,
+  generatedBearer: boolean
+): Promise<number> {
   const probe = await handler.getRpcTools();
   if (probe === null) {
     await platform.write(
@@ -1143,7 +1196,7 @@ async function runWebMcpServe(
 
   const serverName = 'mcpcat-webmcp';
 
-  const getTools = async () => (await handler.getRpcTools()) ?? [];
+  const getTools = async (): Promise<ToolListing> => (await handler.getRpcTools()) ?? { tools: [] };
   const callTool = (name: string, args: unknown) => handler.callTool(name, args);
 
   if (options.transport === 'stdio') {
@@ -1164,7 +1217,7 @@ async function runWebMcpServe(
 
 async function runWebMcpStdio(
   platform: Platform,
-  getTools: () => Promise<RpcTool[]>,
+  getTools: () => Promise<ToolListing>,
   callTool: (name: string, args: unknown) => Promise<ToolRunResult>,
   serverName: string,
   version: string
@@ -1186,8 +1239,7 @@ async function runWebMcpStdio(
         buffer = buffer.slice(nlIdx + 1);
         if (!line) continue;
 
-        const tools = await getTools();
-        const outcome = await handleJsonRpc(line, tools, callTool, serverName, version);
+        const outcome = await handleJsonRpc(line, getTools, callTool, serverName, version);
         if (outcome.status === 202) continue;
         const writer = platform.stdout.getWriter();
         await writer.write(enc.encode(`${outcome.body}\n`));
@@ -1204,7 +1256,7 @@ async function runWebMcpStdio(
 async function runWebMcpHttp(
   platform: Platform,
   options: ServeOptions,
-  getTools: () => Promise<RpcTool[]>,
+  getTools: () => Promise<ToolListing>,
   callTool: (name: string, args: unknown) => Promise<ToolRunResult>,
   serverName: string,
   version: string,
@@ -1226,7 +1278,8 @@ async function runWebMcpHttp(
   }
 
   const allowedOrigins = new Set(options.allowOrigins);
-  const listener = await platform.listen({ host: options.host, port: options.port });
+  const listener = await listenOrReport(platform, options, 'mcpcat serve --webmcp');
+  if (typeof listener === 'number') return listener;
   const actualPort = listener.port;
 
   const serverOrigins = buildServerOrigins(options.host, actualPort);
@@ -1342,8 +1395,7 @@ async function runWebMcpHttp(
       }
     }
 
-    const tools = await getTools();
-    const outcome = await handleJsonRpc(request.body, tools, callTool, serverName, version);
+    const outcome = await handleJsonRpc(request.body, getTools, callTool, serverName, version);
     return {
       status: outcome.status,
       reason: outcome.status === 200 ? 'OK' : 'Accepted',
@@ -1460,10 +1512,11 @@ async function runProxyHttp(
   }
 
   const allowedOrigins = new Set(options.allowOrigins);
-  const listener = await platform.listen({
-    host: options.host,
-    port: options.port,
-  });
+  const listener = await listenOrReport(platform, options, 'mcpcat serve --proxy');
+  if (typeof listener === 'number') {
+    await proxy.shutdown();
+    return listener;
+  }
   const actualPort = listener.port;
 
   const serverOrigins = buildServerOrigins(options.host, actualPort);
@@ -1691,7 +1744,8 @@ async function runHttpServer(
   }
 
   const allowedOrigins = new Set(options.allowOrigins);
-  const listener = await platform.listen({ host: options.host, port: options.port });
+  const listener = await listenOrReport(platform, options, 'mcpcat serve');
+  if (typeof listener === 'number') return listener;
   const actualPort = listener.port;
 
   const serverOrigins = buildServerOrigins(options.host, actualPort);

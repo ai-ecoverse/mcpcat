@@ -201,6 +201,17 @@ export interface StatelessConnectionOptions {
 
 type RequestFn = (method: string, params: Record<string, unknown>) => Promise<unknown>;
 
+export function readHiddenTools(result: unknown): Record<string, string> {
+  const meta = (result as { _meta?: Record<string, unknown> } | null)?._meta;
+  const hidden = meta?.['io.mcpcat/hidden'];
+  const out: Record<string, string> = {};
+  if (!hidden || typeof hidden !== 'object' || Array.isArray(hidden)) return out;
+  for (const [name, why] of Object.entries(hidden)) {
+    if (typeof why === 'string') out[name] = why;
+  }
+  return out;
+}
+
 function buildStatelessMethods(
   requestFn: RequestFn,
   discoverResult: Record<string, unknown> | null
@@ -208,6 +219,7 @@ function buildStatelessMethods(
   McpConnection,
   | 'info'
   | 'listTools'
+  | 'hiddenTool'
   | 'callTool'
   | 'listResources'
   | 'listResourceTemplates'
@@ -216,6 +228,7 @@ function buildStatelessMethods(
   | 'getPrompt'
 > {
   let serverInfoCache: ServerInfo | undefined;
+  let hidden: Record<string, string> = {};
   return {
     async info(): Promise<ServerInfo> {
       if (serverInfoCache) return serverInfoCache;
@@ -223,7 +236,12 @@ function buildStatelessMethods(
       return serverInfoCache;
     },
     async listTools(): Promise<Tool[]> {
-      return ((await requestFn('tools/list', {})) as { tools?: Tool[] } | null)?.tools ?? [];
+      const result = (await requestFn('tools/list', {})) as { tools?: Tool[] } | null;
+      hidden = readHiddenTools(result);
+      return result?.tools ?? [];
+    },
+    hiddenTool(name: string): string | undefined {
+      return Object.hasOwn(hidden, name) ? hidden[name] : undefined;
     },
     async callTool(
       name: string,
