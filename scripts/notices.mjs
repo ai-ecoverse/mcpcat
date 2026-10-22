@@ -12,7 +12,7 @@ async function collectBundledPackages(entryPoint) {
     bundle: true,
     format: 'esm',
     platform: 'node',
-    target: ['node24'],
+    target: ['node26'],
     write: false,
     metafile: true,
     logLevel: 'silent',

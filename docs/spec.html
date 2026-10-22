@@ -93,7 +93,7 @@ mcpcat code -e 'return (await tools.mcp__docs__search({q:"cimd"})).length'</code
   <li><strong>Discover.</strong> Tell a human or an agent what a server offers (info, tools, schemas, TypeScript declarations), search across configured servers, and turn web discovery events into candidate servers.</li>
   <li><strong>Run.</strong> Start stdio servers, keep them configured in the same <code>mcp.json</code> pi and slicc-agent read, and bridge them to HTTP when something else needs to reach them.</li>
   <li><strong>Expose.</strong> Publish shell commands and scripts (including <code>.jsh</code>) as an MCP server over stdio or HTTP, with tool schemas derived from <code>--mcp</code> descriptors or <code>--help</code>.</li>
-  <li><strong>Everywhere.</strong> One codebase, one behaviour: host (Node ≥ 24 from npm) and Sliccy Seven (slicc-kernel <code>abi: "js"</code> program from the same npm package).</li>
+  <li><strong>Everywhere.</strong> One codebase, one behaviour: host (Node ≥ 26 from npm) and Sliccy Seven (slicc-kernel <code>abi: "js"</code> program from the same npm package).</li>
   <li><strong>Agent-ready.</strong> Learnable from <code>--help</code> alone, deterministic JSON, stable exit codes, and a built-in skill (<code>mcpcat help --skill</code>).</li>
 </ul>
 
@@ -167,7 +167,7 @@ mcpcat code -e 'return (await tools.mcp__docs__search({q:"cimd"})).length'</code
 
 <dl class="decisions">
   <dt id="d1">D1 · TypeScript, one package, two entries</dt>
-  <dd>mcpcat is TypeScript, published as <code>@ai-ecoverse/mcpcat</code> with an npm <code>bin</code> (<code>dist/host/mcpcat.mjs</code>, Node ≥ 24) and a <code>slicc.commands.mcpcat</code> entry (<code>abi: "js"</code>, <code>dist/kernel/mcpcat.mjs</code>). Both are esbuild bundles of the same core over a small platform interface. <br><span class="small">Why not Rust/WASI like curlwright: the WASI build has no TLS, and most MCP servers are HTTPS. A kernel JS program gets <code>ctx.fetch</code> over the kernel transport (TLS handled by the browser or local proxy), <code>ctx.spawn</code> for stdio servers and <code>ctx.net.listen</code> for serving. It also lets us reuse pi-mcp and pi-codemode directly, as slicc-agent does. Why not a plain Node script under slicc-jsh: that would make the optional <code>node</code> package a hard dependency, route every call through Node shims, and put mcpcat behind <code>node</code>/<code>jsh</code>, which <code>fnox exec</code> refuses as interpreters (<a href="#ctx-secrets">§2.6</a>); a direct <code>abi: "js"</code> command is resolved as <code>mcpcat</code> itself, so a policy can name its exact argv. Why not Rust like slicc-jerk: jerk's kernel build deliberately avoids TLS, while mcpcat must reach arbitrary HTTPS servers from the kernel; <code>ctx.fetch</code> gives that without rustls on wasip1.</span></dd>
+  <dd>mcpcat is TypeScript, published as <code>@ai-ecoverse/mcpcat</code> with an npm <code>bin</code> (<code>dist/host/mcpcat.mjs</code>, Node ≥ 26) and a <code>slicc.commands.mcpcat</code> entry (<code>abi: "js"</code>, <code>dist/kernel/mcpcat.mjs</code>). Both are esbuild bundles of the same core over a small platform interface. <br><span class="small">Why not Rust/WASI like curlwright: the WASI build has no TLS, and most MCP servers are HTTPS. A kernel JS program gets <code>ctx.fetch</code> over the kernel transport (TLS handled by the browser or local proxy), <code>ctx.spawn</code> for stdio servers and <code>ctx.net.listen</code> for serving. It also lets us reuse pi-mcp and pi-codemode directly, as slicc-agent does. Why not a plain Node script under slicc-jsh: that would make the optional <code>node</code> package a hard dependency, route every call through Node shims, and put mcpcat behind <code>node</code>/<code>jsh</code>, which <code>fnox exec</code> refuses as interpreters (<a href="#ctx-secrets">§2.6</a>); a direct <code>abi: "js"</code> command is resolved as <code>mcpcat</code> itself, so a policy can name its exact argv. Why not Rust like slicc-jerk: jerk's kernel build deliberately avoids TLS, while mcpcat must reach arbitrary HTTPS servers from the kernel; <code>ctx.fetch</code> gives that without rustls on wasip1.</span></dd>
 
   <dt id="d2">D2 · pi's <code>mcp.json</code> is the config</dt>
   <dd>mcpcat reads and writes <code>~/.pi/agent/mcp.json</code> in pi's format, preserving unrelated content. Anything mcpcat adds is immediately visible to pi and to slicc-agent, and the slicc-cdp discovery sink never has to know about MCP (as requested from the slicc-cdp discovery thread). mcpcat's own state (caches, discovery inbox) lives elsewhere (<a href="#config">§10</a>) so <code>mcp.json</code> never gains keys the agent rejects.</dd>
@@ -212,7 +212,7 @@ mcpcat code -e 'return (await tools.mcp__docs__search({q:"cimd"})).length'</code
                  └───────────────────────────────┬───────────────────────────────────────────────┘
                                                  │ Platform
                     ┌────────────────────────────┴───────────────────────────┐
-                    │ host (Node ≥ 24)                kernel (abi "js")       │
+                    │ host (Node ≥ 26)                kernel (abi "js")       │
                     │ fetch                          ctx.fetch               │
                     │ child_process.spawn            ctx.spawn / ctx.wait    │
                     │ node:net / node:http listen    ctx.net.listen          │
@@ -606,7 +606,7 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
   src/
     cli/  client/  args/  render/  config/  auth/  serve/  codemode/  discovery/
     platform/  types.ts  host.ts  kernel.ts
-    host.ts      → dist/host/mcpcat.mjs     (npm bin, Node ≥ 24)
+    host.ts      → dist/host/mcpcat.mjs     (npm bin, Node ≥ 26)
     kernel.ts    → dist/kernel/mcpcat.mjs   (slicc.commands.mcpcat, abi "js")
   scripts/build.mjs  (esbuild, two entries, node-builtin stubs for the kernel bundle)
   test/
@@ -644,7 +644,7 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
       <li>no <code>Math.random</code> for anything secret, and no network or disk I/O at import.</li>
     </ul></li>
   <li><strong>Kernel lockdown:</strong> runs on the current certified kernel (≥ 1.64.2) using only <code>ctx.*</code>, never needs a withheld global, and a too-old kernel gets a clean error.</li>
-  <li><strong>Host/kernel parity, golden:</strong> the same <code>--help</code>, JSON output and exit codes on Node ≥ 24 and in the kernel, against the fixture servers:
+  <li><strong>Host/kernel parity, golden:</strong> the same <code>--help</code>, JSON output and exit codes on Node ≥ 26 and in the kernel, against the fixture servers:
     <ul>
       <li>stdio via <code>ctx.spawn</code>;</li>
       <li>HTTP/SSE via <code>ctx.fetch</code> through the kernel proxy;</li>
@@ -670,7 +670,7 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
   <li><strong>Code mode:</strong> scripts run in the QuickJS wasm VM only (<a href="#codemode">§16</a>).</li>
   <li><strong>Users</strong> (once enforcement ships): config paths obey DAC as cone and as scoop, and no user can read another user's <code>mcp.json</code>.</li>
   <li><strong>bios's real setup:</strong> installed through the catalog path (PATH, PNPM_HOME), with a smoke test.</li>
-  <li><strong>Host:</strong> <code>npm i -g</code> on Node 24, and exit codes pass through.</li>
+  <li><strong>Host:</strong> <code>npm i -g</code> on Node 26, and exit codes pass through.</li>
 </ol>
 <p>What mcpcat provides:</p>
 <ul>

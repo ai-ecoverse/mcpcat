@@ -65,6 +65,7 @@ test('the shards split exactly the files npm test runs, on Node 26', () => {
   assert.ok(pkg.scripts.test.endsWith(` '${input('test-glob')}'`), pkg.scripts.test);
   assert.doesNotMatch(pkg.scripts.test, /NODE_OPTIONS|test:unit/);
   assert.equal(input('node-version'), "'26'");
+  assert.equal(pkg.engines.node, `>=${input('node-version').slice(1, -1)}`);
   assert.equal(pkg.scripts.prepare, 'npm run build && slicc-install-hooks');
   assert.ok(existsSync(join(root, '.githooks/pre-commit')));
 });

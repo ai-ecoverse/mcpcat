@@ -16,7 +16,7 @@
     "mcpcat": "dist/host/mcpcat.mjs"
   },
   "engines": {
-    "node": ">=24",
+    "node": ">=26",
     "slicc-kernel": ">=1.65.2"
   },
   "publishConfig": {
