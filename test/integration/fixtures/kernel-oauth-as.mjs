@@ -23,6 +23,7 @@ export function createHandler(seed, log) {
   const ttl = seed.ttl ?? 4;
   const access = new Map();
   const refresh = new Set([seed.refreshToken]);
+  let challenged;
 
   function issue() {
     const accessToken = randomToken();
@@ -66,7 +67,12 @@ export function createHandler(seed, log) {
     const auth = headers.authorization ?? '';
     const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : '';
     const expires = access.get(bearer);
+    const previous = challenged;
+    challenged = undefined;
     if (!expires || expires <= Date.now()) {
+      try {
+        challenged = JSON.parse(body).id;
+      } catch {}
       return json(
         401,
         { error: 'invalid_token' },
@@ -76,6 +82,14 @@ export function createHandler(seed, log) {
       );
     }
     const { id, method, params } = JSON.parse(body);
+    if (previous !== undefined && id === previous) {
+      log(`mcp reused id ${id}`);
+      return json(400, {
+        jsonrpc: '2.0',
+        id,
+        error: { code: -32600, message: `request id ${id} reused on retry` },
+      });
+    }
     if (method === 'server/discover') {
       return rpc(id, {
         supportedVersions: ['2026-07-28'],
