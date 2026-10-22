@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 
-const MODE = process.env.CERT_ROW_AS_MODE || '';
-const TTL = Number(process.env.CERT_ROW_AS_TTL || 3600);
+const MODE = process.env.ROW_AS_MODE || '';
+const TTL = Number(process.env.ROW_AS_TTL || 3600);
 const clients = new Map();
 const codes = new Map();
 const access = new Map();
@@ -44,7 +44,7 @@ function rs(req, res, body) {
       'www-authenticate': `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`,
       'content-type': 'text/plain',
     });
-    res.end(process.env.CERT_ROW_RS_ECHO401 ? `invalid_token ${auth}` : 'unauthorized');
+    res.end(process.env.ROW_RS_ECHO401 ? `invalid_token ${auth}` : 'unauthorized');
     return;
   }
   if (req.method !== 'POST') {
@@ -64,7 +64,7 @@ function rs(req, res, body) {
     return r({
       protocolVersion: '2025-11-25',
       capabilities: { tools: {} },
-      serverInfo: { name: 'cert-oauth', version: '1.0.0' },
+      serverInfo: { name: 'security-oauth', version: '1.0.0' },
     });
   if (method === 'tools/list')
     return r({

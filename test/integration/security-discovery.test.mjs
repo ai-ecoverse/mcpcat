@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { homeEnv, run, scratchHome, startFixture } from './helpers/rows.mjs';
 
-describe('cert row: discovery follows no link, redirect or advertised endpoint', () => {
+describe('security: discovery follows no link, redirect or advertised endpoint', () => {
   let canary;
   let page;
   let env;
 
   before(async () => {
-    canary = await startFixture('cert-reflect.mjs');
-    page = await startFixture('cert-discovery-page.mjs', { CANARY: String(canary.port) });
+    canary = await startFixture('reflect-server.mjs');
+    page = await startFixture('security-discovery-page.mjs', { CANARY: String(canary.port) });
     env = homeEnv(scratchHome('discovery'));
   });
 

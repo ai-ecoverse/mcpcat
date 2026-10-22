@@ -6,20 +6,20 @@ import { after, before, describe, it } from 'node:test';
 import { createNodeKernel, hostUrl, nodeTransport } from './helpers/kernel.mjs';
 import { root, startFixture } from './helpers/rows.mjs';
 
-const MARK = 'certrowKernelSecretH4w8Pq';
-const AGENT_DIR = '/etc/mcpcat-cert-row';
+const MARK = 'secrowKernelSecretH4w8Pq';
+const AGENT_DIR = '/etc/mcpcat-row';
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
-describe('cert row: secrets redaction in the kernel', () => {
+describe('security: secrets redaction in the kernel', () => {
   let srv;
   let kernel;
   let base;
-  const header = ['-H', 'X-Api: ${CERT_ROW_TOKEN}'];
-  const env = { CERT_ROW_TOKEN: MARK, PI_CODING_AGENT_DIR: AGENT_DIR };
+  const header = ['-H', 'X-Api: ${ROW_TOKEN}'];
+  const env = { ROW_TOKEN: MARK, PI_CODING_AGENT_DIR: AGENT_DIR };
   const run = (argv) => kernel.run(['mcpcat', ...argv], { stdout: 'pipe', stderr: 'pipe', env });
 
   before(async () => {
-    srv = await startFixture('cert-reflect.mjs');
+    srv = await startFixture('reflect-server.mjs');
     base = hostUrl(srv.port);
     kernel = await createNodeKernel({
       network: { transport: nodeTransport({ hostLoopback: true }) },
@@ -41,19 +41,19 @@ describe('cert row: secrets redaction in the kernel', () => {
       `${AGENT_DIR}/mcp.json`,
       JSON.stringify({
         mcpServers: {
-          r: { url: `${base}/mcp`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
-          r500: { url: `${base}/500`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
-          r403: { url: `${base}/403`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
-          r401: { url: `${base}/401`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
-          rask: { url: `${base}/ask`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
-          rtok: { url: `${base}/tok/mcp`, headers: { Authorization: 'Bearer ${CERT_ROW_TOKEN}' } },
+          r: { url: `${base}/mcp`, headers: { 'X-Api': '${ROW_TOKEN}' } },
+          r500: { url: `${base}/500`, headers: { 'X-Api': '${ROW_TOKEN}' } },
+          r403: { url: `${base}/403`, headers: { 'X-Api': '${ROW_TOKEN}' } },
+          r401: { url: `${base}/401`, headers: { 'X-Api': '${ROW_TOKEN}' } },
+          rask: { url: `${base}/ask`, headers: { 'X-Api': '${ROW_TOKEN}' } },
+          rtok: { url: `${base}/tok/mcp`, headers: { Authorization: 'Bearer ${ROW_TOKEN}' } },
           rtok500: {
             url: `${base}/tok/500`,
-            headers: { Authorization: 'Bearer ${CERT_ROW_TOKEN}' },
+            headers: { Authorization: 'Bearer ${ROW_TOKEN}' },
           },
           rtokask: {
             url: `${base}/tok/ask`,
-            headers: { Authorization: 'Bearer ${CERT_ROW_TOKEN}' },
+            headers: { Authorization: 'Bearer ${ROW_TOKEN}' },
           },
         },
       })
@@ -146,15 +146,15 @@ describe('cert row: secrets redaction in the kernel', () => {
     });
   }
 
-  const bearer = ['-H', 'Authorization: Bearer ${CERT_ROW_TOKEN}'];
+  const bearer = ['-H', 'Authorization: Bearer ${ROW_TOKEN}'];
   const SUFFIX = 'SuffixLeak77';
   const tokEnv = {
     ...env,
-    CERT_ROW_ID: 'certrowIdPfx01',
-    CERT_ROW_KEY2: `certrowIdPfx01${SUFFIX}`,
-    CERT_ROW_HEAD: 'ShiftHeadQ7v',
-    CERT_ROW_TAIL: 'JK',
-    CERT_ROW_SHIFT: 'hiftHeadQ7vJK',
+    ROW_ID: 'secrowIdPfx01',
+    ROW_KEY2: `secrowIdPfx01${SUFFIX}`,
+    ROW_HEAD: 'ShiftHeadQ7v',
+    ROW_TAIL: 'JK',
+    ROW_SHIFT: 'hiftHeadQ7vJK',
   };
   const tokenCases = {
     '-H Bearer ${VAR}, JSON-RPC error': () => [...bearer, 'call', `${base}/tok/mcp`, 'err'],
@@ -179,9 +179,9 @@ describe('cert row: secrets redaction in the kernel', () => {
     'mcp.json Bearer ${VAR}, input request, --json': () => ['--json', 'call', 'rtokask', 'ask'],
     'a ${VAR} value that extends another': () => [
       '-H',
-      'X-Id: ${CERT_ROW_ID}',
+      'X-Id: ${ROW_ID}',
       '-H',
-      'X-Key: ${CERT_ROW_KEY2}',
+      'X-Key: ${ROW_KEY2}',
       'call',
       `${base}/tok/mcp`,
       'err',
@@ -192,9 +192,9 @@ describe('cert row: secrets redaction in the kernel', () => {
     it(`masks a ${'${VAR}'} value that overlaps another at a shift: ${flag.join(' ') || 'plain'}`, async () => {
       const argv = [
         '-H',
-        'Authorization: Bearer ${CERT_ROW_HEAD}${CERT_ROW_TAIL}',
+        'Authorization: Bearer ${ROW_HEAD}${ROW_TAIL}',
         '-H',
-        'X-Shift: ${CERT_ROW_SHIFT}',
+        'X-Shift: ${ROW_SHIFT}',
         ...flag,
         'call',
         `${base}/tok/mcp`,
@@ -258,12 +258,12 @@ describe('cert row: secrets redaction in the kernel', () => {
   }
 
   const addCases = {
-    '/500': [['-H', 'X-Api: ${CERT_ROW_TOKEN}'], '/500'],
+    '/500': [['-H', 'X-Api: ${ROW_TOKEN}'], '/500'],
     '/tok/401': [bearer, '/tok/401'],
     '/tok/403': [bearer, '/tok/403'],
     '/tok/500': [bearer, '/tok/500'],
     'a value that extends another': [
-      ['-H', 'X-Id: ${CERT_ROW_ID}', '-H', 'X-Key: ${CERT_ROW_KEY2}'],
+      ['-H', 'X-Id: ${ROW_ID}', '-H', 'X-Key: ${ROW_KEY2}'],
       '/tok/401',
     ],
   };

@@ -151,7 +151,7 @@ function checkBattery(r) {
   assert.equal(cors, false, 'a response carried an access-control-* header');
 }
 
-describe('cert row: serve binds loopback with a bearer, checks Origin and Host, no CORS', () => {
+describe('security: serve binds loopback with a bearer, checks Origin and Host, no CORS', () => {
   let s;
   before(async () => {
     s = await serve([join(fixtures, 'serve-cli.mjs')], homeEnv(scratchHome('serve')));
@@ -176,13 +176,13 @@ describe('cert row: serve binds loopback with a bearer, checks Origin and Host, 
   });
 });
 
-describe('cert row: proxy is pinned to its upstream and never forwards its bearer', () => {
+describe('security: proxy is pinned to its upstream and never forwards its bearer', () => {
   let up;
   let other;
   let s;
   before(async () => {
-    up = await startFixture('cert-reflect.mjs');
-    other = await startFixture('cert-reflect.mjs');
+    up = await startFixture('reflect-server.mjs');
+    other = await startFixture('reflect-server.mjs');
     s = await serve(['--proxy', `${up.base}/mcp`], homeEnv(scratchHome('proxy')));
   });
   after(async () => {

@@ -126,7 +126,7 @@ describe("kernel: an expired token refreshes against an authorization server on 
       'dist/as.mjs',
       readFileSync(join(fixturesDir, 'kernel-oauth-as.mjs'))
     );
-    for (const name of ['kernel-cert-put', 'kernel-cert-stat']) {
+    for (const name of ['kernel-probe-put', 'kernel-probe-stat']) {
       await installPackage(
         kernel,
         `@ai-ecoverse/mcpcat-test-${name}`,
@@ -188,12 +188,12 @@ describe("kernel: an expired token refreshes against an authorization server on 
     const store = `${agentDir}/mcp-auth.json`;
     const modes = async () =>
       (
-        await kernel.run(['kernel-cert-stat', store, agentDir], { stdout: 'pipe', stderr: 'pipe' })
+        await kernel.run(['kernel-probe-stat', store, agentDir], { stdout: 'pipe', stderr: 'pipe' })
       ).stdout
         .trim()
         .split('\n')
         .map((l) => l.split('\t')[1]);
-    const put = await kernel.run(['kernel-cert-put', store, '0o644', '0o755'], {
+    const put = await kernel.run(['kernel-probe-put', store, '0o644', '0o755'], {
       stdout: 'pipe',
       stderr: 'pipe',
       stdin: JSON.stringify(expiredState(href, seed)),

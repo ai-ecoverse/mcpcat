@@ -25,7 +25,7 @@ async function install(kernel, name, module, data) {
 const run = (kernel, argv, opts = {}) =>
   kernel.run(argv, { stdout: 'pipe', stderr: 'pipe', ...opts });
 
-describe('cert row: DAC under users enforce (alice and bob)', {
+describe('security: DAC under users enforce (alice and bob)', {
   skip: !kernelAtLeast(74) && 'users need slicc-kernel >= 1.74.0',
 }, () => {
   let srv;
@@ -51,19 +51,19 @@ describe('cert row: DAC under users enforce (alice and bob)', {
     );
     await install(
       kernel,
-      'kernel-cert-cat',
+      'kernel-probe-cat',
       'main.mjs',
-      readFileSync(join(fixtures, 'kernel-cert-cat.mjs'))
+      readFileSync(join(fixtures, 'kernel-probe-cat.mjs'))
     );
     await install(
       kernel,
-      'kernel-cert-walk',
+      'kernel-probe-walk',
       'main.mjs',
-      readFileSync(join(fixtures, 'kernel-cert-walk.mjs'))
+      readFileSync(join(fixtures, 'kernel-probe-walk.mjs'))
     );
     await kernel.users.add({ name: 'alice' });
     await kernel.users.add({ name: 'bob' });
-    before0 = (await run(kernel, ['kernel-cert-walk'])).stdout.trim().split('\n');
+    before0 = (await run(kernel, ['kernel-probe-walk'])).stdout.trim().split('\n');
     url = `${hostUrl(srv.port)}/mcp`;
   });
 
@@ -82,14 +82,14 @@ describe('cert row: DAC under users enforce (alice and bob)', {
       adds.filter((a) => a.status !== 0).map((a) => a.stderr),
       []
     );
-    const cfg = await run(kernel, ['kernel-cert-cat', ALICE], { user: 'alice' });
+    const cfg = await run(kernel, ['kernel-probe-cat', ALICE], { user: 'alice' });
     assert.equal(Object.keys(JSON.parse(cfg.stdout).mcpServers).length, 10);
     const tools = await run(kernel, ['mcpcat', 'tools', 's3'], { user: 'alice' });
     assert.equal(tools.status, 0, tools.stderr);
   });
 
   it('alice writes nothing outside her home and /tmp', async () => {
-    const now = (await run(kernel, ['kernel-cert-walk'])).stdout.trim().split('\n');
+    const now = (await run(kernel, ['kernel-probe-walk'])).stdout.trim().split('\n');
     assert.ok(before0.length > 10, 'the walk saw almost nothing');
     const changed = now.filter((l) => !before0.includes(l)).map((l) => l.split('\t')[0]);
     assert.deepEqual(

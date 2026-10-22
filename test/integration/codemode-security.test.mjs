@@ -61,7 +61,7 @@ function runCode(script) {
   }
 }
 
-describe('codemode sandbox security (homescoop cert item 6)', () => {
+describe('codemode sandbox security', () => {
   before(setup);
   after(cleanup);
 

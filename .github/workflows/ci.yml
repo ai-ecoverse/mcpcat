@@ -1,155 +1,173 @@
-name: ci
+name: CI
 
 on:
+  pull_request:
+  merge_group:
   push:
     branches: [main]
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
-  merge_group:
-    types: [checks_requested]
 
 permissions:
-  contents: read
+  contents: write
+  actions: read
+  attestations: write
+  issues: write
+  pull-requests: write
+  statuses: write
+  id-token: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  runner:
-    runs-on: ${{ vars.CERT_LIGHT_RUNNER || 'ubuntu-latest' }}
+  ci:
+    uses: ai-ecoverse/slicc-shared-web/.github/workflows/pipeline.yml@v2.8.4
+    secrets: inherit
+    with:
+      node-version: '26'
+      test-glob: test/integration/*.test.mjs
+      shards: 4
+      timeout-minutes: 30
+      review-timeout-minutes: 90
+      review-prompt: |
+        MCPCAT
+
+        This repository is mcpcat (`@ai-ecoverse/mcpcat`): a curl for the Model Context Protocol. One npm package ships two bundles built by esbuild from `src/`: `dist/host/mcpcat.mjs`, the Node bin, and `dist/kernel/mcpcat.mjs`, a self-contained `abi: "js"` program that slicc-kernel runs inside Sliccy Seven, plus `install.sh` on the GitHub release. `docs/spec.html` and the README are the contract: read the sections the change touches first. `git diff origin/main...HEAD`, or `$RUNNER_TEMP/review/context/pr.diff`, is the change.
+
+        There is no certification after you: once this pull request passes the merge queue, semantic-release publishes it to npm from `main`, and the installer and seven's catalog pick it up. Review it as the last check before it ships.
+
+        Look for real defects, in this order:
+        1. Secrets: a token, a `${VAR}` header value, an OAuth code or refresh token or a bearer never reaches stdout, stderr, `-v` traces, argv, `mcp.json`, error messages or a served child's environment; the token store stays 0600 in a 0700 directory; `serve` and `--proxy` bind loopback, check the bearer, `Origin` and `Host`, send no CORS and never forward the caller's `Authorization`; discovery follows no link, redirect or advertised endpoint to another origin or a private address.
+        2. Code mode: scripts in the QuickJS VM reach tools and nothing else (no fetch, fs, timers, process, import) unless `--allow-shell`, and memory and deadline limits hold.
+        3. Host and kernel parity: the same flags, output, JSON and exit codes on the host and in the kernel, on every slicc-kernel from `engines.slicc-kernel` up; the kernel bundle has no imports and uses only `ctx.*`.
+        4. Processes: SIGINT, SIGTERM and timeouts end stdio server trees and served commands with no orphans, release auth locks and exit with the documented codes; promises that never settle, and races between calls sharing one refresh.
+        5. Tests: every behaviour change has an integration test in `test/integration/`, and a fix's test fails without the fix. Confirm that for a fix: copy the changed test files into `$RUNNER_TEMP/base`, build it and run them there.
+        6. Repo rules: no comments anywhere (YAML too, except `# renovate:` annotations), no unit tests in git, AGENTS.md at most 1,000 characters, and a conventional-commit title (`fix`, `feat` and `perf` release, the rest don't).
+
+        `npm ci` builds `dist/` through `prepare`; run `npm run build` after you change a tree. Run one test file with `node --test --test-timeout=30000 test/integration/<file>.test.mjs`. The review browsers aren't used by this repository. Don't report style preferences, or anything you haven't confirmed in the code or by a run.
+
+        Severity: deny for a confirmed P1 or P2: a secret exposure, a serve or proxy bypass, a code-mode escape, a crash or a command that no longer runs in the kernel, a regression in a common command without a workaround, a behaviour change without its test, or a fix whose test passes without it. A narrow problem with a workaround is P3: comment with a repro and approve. A problem in the kernel belongs to ai-ecoverse/slicc-kernel, one in seven's catalog to ai-ecoverse/slicc-bios: open it there as an issue.
+
+  released:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: read
     outputs:
-      runner: ${{ steps.pick.outputs.runner }}
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - id: pick
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
-        env:
-          FORCED: ${{ vars.CI_RUNNER }}
-          POOL: ${{ vars.CERT_RUNNER }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          script: |
-            const hosted = 'ubuntu-latest';
-            const pick = async (runner, why) => {
-              core.setOutput('runner', runner);
-              await core.summary.addRaw(`runner: ${runner} (${why})\n`).write();
-            };
-            if (process.env.FORCED) return await pick(process.env.FORCED, 'vars.CI_RUNNER');
-            const pool = process.env.POOL;
-            const { owner, repo } = context.repo;
-            if (context.eventName === 'pull_request') {
-              const head = context.payload.pull_request.head.repo;
-              const same = head && head.full_name === `${owner}/${repo}`;
-              return same ? await pick(pool, 'same-repo PR') : await pick(hosted, 'fork PR');
-            }
-            if (context.eventName === 'merge_group') {
-              const base = context.payload.merge_group.base_ref.replace('refs/heads/', '');
-              const q = await github.graphql(
-                `query($o:String!,$n:String!,$b:String!){repository(owner:$o,name:$n){mergeQueue(branch:$b){entries(first:100){nodes{pullRequest{number isCrossRepository}}}}}}`,
-                { o: owner, n: repo, b: base }
-              );
-              const entries = q.repository.mergeQueue?.entries?.nodes ?? [];
-              const forks = entries.filter((e) => e.pullRequest?.isCrossRepository !== false);
-              return forks.length === 0
-                ? await pick(pool, `merge group, ${entries.length} same-repo entries`)
-                : await pick(hosted, `merge group with a fork or unknown PR: ${forks.map((e) => e.pullRequest?.number).join(', ')}`);
-            }
-            await pick(hosted, context.eventName);
+          persist-credentials: false
 
-  ci:
-    needs: runner
-    uses: ai-ecoverse/slicc-shared-web/.github/workflows/node-ci.yml@v1.30.8
-    with:
-      runs-on: ${{ needs.runner.outputs.runner }}
-      # renovate: datasource=node-version depName=node versioning=node
-      node-version: '26'
-      chromium: false
+      - id: version
+        run: |
+          git fetch --tags --force --quiet origin
+          version=$(git tag --points-at HEAD --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -V | tail -1 || true)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release: ${version:-none} at $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
 
-  host-floor:
-    runs-on: ${{ needs.runner.outputs.runner }}
-    needs: runner
+  binaries:
+    needs: released
+    if: needs.released.outputs.version != ''
+    runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      LEFTHOOK: '0'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      - name: Host integration suite on the engines.node floor
-        run: |
-          floor=$(node -p "require('./package.json').engines.node.replace(/^>=/, '')")
-          [ "$(node -p 'process.versions.node.split(".")[0]')" = "$floor" ]
-          npm run test:integration
-
-  cert:
-    runs-on: ${{ needs.runner.outputs.runner }}
-    needs: runner
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          # renovate: datasource=node-version depName=node versioning=node
-          node-version: '26'
-      - run: npm ci
-      - name: Run cert with the kernel slicc-bios ships
-        run: |
-          kernel=$(node -p "require('@ai-ecoverse/slicc-bios/src/packages/package.json').dependencies['@ai-ecoverse/slicc-kernel']")
-          agent=$(node -p "require('@ai-ecoverse/slicc-bios/src/packages/agent/package.json').peerDependencies?.['@ai-ecoverse/slicc-kernel'] ?? require('@ai-ecoverse/slicc-bios/src/packages/agent/package.json').dependencies?.['@ai-ecoverse/slicc-kernel'] ?? ''")
-          [ -z "$agent" ] || [ "$agent" = "$kernel" ]
-          echo "slicc-bios ships slicc-kernel $kernel"
-          set -o pipefail
-          npm run cert -- "--kernel=@ai-ecoverse/slicc-kernel@$kernel" 2>&1 | tee "$RUNNER_TEMP/cert.log"
-          verdict=$(grep -E "^cert: kernel $kernel — [1-9][0-9]* kernel tests passed$" "$RUNNER_TEMP/cert.log" | tail -1 || true)
-          if [ -z "$verdict" ]; then
-            echo "cert: FAIL — cert printed no passing verdict for slicc-kernel $kernel"
-            exit 1
-          fi
-          echo "cert: PASS — $verdict"
-        env:
-          NODE_NO_WARNINGS: '1'
-
-  cert-review:
     permissions:
-      actions: read
       contents: write
-      issues: write
-      pull-requests: write
-      statuses: write
-    uses: ./.github/workflows/cert-review.yml
-    secrets: inherit
-
-  all-green:
-    if: always()
-    needs: [runner, ci, host-floor, cert, cert-review]
-    runs-on: ${{ vars.CERT_LIGHT_RUNNER || 'ubuntu-latest' }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.released.outputs.version }}
+      TAG: v${{ needs.released.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      # renovate: datasource=docker depName=alpine
+      ALPINE_IMAGE: alpine:3.24.2
     steps:
-      - name: The verdict the merge queue requires
-        env:
-          RUNNER_RESULT: ${{ needs.runner.result }}
-          CI_RESULT: ${{ needs.ci.result }}
-          FLOOR_RESULT: ${{ needs.host-floor.result }}
-          CERT_RESULT: ${{ needs.cert.result }}
-          REVIEW_RESULT: ${{ needs.cert-review.result }}
-          VERDICT: ${{ needs.cert-review.outputs.verdict }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '26'
+
+      - name: Shellcheck
+        run: shellcheck -s sh install.sh test/integration/test-install.sh test/integration/hide-node.sh
+
+      - name: Fetch the published npm tarball
         run: |
-          line="runner=${RUNNER_RESULT:-none} ci=${CI_RESULT:-none} host-floor=${FLOOR_RESULT:-none} cert=${CERT_RESULT:-none} cert-review=${REVIEW_RESULT:-none} (${VERDICT:-no verdict})"
-          ok=true
-          for r in "$RUNNER_RESULT" "$CI_RESULT" "$FLOOR_RESULT" "$CERT_RESULT" "$REVIEW_RESULT"; do [ "$r" = success ] || ok=false; done
-          case "$VERDICT" in certified | not-behaviour | none) ;; *) ok=false ;; esac
-          if [ "$ok" = true ]; then
-            echo "all-green: PASS $line"
-            exit 0
+          for _ in $(seq 1 30); do
+            npm view "@ai-ecoverse/mcpcat@$VERSION" version >/dev/null 2>&1 && break
+            sleep 10
+          done
+          mkdir assets
+          npm pack "@ai-ecoverse/mcpcat@$VERSION" --pack-destination assets
+          mv "assets/ai-ecoverse-mcpcat-$VERSION.tgz" "assets/mcpcat-$VERSION.tgz"
+          cd assets && sha256sum "mcpcat-$VERSION.tgz" | tee SHA256SUMS
+
+      - name: Installer test, alpine with nodejs
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w -e VERSION -e EXPECT_MANAGED_NODE=0 "$ALPINE_IMAGE" sh -euc '
+            apk add --no-cache python3 tar xz nodejs >/dev/null
+            sh test/integration/test-install.sh assets "$VERSION"
+          ' 2>&1 | tee "$RUNNER_TEMP/install.log"
+          grep -qx 'All installer tests passed.' "$RUNNER_TEMP/install.log" || { echo "installer: FAIL, test-install.sh printed no verdict"; exit 1; }
+
+      - name: Installer test, alpine without node (musl rejection)
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w "$ALPINE_IMAGE" sh -euc '
+            if SLICC_INSTALL_BASE_URL="http://dummy" sh install.sh 2>/tmp/err.txt; then
+              echo "FAIL: should have exited 1 on musl without node" >&2
+              exit 1
+            fi
+            grep -q "apk add nodejs" /tmp/err.txt || { echo "FAIL: expected apk hint" >&2; cat /tmp/err.txt >&2; exit 1; }
+            echo "OK: musl rejection message shown"
+          '
+
+      - name: Installer test, ubuntu with node
+        env:
+          EXPECT_MANAGED_NODE: '0'
+        run: |
+          sh test/integration/test-install.sh assets "$VERSION" 2>&1 | tee "$RUNNER_TEMP/install.log"
+          grep -qx 'All installer tests passed.' "$RUNNER_TEMP/install.log" || { echo "installer: FAIL, test-install.sh printed no verdict"; exit 1; }
+
+      - name: Hide system node
+        run: sh test/integration/hide-node.sh
+
+      - name: Installer test, ubuntu without node
+        env:
+          EXPECT_MANAGED_NODE: '1'
+        run: |
+          sh test/integration/test-install.sh assets "$VERSION" 2>&1 | tee "$RUNNER_TEMP/install.log"
+          grep -qx 'All installer tests passed.' "$RUNNER_TEMP/install.log" || { echo "installer: FAIL, test-install.sh printed no verdict"; exit 1; }
+
+      - name: Attach the assets to the GitHub release
+        run: |
+          cp install.sh assets/
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" assets/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" assets/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --verify-tag --prerelease
           fi
-          echo "all-green: FAIL $line"
-          echo "::error title=all-green::$line"
-          exit 1
+
+      - name: Promote to latest if highest semver with assets
+        run: |
+          highest=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '[.[] | select(.assets | length > 1) | select(.prerelease | not) | select(.draft | not) | .tag_name | ltrimstr("v")] + ["'"$VERSION"'"] | sort_by(split(".") | map(tonumber)) | last')
+          if [ "$highest" = "$VERSION" ]; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease=false --latest
+          else
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease=false
+          fi
+
+      - name: Keep a failed release as a prerelease
+        if: failure()
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes "Installer assets failed to build. See the workflow run." --verify-tag --prerelease
+          fi

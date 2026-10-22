@@ -4,7 +4,7 @@ export default async function main(ctx) {
     await ctx.write(1, typeof d === 'string' ? new TextEncoder().encode(d) : d);
     return 0;
   } catch (e) {
-    await ctx.write(2, new TextEncoder().encode(`kernel-cert-cat: ${e.code || e.message}\n`));
+    await ctx.write(2, new TextEncoder().encode(`kernel-probe-cat: ${e.code || e.message}\n`));
     return 1;
   }
 }

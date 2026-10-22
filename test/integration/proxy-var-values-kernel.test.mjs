@@ -60,7 +60,7 @@ describe('kernel: proxy hides each ${VAR} value of a header', () => {
   const urls = {};
 
   before(async () => {
-    up = await startFixture('cert-reflect.mjs');
+    up = await startFixture('reflect-server.mjs');
     const target = `${hostUrl(up.port)}/tok/mcp`;
     kernel = await createNodeKernel({
       network: { transport: nodeTransport({ hostLoopback: true }) },

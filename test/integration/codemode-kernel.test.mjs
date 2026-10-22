@@ -165,7 +165,7 @@ describe('kernel: codemode timeout', () => {
   });
 });
 
-describe('kernel: codemode sandbox security (cert item 6)', () => {
+describe('kernel: codemode sandbox security', () => {
   let kernel;
 
   before(async () => {

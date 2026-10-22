@@ -7,38 +7,38 @@ import { after, before, describe, it } from 'node:test';
 import { isStandalone, mcpcatArgs, mcpcatBin } from './helpers/bin.mjs';
 import { filesUnder, homeEnv, root, run, scratchHome, startFixture } from './helpers/rows.mjs';
 
-const MARK = 'certrowSecretQ7v3Zk9';
+const MARK = 'secrowSecretQ7v3Zk9';
 
-describe('cert row: secrets redaction', () => {
+describe('security: secrets redaction', () => {
   let srv;
   let home;
   let env;
-  const header = ['-H', 'X-Api: ${CERT_ROW_TOKEN}'];
+  const header = ['-H', 'X-Api: ${ROW_TOKEN}'];
 
   before(async () => {
-    srv = await startFixture('cert-reflect.mjs');
+    srv = await startFixture('reflect-server.mjs');
     home = scratchHome('secrets');
-    env = homeEnv(home, { CERT_ROW_TOKEN: MARK });
+    env = homeEnv(home, { ROW_TOKEN: MARK });
     writeFileSync(
       join(home, '.pi/agent/mcp.json'),
       JSON.stringify({
         mcpServers: {
-          r: { url: `${srv.base}/mcp`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
-          r500: { url: `${srv.base}/500`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
-          r403: { url: `${srv.base}/403`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
-          r401: { url: `${srv.base}/401`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
-          rask: { url: `${srv.base}/ask`, headers: { 'X-Api': '${CERT_ROW_TOKEN}' } },
+          r: { url: `${srv.base}/mcp`, headers: { 'X-Api': '${ROW_TOKEN}' } },
+          r500: { url: `${srv.base}/500`, headers: { 'X-Api': '${ROW_TOKEN}' } },
+          r403: { url: `${srv.base}/403`, headers: { 'X-Api': '${ROW_TOKEN}' } },
+          r401: { url: `${srv.base}/401`, headers: { 'X-Api': '${ROW_TOKEN}' } },
+          rask: { url: `${srv.base}/ask`, headers: { 'X-Api': '${ROW_TOKEN}' } },
           rtok: {
             url: `${srv.base}/tok/mcp`,
-            headers: { Authorization: 'Bearer ${CERT_ROW_TOKEN}' },
+            headers: { Authorization: 'Bearer ${ROW_TOKEN}' },
           },
           rtok500: {
             url: `${srv.base}/tok/500`,
-            headers: { Authorization: 'Bearer ${CERT_ROW_TOKEN}' },
+            headers: { Authorization: 'Bearer ${ROW_TOKEN}' },
           },
           rtokask: {
             url: `${srv.base}/tok/ask`,
-            headers: { Authorization: 'Bearer ${CERT_ROW_TOKEN}' },
+            headers: { Authorization: 'Bearer ${ROW_TOKEN}' },
           },
         },
       })
@@ -158,16 +158,8 @@ describe('cert row: secrets redaction', () => {
 
   it('retries when the value matches a protocol key', () => {
     const r = run(
-      [
-        '-H',
-        'X-Api: ${CERT_ROW_KEY}',
-        '--respond',
-        '{"answer":"y"}',
-        'call',
-        `${srv.base}/ask`,
-        'ask',
-      ],
-      { env: { ...env, CERT_ROW_KEY: 'input' } }
+      ['-H', 'X-Api: ${ROW_KEY}', '--respond', '{"answer":"y"}', 'call', `${srv.base}/ask`, 'ask'],
+      { env: { ...env, ROW_KEY: 'input' } }
     );
     assert.equal(r.status, 5, r.stderr.slice(0, 600));
     assert.ok(r.stderr.includes('retry failed'), r.stderr.slice(0, 600));
@@ -180,13 +172,13 @@ describe('cert row: secrets redaction', () => {
     it(`terminates when the value is the marker: ${name}`, () => {
       const { cmd, args } = mcpcatArgs([
         '-H',
-        'X-Api: ${CERT_ROW_KEY}',
+        'X-Api: ${ROW_KEY}',
         'call',
         `${srv.base}/${path}`,
         tool,
       ]);
       const r = spawnSync(cmd, args, {
-        env: { ...env, CERT_ROW_KEY: 'REDACTED' },
+        env: { ...env, ROW_KEY: 'REDACTED' },
         timeout: 10_000,
         killSignal: 'SIGKILL',
         encoding: 'utf8',
@@ -196,15 +188,15 @@ describe('cert row: secrets redaction', () => {
     });
   }
 
-  const bearer = ['-H', 'Authorization: Bearer ${CERT_ROW_TOKEN}'];
+  const bearer = ['-H', 'Authorization: Bearer ${ROW_TOKEN}'];
   const SUFFIX = 'SuffixLeak77';
   const tokEnv = () => ({
     ...env,
-    CERT_ROW_ID: 'certrowIdPfx01',
-    CERT_ROW_KEY2: `certrowIdPfx01${SUFFIX}`,
-    CERT_ROW_HEAD: 'ShiftHeadQ7v',
-    CERT_ROW_TAIL: 'JK',
-    CERT_ROW_SHIFT: 'hiftHeadQ7vJK',
+    ROW_ID: 'secrowIdPfx01',
+    ROW_KEY2: `secrowIdPfx01${SUFFIX}`,
+    ROW_HEAD: 'ShiftHeadQ7v',
+    ROW_TAIL: 'JK',
+    ROW_SHIFT: 'hiftHeadQ7vJK',
   });
   const tokenCases = {
     '-H Bearer ${VAR}, JSON-RPC error': () => [...bearer, 'call', `${srv.base}/tok/mcp`, 'err'],
@@ -229,9 +221,9 @@ describe('cert row: secrets redaction', () => {
     'mcp.json Bearer ${VAR}, input request, --json': () => ['--json', 'call', 'rtokask', 'ask'],
     'a ${VAR} value that extends another': () => [
       '-H',
-      'X-Id: ${CERT_ROW_ID}',
+      'X-Id: ${ROW_ID}',
       '-H',
-      'X-Key: ${CERT_ROW_KEY2}',
+      'X-Key: ${ROW_KEY2}',
       'call',
       `${srv.base}/tok/mcp`,
       'err',
@@ -242,9 +234,9 @@ describe('cert row: secrets redaction', () => {
     it(`masks a ${'${VAR}'} value that overlaps another at a shift: ${flag.join(' ') || 'plain'}`, async () => {
       const argv = [
         '-H',
-        'Authorization: Bearer ${CERT_ROW_HEAD}${CERT_ROW_TAIL}',
+        'Authorization: Bearer ${ROW_HEAD}${ROW_TAIL}',
         '-H',
-        'X-Shift: ${CERT_ROW_SHIFT}',
+        'X-Shift: ${ROW_SHIFT}',
         ...flag,
         'call',
         `${srv.base}/tok/mcp`,
@@ -303,12 +295,12 @@ describe('cert row: secrets redaction', () => {
   }
 
   const addCases = {
-    '/500': [['-H', 'X-Api: ${CERT_ROW_TOKEN}'], '/500'],
+    '/500': [['-H', 'X-Api: ${ROW_TOKEN}'], '/500'],
     '/tok/401': [bearer, '/tok/401'],
     '/tok/403': [bearer, '/tok/403'],
     '/tok/500': [bearer, '/tok/500'],
     'a value that extends another': [
-      ['-H', 'X-Id: ${CERT_ROW_ID}', '-H', 'X-Key: ${CERT_ROW_KEY2}'],
+      ['-H', 'X-Id: ${ROW_ID}', '-H', 'X-Key: ${ROW_KEY2}'],
       '/tok/401',
     ],
   };
@@ -333,13 +325,13 @@ describe('cert row: secrets redaction', () => {
   });
 
   it('refuses an unset ${VAR} with exit 2', () => {
-    const r = run(['-H', 'X-Api: ${CERT_ROW_UNSET}', 'call', `${srv.base}/mcp`, 'echo'], { env });
+    const r = run(['-H', 'X-Api: ${ROW_UNSET}', 'call', `${srv.base}/mcp`, 'echo'], { env });
     assert.equal(r.status, 2, r.stderr);
   });
 
   it('writes the value to no file and keeps ${VAR} in mcp.json', () => {
     const hits = filesUnder(home).filter((p) => readFileSync(p).includes(MARK));
     assert.deepEqual(hits, []);
-    assert.ok(readFileSync(join(home, '.pi/agent/mcp.json'), 'utf8').includes('${CERT_ROW_TOKEN}'));
+    assert.ok(readFileSync(join(home, '.pi/agent/mcp.json'), 'utf8').includes('${ROW_TOKEN}'));
   });
 });
