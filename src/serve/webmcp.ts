@@ -1,4 +1,4 @@
-import type { Platform, SpawnResult } from '../platform/types.ts';
+import type { Platform, SpawnResult, WebSocketChannel } from '../platform/types.ts';
 import type { JsonObjectSchema } from './catalog.ts';
 import type { RpcTool, ToolListing, ToolRunResult } from './jsonrpc.ts';
 
@@ -143,72 +143,93 @@ export interface DialogWatcher {
 interface WatchState {
   open?: string;
   enableSentAt?: number;
-  socket?: WebSocket;
+  channel?: WebSocketChannel;
 }
 
-function parseCdp(data: unknown): CdpMessage | undefined {
+function parseCdp(data: string | Uint8Array): CdpMessage | undefined {
   try {
-    return JSON.parse(String(data)) as CdpMessage;
+    return JSON.parse(
+      typeof data === 'string' ? data : new TextDecoder().decode(data)
+    ) as CdpMessage;
   } catch {
     return undefined;
   }
 }
 
-function applyCdp(state: WatchState, ws: WebSocket, msg: CdpMessage, settle: () => void): void {
+function applyCdp(
+  state: WatchState,
+  channel: WebSocketChannel,
+  send: (message: unknown) => void,
+  msg: CdpMessage,
+  settle: () => void
+): void {
   if (msg.method === 'Page.javascriptDialogOpening') {
     state.open = typeof msg.params?.type === 'string' ? msg.params.type : 'dialog';
   } else if (msg.method === 'Page.javascriptDialogClosed') {
     state.open = undefined;
   } else if (msg.method === 'Target.detachedFromTarget') {
-    ws.close();
+    channel.close();
   } else if (msg.id === 1) {
     const sessionId = msg.result?.sessionId;
     if (typeof sessionId !== 'string') {
-      ws.close();
+      channel.close();
       return;
     }
     state.enableSentAt = Date.now();
-    ws.send(JSON.stringify({ id: 2, sessionId, method: 'Page.enable' }));
+    send({ id: 2, sessionId, method: 'Page.enable' });
   } else if (msg.id === 2) {
     state.enableSentAt = undefined;
     settle();
   }
 }
 
-function attachSocket(state: WatchState, url: string, targetId: string): Promise<void> {
-  return new Promise<void>((settle) => {
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(url);
-    } catch {
-      settle();
-      return;
+async function pump(
+  state: WatchState,
+  channel: WebSocketChannel,
+  send: (message: unknown) => void,
+  settle: () => void
+): Promise<void> {
+  const reader = channel.readable.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      const msg = parseCdp(value);
+      if (msg) applyCdp(state, channel, send, msg, settle);
     }
-    state.socket = ws;
-    const drop = () => {
-      if (state.socket === ws) {
-        state.socket = undefined;
-        state.open = undefined;
-        state.enableSentAt = undefined;
-      }
-      settle();
-    };
-    ws.onerror = drop;
-    ws.onclose = drop;
-    ws.onopen = () => {
-      ws.send(
-        JSON.stringify({
-          id: 1,
-          method: 'Target.attachToTarget',
-          params: { targetId, flatten: true },
-        })
-      );
-    };
-    ws.onmessage = (event: MessageEvent) => {
-      const msg = parseCdp(event.data);
-      if (msg) applyCdp(state, ws, msg, settle);
-    };
+  } catch {
+    return;
+  }
+}
+
+async function attachSocket(
+  platform: Platform,
+  state: WatchState,
+  url: string,
+  targetId: string
+): Promise<void> {
+  const channel = await platform.websocket!(url).catch(() => undefined);
+  if (!channel) return;
+  state.channel = channel;
+  const writer = channel.writable.getWriter();
+  const send = (message: unknown) => {
+    writer.write(JSON.stringify(message)).catch(() => channel.close());
+  };
+  let settle!: () => void;
+  const settled = new Promise<void>((resolve) => {
+    settle = resolve;
   });
+  void pump(state, channel, send, settle).then(() => {
+    if (state.channel === channel) {
+      state.channel = undefined;
+      state.open = undefined;
+      state.enableSentAt = undefined;
+    }
+    channel.close();
+    settle();
+  });
+  send({ id: 1, method: 'Target.attachToTarget', params: { targetId, flatten: true } });
+  await settled;
 }
 
 export function watchJsDialogs(platform: Platform, cdp: string, targetId: string): DialogWatcher {
@@ -217,15 +238,15 @@ export function watchJsDialogs(platform: Platform, cdp: string, targetId: string
   let closed = false;
 
   const connect = async (): Promise<void> => {
-    if (typeof globalThis.WebSocket !== 'function') return;
+    if (!platform.websocket) return;
     const url = await browserSocketUrl(platform, cdp).catch(() => undefined);
     if (!url || closed) return;
-    await attachSocket(state, url, targetId);
+    await attachSocket(platform, state, url, targetId);
   };
 
   return {
     async ready() {
-      if (closed || state.socket) return;
+      if (closed || state.channel) return;
       connecting ??= connect().finally(() => {
         connecting = undefined;
       });
@@ -243,7 +264,7 @@ export function watchJsDialogs(platform: Platform, cdp: string, targetId: string
       state.enableSentAt !== undefined && Date.now() - state.enableSentAt >= DIALOG_STALL_MS,
     close() {
       closed = true;
-      state.socket?.close();
+      state.channel?.close();
     },
   };
 }
