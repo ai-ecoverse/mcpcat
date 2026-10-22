@@ -212,7 +212,11 @@ function mapDescriptionAnnotations(ann?: WebMcpAnnotations): Record<string, bool
   const mapped: Record<string, boolean> = { openWorldHint: true };
   if (!ann) return mapped;
   if (ann.readOnlyHint !== undefined) mapped.readOnlyHint = ann.readOnlyHint;
-  if (ann.consequentialHint) mapped.destructiveHint = true;
+  if (ann.untrustedContentHint) mapped.untrustedContentHint = true;
+  if (ann.consequentialHint) {
+    mapped.destructiveHint = true;
+    mapped.consequentialHint = true;
+  }
   return mapped;
 }
 
