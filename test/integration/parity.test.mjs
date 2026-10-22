@@ -18,7 +18,7 @@ function runBin(args) {
   });
 }
 
-describe('cert: host/kernel parity', () => {
+describe('host/kernel parity', () => {
   it('--version matches package.json', () => {
     const out = runBin(['--version']);
     assert.equal(out.trim(), pkg.version);

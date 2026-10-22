@@ -92,7 +92,7 @@ const env = homeEnv(scratchHome('codemode'));
 const code = (script, extra = []) => run([...extra, 'code', '--json', '-e', script], { env });
 const value = (r) => JSON.parse(r.stdout).value;
 
-describe('cert row: the code-mode sandbox', () => {
+describe('security: the code-mode sandbox', () => {
   it('exposes exactly the pinned globals', () => {
     const r = code('return Object.getOwnPropertyNames(globalThis).sort().join(",")');
     assert.equal(r.status, 0, r.stderr);

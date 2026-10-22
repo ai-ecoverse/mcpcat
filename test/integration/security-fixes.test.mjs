@@ -15,7 +15,7 @@ const fixturesDir = join(root, 'test/integration/fixtures');
 const hostBin = join(root, 'dist/host/mcpcat.mjs');
 
 function createTmpDir() {
-  const dir = join(tmpdir(), `mcpcat-cert-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = join(tmpdir(), `mcpcat-fix-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -58,7 +58,7 @@ function runCode(script, opts = {}) {
   }
 }
 
-describe('codemode: memory limit (cert item 1)', () => {
+describe('codemode: memory limit', () => {
   it('script that allocates without bound fails with exit 1', () => {
     const script = `
       const arrays = [];
@@ -98,7 +98,7 @@ describe('codemode: memory limit (cert item 1)', () => {
   });
 });
 
-describe('codemode: script cannot extend deadline (cert item 2)', () => {
+describe('codemode: script cannot extend deadline', () => {
   it('script timeout_ms cannot exceed -m', () => {
     const script = `// @options: {"timeout_ms": 300000}
 while(true){}`;
@@ -114,7 +114,7 @@ while(true){}`;
   });
 });
 
-describe('discovery: same-origin and private target guard (cert item 3)', () => {
+describe('discovery: same-origin and private target guard', () => {
   let publicServer;
   let canaryServer;
   let canaryHit;
@@ -196,7 +196,7 @@ function pidAlive(pid) {
   }
 }
 
-describe('host: SIGTERM kills tree and exits 143 (cert item 4)', () => {
+describe('host: SIGTERM kills tree and exits 143', () => {
   const slowGrandchild = join(fixturesDir, 'server-slow-grandchild.mjs');
 
   it('SIGTERM kills server and grandchild, exits code 143 signal null', async () => {
@@ -302,7 +302,7 @@ describe('host: SIGTERM kills tree and exits 143 (cert item 4)', () => {
   });
 });
 
-describe('config: EACCES reports path and exits 2 (cert item 6)', () => {
+describe('config: EACCES reports path and exits 2', () => {
   let tmpDir;
   let configPath;
 

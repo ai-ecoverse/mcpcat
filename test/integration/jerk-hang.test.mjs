@@ -104,7 +104,7 @@ describe('test isolation', () => {
   });
 
   it('every integration test file isolates PATH and HOME', () => {
-    const files = readdirSync(here).filter((f) => /\.(test|cert)\.mjs$/.test(f));
+    const files = readdirSync(here).filter((f) => /\.test\.mjs$/.test(f));
     for (const f of files) {
       const src = readFileSync(join(here, f), 'utf8');
       assert.ok(src.startsWith("import './helpers/isolate.mjs';"), `${f} does not import isolate`);

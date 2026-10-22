@@ -47,7 +47,7 @@ describe('proxy: hides each ${VAR} value of a header', () => {
   const proxies = {};
 
   before(async () => {
-    up = await startFixture('cert-reflect.mjs');
+    up = await startFixture('reflect-server.mjs');
     const home = scratchHome('proxy-vars');
     writeFileSync(
       join(home, '.pi/agent/mcp.json'),

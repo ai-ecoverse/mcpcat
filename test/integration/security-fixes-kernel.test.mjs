@@ -58,7 +58,7 @@ function runOpts() {
   return { stdout: 'pipe', stderr: 'pipe', env: { PI_CODING_AGENT_DIR: AGENT_DIR } };
 }
 
-describe('kernel: group SIGINT exits 130, not 141 (cert item 5)', () => {
+describe('kernel: group SIGINT exits 130, not 141', () => {
   let kernel;
   let client;
 
@@ -103,7 +103,7 @@ describe('kernel: group SIGINT exits 130, not 141 (cert item 5)', () => {
   });
 });
 
-describe('kernel: codemode memory limit (cert item 1)', () => {
+describe('kernel: codemode memory limit', () => {
   let kernel;
 
   before(async () => {
@@ -136,7 +136,7 @@ describe('kernel: codemode memory limit (cert item 1)', () => {
   });
 });
 
-describe('kernel: script cannot extend deadline (cert item 2)', () => {
+describe('kernel: script cannot extend deadline', () => {
   let kernel;
 
   before(async () => {

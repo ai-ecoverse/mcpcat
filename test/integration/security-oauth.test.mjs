@@ -48,7 +48,7 @@ const asLog = async (as) => (await fetch(`${as.base}/log`)).json();
 const used = (log) => Object.values(log.refresh).filter((s) => s === 'used').length;
 const leaks = (text, log) => log.issued.filter((t) => text.includes(t));
 
-describe('cert row: OAuth login, redaction, rotation and the store', () => {
+describe('security: OAuth login, redaction, rotation and the store', () => {
   let as;
   let home;
   let env;
@@ -57,7 +57,7 @@ describe('cert row: OAuth login, redaction, rotation and the store', () => {
   let first;
 
   before(async () => {
-    as = await startFixture('cert-oauth-as.mjs', { CERT_ROW_AS_TTL: '3600' });
+    as = await startFixture('security-oauth-as.mjs', { ROW_AS_TTL: '3600' });
     url = `${as.base}/mcp`;
     home = scratchHome('oauth');
     env = homeEnv(home);
@@ -122,12 +122,12 @@ describe('cert row: OAuth login, redaction, rotation and the store', () => {
 });
 
 for (const mode of ['bad-state', 'evil-redirect']) {
-  describe(`cert row: OAuth refuses a callback (${mode})`, () => {
+  describe(`security: OAuth refuses a callback (${mode})`, () => {
     let as;
     after(() => as?.child.kill('SIGTERM'));
 
     it('exits 4 and stores no token', async () => {
-      as = await startFixture('cert-oauth-as.mjs', { CERT_ROW_AS_MODE: mode });
+      as = await startFixture('security-oauth-as.mjs', { ROW_AS_MODE: mode });
       const home = scratchHome(mode);
       const r = await login(`${as.base}/mcp`, homeEnv(home), { via: 'stdin' });
       assert.equal(r.status, 4, r.err);

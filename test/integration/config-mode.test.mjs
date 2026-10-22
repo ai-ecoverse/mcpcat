@@ -68,7 +68,7 @@ describe('mcp.json is private for a kernel user with umask 022', {
     kernel = await createNodeKernel({ users: 'enforce' });
     for (const [name, module, data] of [
       ['mcpcat', 'dist/kernel/mcpcat.mjs', readFileSync(join(root, 'dist/kernel/mcpcat.mjs'))],
-      ['kernel-cert-stat', 'main.mjs', readFileSync(join(fixtures, 'kernel-cert-stat.mjs'))],
+      ['kernel-probe-stat', 'main.mjs', readFileSync(join(fixtures, 'kernel-probe-stat.mjs'))],
     ]) {
       await kernel.writeFile(`/node_modules/@ai-ecoverse/${name}/${module}`, data);
       await kernel.writeFile(
@@ -94,7 +94,7 @@ describe('mcp.json is private for a kernel user with umask 022', {
     const added = await run(['mcpcat', 'add', 'docs', URL_, '--no-probe'], { user: 'cone' });
     assert.equal(added.status, 0, added.stderr);
     const stat = await run(
-      ['kernel-cert-stat', '/home/cone/.pi/agent', '/home/cone/.pi/agent/mcp.json'],
+      ['kernel-probe-stat', '/home/cone/.pi/agent', '/home/cone/.pi/agent/mcp.json'],
       { user: 'cone' }
     );
     assert.equal(

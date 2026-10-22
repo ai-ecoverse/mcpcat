@@ -2,30 +2,29 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const certKernelDir = process.env.MCPCAT_CERT_KERNEL_DIR;
-const kernelImportBase = certKernelDir ? pathToFileURL(`${certKernelDir}/`).href : undefined;
+const overrideDir = process.env.MCPCAT_KERNEL_DIR;
+const kernelImportBase = overrideDir ? pathToFileURL(`${overrideDir}/`).href : undefined;
 
-if (certKernelDir) {
-  const kpkg = JSON.parse(readFileSync(join(certKernelDir, 'package.json'), 'utf8'));
-  console.log(`cert: using kernel ${kpkg.version} from ${certKernelDir}`);
+if (overrideDir) {
+  const kpkg = JSON.parse(readFileSync(join(overrideDir, 'package.json'), 'utf8'));
+  console.log(`kernel: using ${kpkg.version} from ${overrideDir}`);
 }
 
-const kernelMod = certKernelDir
+const kernelMod = overrideDir
   ? await import(new URL('dist/index.js', kernelImportBase).href)
   : await import('@ai-ecoverse/slicc-kernel');
 
-const kernelNodeMod = certKernelDir
+const kernelNodeMod = overrideDir
   ? await import(new URL('dist/node.js', kernelImportBase).href)
   : await import('@ai-ecoverse/slicc-kernel/node');
 
-export const kernelDir = certKernelDir;
 export const { attachKernel } = kernelMod;
 export const { createNodeKernel, nodeTransport } = kernelNodeMod;
 
 const kernelPkgVersion = JSON.parse(
   readFileSync(
-    certKernelDir
-      ? join(certKernelDir, 'package.json')
+    overrideDir
+      ? join(overrideDir, 'package.json')
       : new URL('../../../node_modules/@ai-ecoverse/slicc-kernel/package.json', import.meta.url),
     'utf8'
   )

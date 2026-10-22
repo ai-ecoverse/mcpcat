@@ -79,7 +79,7 @@ const server = createServer((req, res) => {
     if (url.startsWith('/ask') && method === 'server/discover') {
       out = rpc(id, {
         supportedVersions: ['2026-07-28'],
-        serverInfo: { name: 'cert-reflect', version: '1.0.0' },
+        serverInfo: { name: 'reflect', version: '1.0.0' },
         capabilities: { tools: {} },
       });
     } else if (url.startsWith('/ask') && method === 'tools/call') {
@@ -101,7 +101,7 @@ const server = createServer((req, res) => {
       out = rpc(id, {
         protocolVersion: '2025-11-25',
         capabilities: { tools: {} },
-        serverInfo: { name: 'cert-reflect', version: '1.0.0' },
+        serverInfo: { name: 'reflect', version: '1.0.0' },
       });
     } else if (method === 'tools/list') {
       out = rpc(id, { tools: TOOLS });

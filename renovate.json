@@ -1,3 +1,11 @@
 {
-  "extends": ["github>ai-ecoverse/slicc-shared-web"]
+  "extends": ["github>ai-ecoverse/slicc-shared-web"],
+  "packageRules": [
+    {
+      "description": "The slicc-shared-web npm package and the pipeline.yml ref in ci.yml move together, in one PR, so the hooks and the pipeline stay at one release (workflows.test.mjs holds them equal).",
+      "matchPackageNames": ["@ai-ecoverse/slicc-shared-web", "ai-ecoverse/slicc-shared-web"],
+      "groupName": "slicc-shared-web",
+      "groupSlug": "slicc-shared-web"
+    }
+  ]
 }
