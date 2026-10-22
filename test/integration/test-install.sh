@@ -52,6 +52,12 @@ fi
 BASE="http://127.0.0.1:${SERVER_PORT}"
 printf 'Asset server on %s\n' "$BASE"
 
+FLOOR="$(sed -n 's/.*"node": *">=\([0-9][0-9]*\)".*/\1/p' "$ROOT/package.json" | head -1)"
+test -n "$FLOOR" || fail "no engines.node floor in package.json"
+
+printf 'Test 0: help names the engines.node floor\n'
+sh "$ROOT/install.sh" --help | grep -q "Node ${FLOOR}+ required" || fail "install.sh --help does not say Node ${FLOOR}+"
+
 printf 'Test 1: install with custom dir\n'
 XDG_DATA_HOME="$DATA_DIR" SLICC_INSTALL_BASE_URL="$BASE" INSTALL_DIR="$INSTALL_DIR" sh "$ROOT/install.sh"
 test -x "$INSTALL_DIR/mcpcat" || fail "launcher not installed"
@@ -61,6 +67,11 @@ test -n "$VERSION" || fail "no version output"
 if [ -n "$EXPECTED_VERSION" ]; then
   test "$VERSION" = "$EXPECTED_VERSION" || fail "version mismatch: got $VERSION, expected $EXPECTED_VERSION"
 fi
+LAUNCHER_NODE="$(sed -n 's/^exec "\([^"]*\)".*/\1/p' "$INSTALL_DIR/mcpcat")"
+test -x "$LAUNCHER_NODE" || fail "launcher node not found: $LAUNCHER_NODE"
+LAUNCHER_MAJOR="$("$LAUNCHER_NODE" --version | sed 's/^v//' | cut -d. -f1)"
+printf 'Launcher node: %s (major %s, floor %s)\n' "$LAUNCHER_NODE" "$LAUNCHER_MAJOR" "$FLOOR"
+test "$LAUNCHER_MAJOR" -ge "$FLOOR" || fail "launcher node $LAUNCHER_MAJOR is below engines.node $FLOOR"
 case "${EXPECT_MANAGED_NODE:-}" in
   1) test -x "$DATA_DIR/mcpcat/node/bin/node" || fail "expected the installer to download node into $DATA_DIR/mcpcat/node" ;;
   0) test ! -e "$DATA_DIR/mcpcat/node" || fail "node was downloaded even though it was on PATH" ;;

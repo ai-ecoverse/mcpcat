@@ -3,7 +3,7 @@ set -eu
 
 BIN_NAME="mcpcat"
 REPO="ai-ecoverse/mcpcat"
-MIN_NODE=24
+MIN_NODE=26
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/mcpcat"
 
 usage() {
@@ -118,6 +118,12 @@ find_node() {
   return 1
 }
 
+pick_node_version() {
+  printf '%s\n' "$1" | tr '{' '\n' | \
+    sed -n 's/.*"version":"v\([0-9][0-9]*\)\.\([0-9][0-9.]*\)".*"lts":\([^,}]*\).*/\1 \2 \3/p' | \
+    awk -v min="$MIN_NODE" -v lts="$2" '$1 + 0 >= min + 0 && (lts == 0 || $3 != "false") { print "v" $1 "." $2; exit }'
+}
+
 ensure_node() {
   if _found="$(find_node)"; then
     printf '%s' "$_found"
@@ -129,22 +135,25 @@ ensure_node() {
 
   if [ "$OS" = "linux" ] && is_musl; then
     printf '%s: musl detected; no official Node binary available.\n' "$BIN_NAME" >&2
-    printf 'Install Node with your package manager, e.g. apk add nodejs, then re-run.\n' >&2
+    printf 'Install Node %s+ with your package manager, e.g. apk add nodejs-current, then re-run.\n' "$MIN_NODE" >&2
     exit 1
   fi
 
-  printf 'No suitable Node found; downloading official LTS...\n' >&2
-  LTS_VERSION="$(fetch_text "${NODE_DIST_BASE}/index.json" | \
-    sed -n 's/.*"version":"\([^"]*\)".*"lts":[^f][^a][^l][^s][^e].*/\1/p' | head -1)"
+  printf 'No suitable Node found; downloading official Node %s+...\n' "$MIN_NODE" >&2
+  NODE_INDEX="$(fetch_text "${NODE_DIST_BASE}/index.json")"
+  NODE_VERSION="$(pick_node_version "$NODE_INDEX" 1)"
+  if [ -z "$NODE_VERSION" ]; then
+    NODE_VERSION="$(pick_node_version "$NODE_INDEX" 0)"
+  fi
 
-  if [ -z "$LTS_VERSION" ]; then
-    printf '%s: could not determine latest LTS version\n' "$BIN_NAME" >&2
+  if [ -z "$NODE_VERSION" ]; then
+    printf '%s: could not find a Node %s+ release\n' "$BIN_NAME" "$MIN_NODE" >&2
     exit 1
   fi
 
-  NODE_ARCHIVE="node-${LTS_VERSION}-${OS}-${ARCH}.tar.xz"
-  NODE_URL="${NODE_DIST_BASE}/${LTS_VERSION}/${NODE_ARCHIVE}"
-  SUMS_URL="${NODE_DIST_BASE}/${LTS_VERSION}/SHASUMS256.txt"
+  NODE_ARCHIVE="node-${NODE_VERSION}-${OS}-${ARCH}.tar.xz"
+  NODE_URL="${NODE_DIST_BASE}/${NODE_VERSION}/${NODE_ARCHIVE}"
+  SUMS_URL="${NODE_DIST_BASE}/${NODE_VERSION}/SHASUMS256.txt"
 
   TMPD="$(mktemp -d)"
 
@@ -182,7 +191,7 @@ ensure_node() {
   rm -rf "$NODE_DEST"
   mv "$EXTRACT_TMP" "$NODE_DEST"
 
-  printf 'Installed Node %s to %s\n' "$LTS_VERSION" "$NODE_DEST" >&2
+  printf 'Installed Node %s to %s\n' "$NODE_VERSION" "$NODE_DEST" >&2
   printf '%s' "$NODE_DEST/bin/node"
 }
 

@@ -111,10 +111,25 @@ jobs:
       - name: Installer test, alpine with nodejs
         run: |
           docker run --rm -v "$PWD:/w" -w /w -e VERSION -e EXPECT_MANAGED_NODE=0 "$ALPINE_IMAGE" sh -euc '
-            apk add --no-cache python3 tar xz nodejs >/dev/null
+            apk add --no-cache python3 tar xz nodejs-current >/dev/null
             sh test/integration/test-install.sh assets "$VERSION"
           ' 2>&1 | tee "$RUNNER_TEMP/install.log"
           grep -qx 'All installer tests passed.' "$RUNNER_TEMP/install.log" || { echo "installer: FAIL, test-install.sh printed no verdict"; exit 1; }
+
+      - name: Installer test, alpine with a node below engines.node
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w "$ALPINE_IMAGE" sh -euc '
+            apk add --no-cache nodejs >/dev/null
+            floor="$(sed -n "s/.*\"node\": *\">=\([0-9][0-9]*\)\".*/\1/p" package.json | head -1)"
+            major="$(node --version | sed "s/^v//" | cut -d. -f1)"
+            [ "$major" -lt "$floor" ] || { echo "SKIP: apk nodejs $major is not below $floor"; exit 0; }
+            if SLICC_INSTALL_BASE_URL="http://dummy" sh install.sh 2>/tmp/err.txt; then
+              echo "FAIL: accepted node $major below engines.node $floor" >&2
+              exit 1
+            fi
+            grep -q "apk add nodejs-current" /tmp/err.txt || { echo "FAIL: expected apk hint" >&2; cat /tmp/err.txt >&2; exit 1; }
+            echo "OK: node $major rejected below $floor"
+          '
 
       - name: Installer test, alpine without node (musl rejection)
         run: |
@@ -123,7 +138,7 @@ jobs:
               echo "FAIL: should have exited 1 on musl without node" >&2
               exit 1
             fi
-            grep -q "apk add nodejs" /tmp/err.txt || { echo "FAIL: expected apk hint" >&2; cat /tmp/err.txt >&2; exit 1; }
+            grep -q "apk add nodejs-current" /tmp/err.txt || { echo "FAIL: expected apk hint" >&2; cat /tmp/err.txt >&2; exit 1; }
             echo "OK: musl rejection message shown"
           '
 
