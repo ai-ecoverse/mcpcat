@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { kernelTestFiles } from '../../scripts/kernel-test-files.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const certScript = join(root, 'scripts/cert.mjs');
@@ -51,17 +52,34 @@ describe('cert runner: kernel given but no kernel tests passed', () => {
 });
 
 const integrationDir = join(root, 'test/integration');
-const createsKernel = /createNodeKernel|createKernel|slicc-kernel/;
+const createsKernel = (src) =>
+  /\bcreate(Node)?Kernel\s*\(/.test(src) || /from '\.\/helpers\/kernel\.mjs'/.test(src);
 
 function filesThatCreateKernels() {
   return readdirSync(integrationDir)
     .filter((f) => f.endsWith('.mjs'))
-    .filter((f) => createsKernel.test(readFileSync(join(integrationDir, f), 'utf8')))
+    .filter((f) => createsKernel(readFileSync(join(integrationDir, f), 'utf8')))
     .filter((f) => f !== 'cert-runner.test.mjs')
     .sort();
 }
 
 describe('cert runner: kernel test set', () => {
+  it('the scan finds the same files as the cert kernel test set', () => {
+    assert.deepEqual(
+      filesThatCreateKernels(),
+      kernelTestFiles().map((f) => f.slice('test/integration/'.length))
+    );
+  });
+
+  it('a file that only names slicc-kernel in a string does not create a kernel', () => {
+    assert.equal(createsKernel("const tgz = 'slicc-kernel-0.0.0.tgz';"), false);
+    assert.equal(createsKernel("await createNodeKernel({ cwd: '/' });"), true);
+    assert.equal(
+      createsKernel(['import { createKernel } from ', "'./helpers/kernel.mjs';"].join('')),
+      true
+    );
+  });
+
   it('cert --kernel runs every test file that creates a kernel', () => {
     const expected = filesThatCreateKernels();
     assert.ok(expected.includes('bridge-seal.test.mjs'), 'scan should find bridge-seal');
