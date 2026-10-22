@@ -10,6 +10,7 @@ EXPECTED_VERSION="${2:-}"
 
 INSTALL_DIR="$(mktemp -d)"
 DATA_DIR="$(mktemp -d)"
+SERVE_DIR="$(mktemp -d)"
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -19,14 +20,16 @@ fail() {
 SERVER_PID=""
 cleanup() {
   if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null || true; fi
-  rm -rf "$INSTALL_DIR" "$DATA_DIR"
+  rm -rf "$INSTALL_DIR" "$DATA_DIR" "$SERVE_DIR"
 }
 trap cleanup EXIT
+cp -R "$ASSET_DIR/." "$SERVE_DIR/"
+chmod -R u+w "$SERVE_DIR"
 
 PORT_FILE="$(mktemp)"
 python3 -c "
 import http.server, socketserver, os
-os.chdir('$ASSET_DIR')
+os.chdir('$SERVE_DIR')
 h = http.server.SimpleHTTPRequestHandler
 s = socketserver.TCPServer(('127.0.0.1', 0), h)
 with open('$PORT_FILE', 'w') as f:
@@ -83,13 +86,9 @@ VERSION2="$("$INSTALL_DIR/mcpcat" --version)"
 test "$VERSION" = "$VERSION2" || fail "version changed after reinstall"
 
 printf 'Test 3: checksum mismatch\n'
-cp "$ASSET_DIR/SHA256SUMS" "$ASSET_DIR/SHA256SUMS.bak"
-sed 's/^.\{8\}/aaaaaaaa/' "$ASSET_DIR/SHA256SUMS.bak" > "$ASSET_DIR/SHA256SUMS"
+sed 's/^.\{8\}/aaaaaaaa/' "$ASSET_DIR/SHA256SUMS" > "$SERVE_DIR/SHA256SUMS"
 if XDG_DATA_HOME="$DATA_DIR" SLICC_INSTALL_BASE_URL="$BASE" INSTALL_DIR="$INSTALL_DIR" sh "$ROOT/install.sh" 2>/dev/null; then
-  cp "$ASSET_DIR/SHA256SUMS.bak" "$ASSET_DIR/SHA256SUMS"
   fail "should have rejected tampered checksum"
 fi
-cp "$ASSET_DIR/SHA256SUMS.bak" "$ASSET_DIR/SHA256SUMS"
-rm -f "$ASSET_DIR/SHA256SUMS.bak"
 
 printf 'All installer tests passed.\n'
