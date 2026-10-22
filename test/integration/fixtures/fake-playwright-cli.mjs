@@ -84,17 +84,23 @@ if (command === 'webmcp-list') {
   }
   record({ command, tab: usedTab() });
   drift();
-  try {
-    const data = readFileSync(fixtureFile, 'utf8');
-    process.stdout.write(data);
+  if (process.env.FAKE_PWCLI_HANG_LIST) {
+    if (process.env.FAKE_PWCLI_DIALOG_URL) fetch(process.env.FAKE_PWCLI_DIALOG_URL).catch(() => {});
+    setInterval(() => {}, 1000);
+  } else if (tab && !tabIds.includes(tab)) {
+    process.stdout.write('[]\n');
     process.exit(0);
-  } catch (err) {
-    process.stderr.write(`fixture not found: ${fixtureFile}\n`);
-    process.exit(2);
+  } else {
+    try {
+      const data = readFileSync(fixtureFile, 'utf8');
+      process.stdout.write(data);
+      process.exit(0);
+    } catch (err) {
+      process.stderr.write(`fixture not found: ${fixtureFile}\n`);
+      process.exit(2);
+    }
   }
-}
-
-if (command === 'webmcp-call') {
+} else if (command === 'webmcp-call') {
   const toolName = filtered[1];
   const stdinFlag = filtered[2];
   const allowConsequential = filtered.includes('--allow-consequential');
@@ -150,6 +156,13 @@ if (command === 'webmcp-call') {
         allowConsequential,
       });
       process.stderr.write(`CALL_LOG:${callLog}\n`);
+    }
+
+    if (process.env.FAKE_PWCLI_HANG) {
+      if (process.env.FAKE_PWCLI_DIALOG_URL)
+        fetch(process.env.FAKE_PWCLI_DIALOG_URL).catch(() => {});
+      setInterval(() => {}, 1000);
+      return;
     }
 
     if (process.env.FAKE_PWCLI_EXIT_CODE) {

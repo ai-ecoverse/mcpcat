@@ -14,6 +14,14 @@ export interface ToolRunResult {
   meta?: Record<string, unknown>;
 }
 
+export interface ToolListing {
+  tools: RpcTool[];
+  hidden?: Record<string, string>;
+  error?: string;
+}
+
+export type ToolSource = RpcTool[] | (() => Promise<ToolListing>);
+
 export interface RpcOutcome {
   status: number;
   contentType: string;
@@ -28,7 +36,7 @@ type RpcId = string | number | null;
 
 export async function handleJsonRpc(
   raw: string,
-  tools: RpcTool[],
+  source: ToolSource,
   call: (name: string, args: unknown) => Promise<ToolRunResult>,
   serverName: string,
   serverVersion: string
@@ -49,22 +57,32 @@ export async function handleJsonRpc(
   if (method === 'initialize')
     return rpcOk(id, initializeResult(params, serverName, serverVersion));
   if (method === 'server/discover') return rpcOk(id, discoverResult(serverName, serverVersion));
-  if (method === 'tools/list') return rpcOk(id, { tools });
   if (method === 'ping') return rpcOk(id, {});
-  if (method === 'tools/call') return toolCall(id, params, tools, call);
+  if (method === 'tools/list' || method === 'tools/call') {
+    const listing = Array.isArray(source) ? { tools: source } : await source();
+    if (listing.error) return rpcError(id, -32000, listing.error);
+    if (method === 'tools/call') return toolCall(id, params, listing, call);
+    const hidden = listing.hidden && Object.keys(listing.hidden).length > 0 ? listing.hidden : null;
+    return rpcOk(id, {
+      tools: listing.tools,
+      ...(hidden ? { _meta: { 'io.mcpcat/hidden': hidden } } : {}),
+    });
+  }
   return rpcError(id, -32601, `Method not found: ${method}`);
 }
 
 async function toolCall(
   id: RpcId,
   params: unknown,
-  tools: RpcTool[],
+  { tools, hidden }: ToolListing,
   call: (name: string, args: unknown) => Promise<ToolRunResult>
 ): Promise<RpcOutcome> {
   const name = params && typeof params === 'object' ? readString(params, 'name') : undefined;
   if (!name) return rpcError(id, -32602, 'tools/call requires a name');
-  if (!tools.some((tool) => tool.name === name))
-    return rpcError(id, -32602, `Unknown tool: ${name}`);
+  if (!tools.some((tool) => tool.name === name)) {
+    const why = hidden && Object.hasOwn(hidden, name) ? hidden[name] : undefined;
+    return rpcError(id, -32602, why ? `Unknown tool: ${name}: ${why}` : `Unknown tool: ${name}`);
+  }
   const args =
     params && typeof params === 'object'
       ? Object.getOwnPropertyDescriptor(params, 'arguments')?.value
