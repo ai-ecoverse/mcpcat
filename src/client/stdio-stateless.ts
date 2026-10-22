@@ -14,15 +14,18 @@ import type {
   PromptInfo,
   ServerInfo,
 } from './connection.ts';
+import { MODERN_PROTOCOL_VERSION, modernRequestParams } from './modern.ts';
 import {
+  discoverServerInfo,
   InputRequiredError,
   McpTimeoutError,
   readHiddenTools,
   StatelessRpcError,
+  UnsupportedModernVersionError,
 } from './stateless-connection.ts';
 import { reapStdio, trackStdio } from './stdio-registry.ts';
 
-const PROTOCOL_VERSION = '2026-07-28';
+const PROTOCOL_VERSION = MODERN_PROTOCOL_VERSION;
 
 interface JsonRpcMessage {
   jsonrpc?: string;
@@ -60,7 +63,6 @@ function createStdioJsonRpc(
   let nextId = 1;
   let readBuffer = '';
   const reader = proc.stdout.getReader();
-  let negotiatedVersion: string | undefined;
   const { version = '0.0.0', timeoutMs = 60_000, signal: externalSignal, verbose } = options;
 
   async function readLine(): Promise<string> {
@@ -107,20 +109,11 @@ function createStdioJsonRpc(
 
   async function request(method: string, params: Record<string, unknown>): Promise<unknown> {
     const id = nextId++;
-    const meta: Record<string, unknown> = {
-      protocolVersion: negotiatedVersion ?? PROTOCOL_VERSION,
-      clientInfo: { name: 'mcpcat', version },
-    };
-    const cleanParams = { ...params };
-    if (cleanParams._inputResponses) {
-      meta.inputResponses = cleanParams._inputResponses;
-      delete cleanParams._inputResponses;
-    }
     const body = JSON.stringify({
       jsonrpc: '2.0',
       id,
       method,
-      params: { ...cleanParams, _meta: meta },
+      params: modernRequestParams(params, PROTOCOL_VERSION, { name: 'mcpcat', version }),
     });
 
     if (verbose?.enabled) verbose.request(method, body);
@@ -157,10 +150,11 @@ function createStdioJsonRpc(
 }
 
 function buildServerInfo(discoverResult: Record<string, unknown> | null): ServerInfo {
+  const serverInfo = discoverServerInfo(discoverResult);
   return {
-    name: (discoverResult?.serverInfo as Record<string, unknown>)?.name as string | undefined,
-    version: (discoverResult?.serverInfo as Record<string, unknown>)?.version as string | undefined,
-    title: (discoverResult?.serverInfo as Record<string, unknown>)?.title as string | undefined,
+    name: serverInfo?.name as string | undefined,
+    version: serverInfo?.version as string | undefined,
+    title: serverInfo?.title as string | undefined,
     protocolVersion: PROTOCOL_VERSION,
     capabilities: (discoverResult?.capabilities as Record<string, unknown>) ?? {},
     instructions: discoverResult?.instructions as string | undefined,
@@ -275,26 +269,28 @@ export async function probeStdioStateless(
 
   let discoverRaw;
   try {
-    discoverRaw = await rpc.request('server/discover', {
-      protocolVersion: PROTOCOL_VERSION,
-    });
+    discoverRaw = await rpc.request('server/discover', {});
   } catch (err) {
     const pending = rpc.pendingBuffer();
     rpc.close();
     return { proc, pendingStdout: pending, error: err as Error };
   }
 
-  void readStderr(proc, options.verbose);
   const discoverResult = discoverRaw as Record<string, unknown>;
-  const supported = ((discoverResult?.supportedVersions as string[] | undefined) ?? []).filter(
+  const advertised = discoverResult?.supportedVersions;
+  const supported = (Array.isArray(advertised) ? advertised : []).filter(
     (v): v is string => typeof v === 'string'
   );
   if (!supported.includes(PROTOCOL_VERSION)) {
-    await proc.kill('SIGTERM');
-    throw new Error(
-      `Server does not support ${PROTOCOL_VERSION} (advertised: ${supported.join(', ') || 'none'})`
-    );
+    const pending = rpc.pendingBuffer();
+    rpc.close();
+    return {
+      proc,
+      pendingStdout: pending,
+      error: new UnsupportedModernVersionError(PROTOCOL_VERSION, supported),
+    };
   }
+  void readStderr(proc, options.verbose);
 
   return buildConnectionMethods(rpc, discoverResult, proc);
 }

@@ -9,11 +9,7 @@ function send(obj) {
 }
 
 function answered(params) {
-  return Boolean(
-    params?._inputResponses ??
-      params?._meta?.inputResponses ??
-      params?.arguments?._meta?.inputResponses
-  );
+  return Boolean(params?.inputResponses ?? params?.arguments?._meta?.inputResponses);
 }
 
 function inputRequest(name) {

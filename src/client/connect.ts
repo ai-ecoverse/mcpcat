@@ -6,9 +6,8 @@ import type { McpConnection } from './connection.ts';
 import { createPiConnection } from './pi-connection.ts';
 import {
   createStatelessConnection,
+  indicatesLegacyServer,
   McpAuthError,
-  StatelessHttpError,
-  StatelessRpcError,
   TransportRefusalError,
 } from './stateless-connection.ts';
 import { probeStdioStateless } from './stdio-stateless.ts';
@@ -57,16 +56,10 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
         verbose: options.verbose,
       });
       if (!('proc' in result)) return result;
-      const isMethodNotFound =
-        result.error instanceof StatelessRpcError && result.error.code === -32601;
-      const isUnsupported = result.error.message.includes('does not support');
-      if (options.protocolVersion?.startsWith('2026')) {
-        try {
-          await result.proc.kill('SIGTERM');
-        } catch {}
-        throw result.error;
-      }
-      if (!isMethodNotFound && !isUnsupported) {
+      if (
+        options.protocolVersion?.startsWith('2026') ||
+        !indicatesLegacyServer(result.error, false)
+      ) {
         try {
           await result.proc.kill('SIGTERM');
         } catch {}
@@ -111,14 +104,11 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
       redact: options.redact,
     });
   } catch (err) {
-    const isMethodNotFound =
-      (err instanceof StatelessRpcError && err.code === -32601) ||
-      (err instanceof StatelessHttpError && err.status >= 400 && err.status < 500);
     if (options.protocolVersion?.startsWith('2026')) throw err;
     if (err instanceof McpAuthError || err instanceof AuthStepUpError) throw err;
     if (err instanceof TransportRefusalError) throw err;
     if ((err as Error).name === 'McpOAuthAuthorizationRequiredError') throw err;
-    if (isMethodNotFound) {
+    if (indicatesLegacyServer(err, true)) {
       return createPiConnection({
         url: options.url,
         headers: options.headers,

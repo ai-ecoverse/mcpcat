@@ -1,3 +1,4 @@
+import { completeModernOutcome, modernDiscoverResult } from '../client/modern.ts';
 import type { JsonObjectSchema } from './catalog.ts';
 
 export interface RpcTool {
@@ -54,6 +55,21 @@ export async function handleJsonRpc(
   if (!hasOwn(parsed, 'id')) return { status: 202, contentType: 'text/plain', body: '' };
   const id = readId(parsed);
   const params = Object.getOwnPropertyDescriptor(parsed, 'params')?.value;
+  return completeModernOutcome(
+    await dispatch(id, method, params, source, call, serverName, serverVersion),
+    params
+  );
+}
+
+async function dispatch(
+  id: RpcId,
+  method: string,
+  params: unknown,
+  source: ToolSource,
+  call: (name: string, args: unknown) => Promise<ToolRunResult>,
+  serverName: string,
+  serverVersion: string
+): Promise<RpcOutcome> {
   if (method === 'initialize')
     return rpcOk(id, initializeResult(params, serverName, serverVersion));
   if (method === 'server/discover') return rpcOk(id, discoverResult(serverName, serverVersion));
@@ -133,21 +149,12 @@ function initializeResult(
   };
 }
 
-function discoverResult(
-  serverName: string,
-  serverVersion: string
-): {
-  protocolVersion: string;
-  supportedVersions: readonly string[];
-  capabilities: { tools: { listChanged: false } };
-  serverInfo: { name: string; version: string };
-} {
-  return {
-    protocolVersion: PROTOCOL_VERSIONS[0],
-    supportedVersions: PROTOCOL_VERSIONS,
-    capabilities: { tools: { listChanged: false } },
-    serverInfo: { name: serverName, version: serverVersion },
-  };
+function discoverResult(serverName: string, serverVersion: string): Record<string, unknown> {
+  return modernDiscoverResult(
+    PROTOCOL_VERSIONS,
+    { tools: { listChanged: false } },
+    { name: serverName, version: serverVersion }
+  );
 }
 
 function cap(value: string): string {

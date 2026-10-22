@@ -1,3 +1,4 @@
+import { META_SERVER_INFO, MODERN_PROTOCOL_VERSION, modernRequestMeta } from '../client/modern.ts';
 import type { Platform } from '../platform/types.ts';
 import type { DiscoveryEvent, TrustSignal } from './types.ts';
 
@@ -283,6 +284,19 @@ interface McpProbeHit {
   trust: TrustSignal[];
 }
 
+function sseResponse(text: string, id: unknown): unknown {
+  for (const block of text.replace(/\r\n?/g, '\n').split('\n\n')) {
+    const data = block
+      .split('\n')
+      .filter((l) => l.startsWith('data:'))
+      .map((l) => l.slice(5).replace(/^ /, ''))
+      .join('\n');
+    const parsed = tryParseJson(data);
+    if (isRecord(parsed) && parsed.id === id) return parsed;
+  }
+  return undefined;
+}
+
 function mcpJsonRpc(method: string, params: unknown, id = 1): string {
   return JSON.stringify({ jsonrpc: '2.0', id, method, params });
 }
@@ -290,7 +304,9 @@ function mcpJsonRpc(method: string, params: unknown, id = 1): string {
 function parseServerInfo(
   result: Record<string, unknown>
 ): { name?: string; version?: string } | undefined {
-  const si = isRecord(result.serverInfo) ? result.serverInfo : undefined;
+  const meta = isRecord(result._meta) ? result._meta : undefined;
+  const fromMeta = meta && isRecord(meta[META_SERVER_INFO]) ? meta[META_SERVER_INFO] : undefined;
+  const si = fromMeta ?? (isRecord(result.serverInfo) ? result.serverInfo : undefined);
   if (!si) return undefined;
   return {
     name: typeof si.name === 'string' ? si.name : undefined,
@@ -313,7 +329,7 @@ async function tryMcpPost(
 ): Promise<McpProbeHit | undefined> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    Accept: 'application/json',
+    Accept: 'application/json, text/event-stream',
     ...extraHeaders,
   };
   try {
@@ -328,7 +344,10 @@ async function tryMcpPost(
     if (authSignal) return { url, trust: [authSignal] };
     if (resp.status === 200) {
       const text = await resp.text();
-      const parsed = tryParseJson(text);
+      const sse = (resp.headers.get('content-type') ?? '').includes('text/event-stream');
+      const parsed = sse
+        ? sseResponse(text, (tryParseJson(body) as { id?: unknown } | undefined)?.id)
+        : tryParseJson(text);
       if (isRecord(parsed) && isRecord(parsed.result)) {
         return { url, serverInfo: parseServerInfo(parsed.result), trust: [] };
       }
@@ -342,19 +361,23 @@ async function probeMcpEndpoint(
   url: string
 ): Promise<McpProbeHit | undefined> {
   const discoverBody = mcpJsonRpc('server/discover', {
-    protocolVersion: '2026-07-28',
-    clientInfo: { name: 'mcpcat', version: '0.0.0' },
+    _meta: modernRequestMeta(MODERN_PROTOCOL_VERSION, { name: 'mcpcat', version: '0.0.0' }),
   });
   const hit = await tryMcpPost(fetcher, url, discoverBody, {
+    'MCP-Protocol-Version': MODERN_PROTOCOL_VERSION,
     'Mcp-Method': 'server/discover',
   });
   if (hit) return hit;
 
-  const initBody = mcpJsonRpc('initialize', {
-    protocolVersion: '2025-11-25',
-    clientInfo: { name: 'mcpcat', version: '0.0.0' },
-    capabilities: {},
-  });
+  const initBody = mcpJsonRpc(
+    'initialize',
+    {
+      protocolVersion: '2025-11-25',
+      clientInfo: { name: 'mcpcat', version: '0.0.0' },
+      capabilities: {},
+    },
+    2
+  );
   return tryMcpPost(fetcher, url, initBody);
 }
 
