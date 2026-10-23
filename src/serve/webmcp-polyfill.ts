@@ -2,6 +2,7 @@ import type { Platform, SpawnResult } from '../platform/types.ts';
 import { sanitizeTerminal } from '../render/sanitize.ts';
 
 export const POLYFILL_MIN_VERSION = '1.32.0';
+export const TOOLS_CHANGED_MIN_VERSION = '1.40.0';
 export const HOLDER_RESTART_MIN_MS = 500;
 export const HOLDER_RESTART_MAX_MS = 30_000;
 export const HOLDER_STABLE_MS = 30_000;
@@ -14,6 +15,7 @@ export interface HolderOptions {
   tab: string;
   reload: boolean;
   readyTimeoutMs: number;
+  watch?: boolean;
   report(line: string): Promise<void> | void;
 }
 
@@ -21,13 +23,22 @@ export interface HolderStatus {
   mode?: string;
   late: boolean;
   native: boolean;
+  loaderId?: string;
   error?: string;
+}
+
+export interface ToolsChanged {
+  frameId?: unknown;
+  loaderId?: unknown;
+  origin?: unknown;
+  tools?: unknown;
 }
 
 export interface Holder {
   ready(): Promise<void>;
   status(): HolderStatus;
   onDocument(listener: () => void): void;
+  onToolsChanged(listener: (event: ToolsChanged) => void): void;
   stop(): Promise<void>;
 }
 
@@ -67,10 +78,14 @@ export async function drain(stream: ReadableStream<Uint8Array>, onLine: (line: s
   if (buffer) onLine(buffer);
 }
 
-interface HolderEvent {
+interface HolderEvent extends ToolsChanged {
   event?: unknown;
   mode?: unknown;
   late?: unknown;
+}
+
+function loaderOf(event: HolderEvent): string | undefined {
+  return typeof event.loaderId === 'string' ? event.loaderId : undefined;
 }
 
 function parseEvent(line: string): HolderEvent | undefined {
@@ -85,6 +100,7 @@ function parseEvent(line: string): HolderEvent | undefined {
 export function startHolder(platform: Platform, options: HolderOptions): Holder {
   const state: HolderStatus = { late: false, native: false };
   const listeners: (() => void)[] = [];
+  const changeListeners: ((event: ToolsChanged) => void)[] = [];
   let proc: SpawnResult | undefined;
   let writer: WritableStreamDefaultWriter<Uint8Array> | undefined;
   let stopped = false;
@@ -109,16 +125,20 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
     if (event.event === 'ready') {
       state.mode = typeof event.mode === 'string' ? event.mode : undefined;
       state.late = event.late === true;
+      state.loaderId = loaderOf(event);
       state.error = undefined;
       readyAt = Date.now();
-      if (state.mode === 'native') {
+      if (state.mode === 'native' && !options.watch) {
         state.native = true;
         void closeInput();
       }
       settle();
     } else if (event.event === 'document-ready') {
       state.late = false;
+      state.loaderId = loaderOf(event);
       for (const listener of listeners) listener();
+    } else if (event.event === 'tools-changed') {
+      for (const listener of changeListeners) listener(event);
     }
   };
 
@@ -177,6 +197,7 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
       if (stopped || state.native) return;
       state.late = false;
       state.mode = undefined;
+      state.loaderId = undefined;
       state.error = lastError ?? `playwright-cli webmcp-polyfill exited ${result.status}`;
       report(
         `the WebMCP polyfill holder for tab ${options.tab} exited (${state.error}); restarting in ${Math.ceil(delay / 1000)}s`
@@ -213,6 +234,9 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
     status: () => ({ ...state }),
     onDocument(listener) {
       listeners.push(listener);
+    },
+    onToolsChanged(listener) {
+      changeListeners.push(listener);
     },
     async stop() {
       stopped = true;

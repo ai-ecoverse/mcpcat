@@ -189,7 +189,8 @@ WebMCP (serve --webmcp, see serve --help):
   --cdp <url>                Browser DevTools endpoint for playwright-cli
   --tab <targetId>           Tab to serve (default: the current tab)
   --allow-consequential      Show and allow tools with consequentialHint
-  --webmcp-ttl <s>           Cache the tool list for <s> seconds (default 5)
+  --webmcp-ttl <s>           Cache the tool list for <s> seconds (default 5; live
+                             updates with playwright-cli 1.40.0 or newer)
   --webmcp-polyfill auto|off Inject playwright-cli's WebMCP polyfill when the
                              browser lacks WebMCP (default auto)
   --webmcp-reload            Reload the tab once so its load-time check sees the polyfill
@@ -237,7 +238,11 @@ WebMCP:
                              see playwright-cli tab-list)
   --allow-consequential      Show and allow tools the page marks consequentialHint
                              (hidden by default; advisory, the page sets the hint)
-  --webmcp-ttl <s>           Cache the page's tool list for <s> seconds (default 5)
+  --webmcp-ttl <s>           Cache the page's tool list for <s> seconds (default 5);
+                             with playwright-cli 1.40.0 or newer the polyfill holder's
+                             tools-changed events update it at once and clients get
+                             notifications/tools/list_changed (stdio, the GET /mcp
+                             stream or subscriptions/listen)
   --webmcp-polyfill auto|off auto (default): when the browser has no native WebMCP,
                              keep playwright-cli webmcp-polyfill running on the tab
                              (needs playwright-cli 1.32.0 or newer); off: never
