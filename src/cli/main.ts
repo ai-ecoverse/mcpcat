@@ -41,6 +41,7 @@ import {
 } from '../render/result.ts';
 import { sanitizeJson, sanitizeTerminal } from '../render/sanitize.ts';
 import { parseServeFlags, runServe } from '../serve/runtime.ts';
+import { parseUpgradeArgs, upgradeUsage } from '../upgrade/plan.ts';
 import { createTokenSource, runLogin, runLogout } from './auth-verbs.ts';
 import {
   runAdd,
@@ -156,6 +157,9 @@ Server and code verbs:
   inbox [--json]             List discovery candidates
   help                       Show this help
   help --skill               Print the agent skill (SKILL.md) for this version
+  upgrade [--check] [--force]
+                             Replace this install.sh install with the latest
+                             release (alias: update; not in the kernel)
   help serve                 Serve options (also: serve --help)
 
 Options:
@@ -1271,6 +1275,7 @@ async function dispatchMultiTarget(
 
 export async function run(platform: Platform, version: string, args: string[]): Promise<number> {
   try {
+    if (UPGRADE_VERBS.has(args[0])) return await upgrade(platform, version, args);
     return await runInner(platform, version, args);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EACCES') {
@@ -1288,7 +1293,34 @@ function wantsServeHelp(args: string[]): boolean {
   return parseArgs(args).verb === 'serve';
 }
 
+const UPGRADE_VERBS = new Set(['upgrade', 'update']);
+
+async function upgrade(platform: Platform, version: string, args: string[]): Promise<number> {
+  const command = args[0];
+  const parsed = parseUpgradeArgs(args.slice(1));
+  if (parsed.kind === 'help') {
+    await platform.write(1, upgradeUsage(command));
+    return 0;
+  }
+  if (parsed.kind === 'error') {
+    await platform.write(2, `mcpcat ${command}: ${parsed.message}\n\n${upgradeUsage(command)}`);
+    return EXIT_USAGE;
+  }
+  if (!platform.upgrade) {
+    await platform.write(
+      2,
+      `mcpcat ${command}: not available in the kernel build; the kernel updates it\n`
+    );
+    return 1;
+  }
+  return platform.upgrade({ command, version, check: parsed.check, force: parsed.force });
+}
+
 async function help(platform: Platform, version: string, args: string[]): Promise<number> {
+  if (args[0] === 'help' && UPGRADE_VERBS.has(args[1])) {
+    await platform.write(1, upgradeUsage(args[1]));
+    return 0;
+  }
   if (wantsServeHelp(args)) {
     await platform.write(1, serveHelpText(version));
     return 0;
