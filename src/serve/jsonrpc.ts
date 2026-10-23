@@ -5,7 +5,7 @@ export interface RpcTool {
   name: string;
   description: string;
   inputSchema: JsonObjectSchema;
-  annotations?: Record<string, boolean>;
+  annotations?: Record<string, boolean | string>;
 }
 
 export interface ToolRunResult {
@@ -18,6 +18,7 @@ export interface ToolRunResult {
 export interface ToolListing {
   tools: RpcTool[];
   hidden?: Record<string, string>;
+  hint?: string;
   error?: string;
 }
 
@@ -79,9 +80,13 @@ async function dispatch(
     if (listing.error) return rpcError(id, -32000, listing.error);
     if (method === 'tools/call') return toolCall(id, params, listing, call);
     const hidden = listing.hidden && Object.keys(listing.hidden).length > 0 ? listing.hidden : null;
+    const meta = {
+      ...(hidden ? { 'io.mcpcat/hidden': hidden } : {}),
+      ...(listing.hint ? { 'io.mcpcat/hint': listing.hint } : {}),
+    };
     return rpcOk(id, {
       tools: listing.tools,
-      ...(hidden ? { _meta: { 'io.mcpcat/hidden': hidden } } : {}),
+      ...(Object.keys(meta).length > 0 ? { _meta: meta } : {}),
     });
   }
   return rpcError(id, -32601, `Method not found: ${method}`);

@@ -1,0 +1,31 @@
+[
+  {
+    "name": "get_inbox_state",
+    "description": "Returns the inbox state",
+    "inputSchema": { "type": "object", "properties": {} },
+    "origin": "https://inbox.example.com",
+    "frameId": "F1",
+    "polyfilled": true,
+    "policy": "allowed",
+    "annotations": { "readOnlyHint": true, "untrustedContentHint": true }
+  },
+  {
+    "name": "open_thread",
+    "description": "Opens a thread",
+    "inputSchema": { "type": "object", "properties": { "id": { "type": "string" } } },
+    "origin": "https://inbox.example.com",
+    "frameId": "F1",
+    "polyfilled": false,
+    "policy": "unknown",
+    "annotations": { "untrustedContentHint": true }
+  },
+  {
+    "name": "send_reply",
+    "description": "Sends a reply",
+    "inputSchema": { "type": "object", "properties": { "text": { "type": "string" } } },
+    "origin": "https://inbox.example.com",
+    "frameId": "F1",
+    "policy": "allowed",
+    "annotations": { "consequentialHint": true }
+  }
+]

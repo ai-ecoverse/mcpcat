@@ -120,9 +120,10 @@ export async function renderCallResult(
 
 export async function renderToolsJson(
   platform: Platform,
-  tools: Array<{ name: string; description?: string; inputSchema?: unknown }>
+  tools: Array<{ name: string; description?: string; inputSchema?: unknown }>,
+  hint?: string
 ): Promise<void> {
-  await platform.write(1, `${JSON.stringify({ tools }, null, 2)}\n`);
+  await platform.write(1, `${JSON.stringify(hint ? { tools, hint } : { tools }, null, 2)}\n`);
 }
 
 export async function renderInfoJson(
