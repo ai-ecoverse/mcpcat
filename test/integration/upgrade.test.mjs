@@ -282,6 +282,31 @@ test('mcpcat upgrade replaces an install.sh install with the verified latest rel
     untouched(inst);
   });
 
+  await t.test('an option value named upgrade or update is not the verb', async () => {
+    fake.reset();
+    const inst = install();
+    const want = development
+      ? `latest release: 9.9.9 (this is a development build, ${version})\n`
+      : `mcpcat 9.9.9 is available (you have ${version}); run \`mcpcat upgrade\`\n`;
+    for (const args of [
+      ['-o', 'upgrade', 'upgrade', '--check'],
+      ['-s', 'update', 'update', '--check'],
+      ['-H', 'upgrade', '-m', 'update', 'upgrade', '--check'],
+    ]) {
+      const command = args[args.indexOf('--check') - 1];
+      const result = await go(inst, args);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(result.stderr, notice(command));
+      assert.equal(result.stdout, want);
+    }
+    const tools = await go(inst, ['-o', 'upgrade', 'tools']);
+    assert.equal(tools.code, 2);
+    assert.equal(tools.stderr, 'mcpcat: tools requires a target\n');
+    assert.equal(fake.state.downloads, 0);
+    assert.equal(fake.state.requests.length, 3);
+    untouched(inst);
+  });
+
   await t.test(
     'a development build is not replaced without --force',
     { skip: development ? false : 'this build has a release version' },
