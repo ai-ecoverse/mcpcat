@@ -15,6 +15,7 @@ export interface WebMcpTool {
   inputSchema: Record<string, unknown>;
   origin: string;
   annotations?: WebMcpAnnotations;
+  policy?: unknown;
 }
 
 export interface WebMcpOptions {
@@ -25,12 +26,19 @@ export interface WebMcpOptions {
   ttlMs: number;
   callTimeoutMs: number;
   maxOutput: number;
+  fromOrigins?: string[];
+  beforeList?: () => Promise<void>;
+  late?: () => boolean;
+  emptyHint?: (unavailable: boolean) => string | undefined;
 }
 
 interface CacheEntry {
   tools: WebMcpTool[];
+  unavailable: boolean;
   expiresAt: number;
 }
+
+const UNAVAILABLE_RE = /WebMCP is unavailable on this page/;
 
 function buildBaseArgs(options: WebMcpOptions): string[] {
   const args: string[] = [];
@@ -39,6 +47,9 @@ function buildBaseArgs(options: WebMcpOptions): string[] {
   }
   if (options.tab) {
     args.push('--tab', options.tab);
+  }
+  for (const origin of options.fromOrigins ?? []) {
+    args.push('--from-origin', origin);
   }
   return args;
 }
@@ -413,6 +424,20 @@ async function listTabs(
   return { rows };
 }
 
+export async function playwrightCliVersion(
+  platform: Platform,
+  options: Pick<WebMcpOptions, 'playwrightCli' | 'callTimeoutMs'>
+): Promise<string> {
+  const result = await runProcess(
+    platform,
+    [options.playwrightCli, '--version'],
+    undefined,
+    options.callTimeoutMs,
+    WEBMCP_LIST_FLOOR
+  );
+  return result.exitCode === 0 ? result.stdout : '';
+}
+
 export async function resolveWebMcpTab(
   platform: Platform,
   options: Pick<WebMcpOptions, 'playwrightCli' | 'cdp' | 'callTimeoutMs'>
@@ -440,6 +465,13 @@ function mapDescriptionAnnotations(ann?: WebMcpAnnotations): Record<string, bool
     mapped.destructiveHint = true;
     mapped.consequentialHint = true;
   }
+  return mapped;
+}
+
+function bridgeAnnotations(tool: WebMcpTool, late: boolean): Record<string, boolean | string> {
+  const mapped: Record<string, boolean | string> = mapDescriptionAnnotations(tool.annotations);
+  if (tool.policy === 'allowed' || tool.policy === 'unknown') mapped.policy = tool.policy;
+  if (late) mapped.late = true;
   return mapped;
 }
 
@@ -518,6 +550,21 @@ export function hiddenToolMessage(name: string): string {
   return `tool ${name} exists on the page but is hidden because it is consequential (consequentialHint); restart with mcpcat serve --webmcp --allow-consequential to expose it`;
 }
 
+function parseListOutput(
+  result: { stdout: string; cut: boolean },
+  listLimit: number
+): WebMcpTool[] | { error: string } {
+  if (result.cut) return { error: `webmcp-list output exceeds ${listLimit} characters` };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch {
+    return { error: 'webmcp-list returned invalid JSON' };
+  }
+  if (!Array.isArray(parsed)) return { error: 'webmcp-list did not return an array' };
+  return parsed as WebMcpTool[];
+}
+
 export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) {
   let cache: CacheEntry | undefined;
   const baseArgs = buildBaseArgs(options);
@@ -527,16 +574,21 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
   const watcher = cdp && tab ? watchJsDialogs(platform, cdp, tab) : undefined;
   const watch: Watch | undefined = watcher ? () => watcher.dialog() : undefined;
 
-  async function listRaw(
-    fresh = false
-  ): Promise<{ tools: WebMcpTool[]; error?: string; notFound?: boolean }> {
+  async function listRaw(fresh = false): Promise<{
+    tools: WebMcpTool[];
+    error?: string;
+    notFound?: boolean;
+    unavailable?: boolean;
+  }> {
     const blocked = await blockedNow(watcher, tab);
     if (blocked) return { tools: [], error: blocked };
 
-    const now = Date.now();
-    if (!fresh && cache && now < cache.expiresAt) {
-      return { tools: cache.tools };
+    if (!fresh && cache && Date.now() < cache.expiresAt) {
+      return { tools: cache.tools, unavailable: cache.unavailable };
     }
+
+    await options.beforeList?.();
+    const now = Date.now();
 
     const argv = [options.playwrightCli, 'webmcp-list', '--json', ...baseArgs];
     const result = await runProcess(
@@ -563,39 +615,33 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
       };
     }
 
+    if (result.exitCode === 2 && UNAVAILABLE_RE.test(result.stderr)) {
+      cache = { tools: [], unavailable: true, expiresAt: now + options.ttlMs };
+      return { tools: [], unavailable: true };
+    }
+
     if (result.exitCode !== 0) {
       return { tools: [], error: result.stderr || `webmcp-list exited ${result.exitCode}` };
     }
 
-    if (result.cut) {
-      return { tools: [], error: `webmcp-list output exceeds ${listLimit} characters` };
-    }
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(result.stdout);
-    } catch {
-      return { tools: [], error: 'webmcp-list returned invalid JSON' };
-    }
-
-    if (!Array.isArray(parsed)) {
-      return { tools: [], error: 'webmcp-list did not return an array' };
-    }
+    const parsed = parseListOutput(result, listLimit);
+    if (!Array.isArray(parsed)) return { tools: [], error: parsed.error };
 
     if (parsed.length === 0) {
       const gone = await tabGone(platform, options);
       if (gone) return { tools: [], error: gone };
     }
 
-    const tools = parsed as WebMcpTool[];
-    cache = { tools, expiresAt: now + options.ttlMs };
+    const tools = parsed;
+    cache = { tools, unavailable: false, expiresAt: now + options.ttlMs };
     return { tools };
   }
 
   async function getRpcTools(): Promise<ToolListing | null> {
-    const { tools, error, notFound } = await listRaw();
+    const { tools, error, notFound, unavailable } = await listRaw();
     if (notFound) return null;
     if (error) return { tools: [], error };
+    const late = options.late?.() ?? false;
 
     const rpcTools: RpcTool[] = [];
     const hidden: Record<string, string> = {};
@@ -606,7 +652,7 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
         hidden[name] = hiddenToolMessage(name);
         continue;
       }
-      const mapped = mapDescriptionAnnotations(tool.annotations);
+      const mapped = bridgeAnnotations(tool, late);
       rpcTools.push({
         name,
         description: buildDescription(tool),
@@ -615,7 +661,8 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
       });
     }
 
-    return { tools: rpcTools, hidden };
+    const hint = tools.length === 0 ? options.emptyHint?.(unavailable === true) : undefined;
+    return hint ? { tools: rpcTools, hidden, hint } : { tools: rpcTools, hidden };
   }
 
   async function callTool(name: string, args: unknown): Promise<ToolRunResult> {

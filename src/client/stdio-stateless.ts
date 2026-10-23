@@ -20,6 +20,7 @@ import {
   InputRequiredError,
   McpTimeoutError,
   readHiddenTools,
+  readListHint,
   StatelessRpcError,
   UnsupportedModernVersionError,
 } from './stateless-connection.ts';
@@ -167,6 +168,7 @@ function buildConnectionMethods(
   proc: SpawnResult
 ): McpConnection {
   let hidden: Record<string, string> = {};
+  let hint: string | undefined;
   return {
     async info(): Promise<ServerInfo> {
       return buildServerInfo(discoverResult);
@@ -174,11 +176,13 @@ function buildConnectionMethods(
     async listTools(): Promise<Tool[]> {
       const result = (await rpc.request('tools/list', {})) as { tools?: Tool[] } | null;
       hidden = readHiddenTools(result);
+      hint = readListHint(result);
       return result?.tools ?? [];
     },
     hiddenTool(name: string): string | undefined {
       return Object.hasOwn(hidden, name) ? hidden[name] : undefined;
     },
+    listHint: () => hint,
     async callTool(
       name: string,
       args?: Record<string, unknown>,

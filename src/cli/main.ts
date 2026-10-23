@@ -186,6 +186,10 @@ WebMCP (serve --webmcp, see serve --help):
   --tab <targetId>           Tab to serve (default: the current tab)
   --allow-consequential      Show and allow tools with consequentialHint
   --webmcp-ttl <s>           Cache the tool list for <s> seconds (default 5)
+  --webmcp-polyfill auto|off Inject playwright-cli's WebMCP polyfill when the
+                             browser lacks WebMCP (default auto)
+  --webmcp-reload            Reload the tab once so its load-time check sees the polyfill
+  --webmcp-from-origin <o>   Also list tools a cross-origin frame exposes (repeatable)
   --playwright-cli <path>    playwright-cli binary (default: from PATH)
 `;
 }
@@ -228,6 +232,13 @@ WebMCP:
   --allow-consequential      Show and allow tools the page marks consequentialHint
                              (hidden by default; advisory, the page sets the hint)
   --webmcp-ttl <s>           Cache the page's tool list for <s> seconds (default 5)
+  --webmcp-polyfill auto|off auto (default): when the browser has no native WebMCP,
+                             keep playwright-cli webmcp-polyfill running on the tab
+                             (needs playwright-cli 1.32.0 or newer); off: never
+  --webmcp-reload            Reload the tab once after injecting the polyfill, for
+                             pages that check for WebMCP only at load (reloads your tab)
+  --webmcp-from-origin <o>   Also list and call tools a cross-origin frame exposes
+                             to the page (repeatable; playwright-cli --from-origin)
   --playwright-cli <path>    playwright-cli binary (default: playwright-cli on PATH)
 
 Examples:
@@ -543,6 +554,8 @@ function annotationTags(tool: Tool): string {
   if (ann.idempotentHint === true) tags.push('idempotent');
   if (ann.untrustedContentHint === true) tags.push('untrusted');
   if (ann.consequentialHint === true) tags.push('consequential');
+  if (ann.policy === 'allowed' || ann.policy === 'unknown') tags.push(`policy: ${ann.policy}`);
+  if (ann.late === true) tags.push('late');
   return tags.length > 0 ? ` [${tags.join(', ')}]` : '';
 }
 
@@ -642,14 +655,16 @@ async function runInfo(platform: Platform, conn: McpConnection, json: boolean): 
 
 async function runTools(platform: Platform, conn: McpConnection, json: boolean): Promise<number> {
   const tools = await conn.listTools();
+  const hint = tools.length === 0 ? conn.listHint?.() : undefined;
   if (json) {
-    await renderToolsJson(platform, tools);
+    await renderToolsJson(platform, tools, hint);
     return EXIT_OK;
   }
   await platform.write(
     1,
     tools.length === 0 ? '(no tools)\n' : `${tools.map(formatToolLine).join('\n')}\n`
   );
+  if (hint) await platform.write(2, sanitizeTerminal(`mcpcat: hint: ${hint}\n`));
   return EXIT_OK;
 }
 

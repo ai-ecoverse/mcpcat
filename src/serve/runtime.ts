@@ -34,7 +34,15 @@ import {
   isLoopbackBind,
 } from './origin.ts';
 import { createProxyHandler } from './proxy.ts';
-import { createWebMcpHandler, resolveWebMcpTab } from './webmcp.ts';
+import { createWebMcpHandler, playwrightCliVersion, resolveWebMcpTab } from './webmcp.ts';
+import {
+  compareVersions,
+  HOLDER_READY_MS,
+  type Holder,
+  POLYFILL_MIN_VERSION,
+  parseCliVersion,
+  startHolder,
+} from './webmcp-polyfill.ts';
 
 const CALL_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_DEFAULT = 1_048_576;
@@ -67,6 +75,9 @@ export interface ServeOptions {
   webmcpAllowConsequential: boolean;
   webmcpPlaywrightCli?: string;
   webmcpCdp?: string;
+  webmcpPolyfill: string;
+  webmcpReload: boolean;
+  webmcpFromOrigins: string[];
 }
 
 function parseHttpFlag(args: string[], i: number): { host: string; port: number; next: number } {
@@ -114,6 +125,9 @@ function parseSingleFlag(
     webmcpTtl: number;
     webmcpPlaywrightCli?: string;
     webmcpCdp?: string;
+    webmcpPolyfill: string;
+    webmcpReload: boolean;
+    webmcpFromOrigins: string[];
   }
 ): number {
   const arg = args[i];
@@ -133,6 +147,8 @@ function parseSingleFlag(
     opts.webmcp = true;
   } else if (arg === '--allow-consequential') {
     opts.webmcpAllowConsequential = true;
+  } else if (arg === '--webmcp-reload') {
+    opts.webmcpReload = true;
   } else if (!arg.startsWith('-')) {
     opts.commands.push(parseCommandTarget(arg));
   } else {
@@ -160,6 +176,8 @@ function parseValueFlag(
     webmcpTtl: number;
     webmcpPlaywrightCli?: string;
     webmcpCdp?: string;
+    webmcpPolyfill: string;
+    webmcpFromOrigins: string[];
   }
 ): number {
   const arg = args[i];
@@ -207,6 +225,12 @@ function parseValueFlag(
     case '--cdp':
       opts.webmcpCdp = args[++i];
       break;
+    case '--webmcp-polyfill':
+      opts.webmcpPolyfill = args[++i];
+      break;
+    case '--webmcp-from-origin':
+      opts.webmcpFromOrigins.push(args[++i]);
+      break;
     case '-H':
     case '--header': {
       const hdr = args[++i];
@@ -247,6 +271,9 @@ export function parseServeFlags(args: string[]): ServeOptions {
     webmcpAllowConsequential: false,
     webmcpPlaywrightCli: undefined as string | undefined,
     webmcpCdp: undefined as string | undefined,
+    webmcpPolyfill: 'auto',
+    webmcpReload: false,
+    webmcpFromOrigins: [] as string[],
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -1121,6 +1148,11 @@ async function runWebMcpServe(
   resolvedBearer: string | undefined,
   generatedBearer: boolean
 ): Promise<number> {
+  const usage = webmcpUsageError(options);
+  if (usage) {
+    await platform.write(2, sanitizeTerminal(`mcpcat serve --webmcp: ${usage}\n`));
+    return 2;
+  }
   const cliPath = await resolvePlaywrightCli(platform, options.webmcpPlaywrightCli);
   if (!cliPath) {
     await platform.write(
@@ -1153,6 +1185,8 @@ async function runWebMcpServe(
     tab = resolved.tab;
   }
 
+  const polyfill = await startPolyfill(platform, options, cliPath, cdp, tab);
+  const { holder } = polyfill;
   const handler = createWebMcpHandler(platform, {
     playwrightCli: cliPath,
     tab,
@@ -1161,7 +1195,12 @@ async function runWebMcpServe(
     ttlMs: options.webmcpTtl,
     callTimeoutMs: options.callTimeout,
     maxOutput: options.maxOutput,
+    fromOrigins: options.webmcpFromOrigins,
+    beforeList: holder ? () => holder.ready() : undefined,
+    late: () => isLate(holder),
+    emptyHint: (unavailable) => emptyToolsHint(options, polyfill, unavailable),
   });
+  holder?.onDocument(() => handler.invalidateCache());
 
   try {
     return await serveWebMcpHandler(
@@ -1174,7 +1213,92 @@ async function runWebMcpServe(
     );
   } finally {
     handler.close();
+    await holder?.stop();
   }
+}
+
+function webmcpUsageError(options: ServeOptions): string | undefined {
+  if (options.webmcpPolyfill !== 'auto' && options.webmcpPolyfill !== 'off') {
+    return `--webmcp-polyfill must be auto or off, not ${options.webmcpPolyfill}`;
+  }
+  if (options.webmcpReload && options.webmcpPolyfill === 'off') {
+    return '--webmcp-reload needs the polyfill; drop --webmcp-polyfill off';
+  }
+  for (const origin of options.webmcpFromOrigins) {
+    let parsed: URL | undefined;
+    try {
+      parsed = new URL(origin);
+    } catch {}
+    if (!parsed || !/^https?:$/.test(parsed.protocol) || parsed.origin !== origin) {
+      return `--webmcp-from-origin takes an origin such as https://example.com, not ${origin}`;
+    }
+  }
+  return undefined;
+}
+
+interface PolyfillState {
+  holder?: Holder;
+  oldVersion?: string;
+}
+
+async function startPolyfill(
+  platform: Platform,
+  options: ServeOptions,
+  playwrightCli: string,
+  cdp: string | undefined,
+  tab: string
+): Promise<PolyfillState> {
+  if (options.webmcpPolyfill === 'off') return {};
+  const found = parseCliVersion(
+    await playwrightCliVersion(platform, { playwrightCli, callTimeoutMs: options.callTimeout })
+  );
+  if (found && compareVersions(found, POLYFILL_MIN_VERSION) < 0) {
+    await platform.write(
+      2,
+      sanitizeTerminal(
+        `mcpcat serve --webmcp: the WebMCP polyfill needs playwright-cli ${POLYFILL_MIN_VERSION} or newer (found ${found}); continuing without it. Update with: curl -fsSL https://get.sliccy.ai/playwright-cli | sh\n`
+      )
+    );
+    return { oldVersion: found };
+  }
+  const holder = startHolder(platform, {
+    playwrightCli,
+    cdp,
+    tab,
+    reload: options.webmcpReload,
+    readyTimeoutMs: Math.min(options.callTimeout, HOLDER_READY_MS),
+    report: (line) => platform.write(2, line),
+  });
+  return { holder };
+}
+
+function isLate(holder: Holder | undefined): boolean {
+  const status = holder?.status();
+  return status?.mode === 'polyfill' && status.late;
+}
+
+function emptyToolsHint(
+  options: ServeOptions,
+  polyfill: PolyfillState,
+  unavailable: boolean
+): string | undefined {
+  if (options.webmcpPolyfill === 'off') {
+    return unavailable
+      ? 'WebMCP is not enabled in this browser and --webmcp-polyfill is off; drop --webmcp-polyfill off to inject the WebMCP polyfill'
+      : undefined;
+  }
+  if (polyfill.oldVersion) {
+    return `the page shows no WebMCP tools, and the WebMCP polyfill needs playwright-cli ${POLYFILL_MIN_VERSION} or newer (found ${polyfill.oldVersion})`;
+  }
+  const status = polyfill.holder?.status();
+  if (isLate(polyfill.holder)) {
+    return 'the page may check for WebMCP only when it loads, before the polyfill was injected; reload the tab, or restart with --webmcp-reload (it reloads the tab)';
+  }
+  if (!unavailable) return undefined;
+  if (status?.error) {
+    return `WebMCP is unavailable on this page and the WebMCP polyfill is not running (${status.error})`;
+  }
+  return 'WebMCP is unavailable on this page (the WebMCP polyfill skips protected and unverified documents)';
 }
 
 async function serveWebMcpHandler(
@@ -1192,6 +1316,9 @@ async function serveWebMcpHandler(
       'mcpcat serve --webmcp: playwright-cli not found. Install it with: curl -fsSL https://get.sliccy.ai/playwright-cli | sh\n'
     );
     return 3;
+  }
+  if (probe.hint) {
+    await platform.write(2, sanitizeTerminal(`mcpcat serve --webmcp: ${probe.hint}\n`));
   }
 
   const serverName = 'mcpcat-webmcp';

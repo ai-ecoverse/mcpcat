@@ -257,6 +257,12 @@ export function readHiddenTools(result: unknown): Record<string, string> {
   return out;
 }
 
+export function readListHint(result: unknown): string | undefined {
+  const meta = (result as { _meta?: Record<string, unknown> } | null)?._meta;
+  const hint = meta?.['io.mcpcat/hint'];
+  return typeof hint === 'string' && hint ? hint : undefined;
+}
+
 function buildStatelessMethods(
   requestFn: RequestFn,
   discoverResult: Record<string, unknown> | null
@@ -265,6 +271,7 @@ function buildStatelessMethods(
   | 'info'
   | 'listTools'
   | 'hiddenTool'
+  | 'listHint'
   | 'callTool'
   | 'listResources'
   | 'listResourceTemplates'
@@ -274,6 +281,7 @@ function buildStatelessMethods(
 > {
   let serverInfoCache: ServerInfo | undefined;
   let hidden: Record<string, string> = {};
+  let hint: string | undefined;
   return {
     async info(): Promise<ServerInfo> {
       if (serverInfoCache) return serverInfoCache;
@@ -283,11 +291,13 @@ function buildStatelessMethods(
     async listTools(): Promise<Tool[]> {
       const result = (await requestFn('tools/list', {})) as { tools?: Tool[] } | null;
       hidden = readHiddenTools(result);
+      hint = readListHint(result);
       return result?.tools ?? [];
     },
     hiddenTool(name: string): string | undefined {
       return Object.hasOwn(hidden, name) ? hidden[name] : undefined;
     },
+    listHint: () => hint,
     async callTool(
       name: string,
       args?: Record<string, unknown>,

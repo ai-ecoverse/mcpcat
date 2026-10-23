@@ -47,6 +47,7 @@ export interface McpConnection {
   info(): Promise<ServerInfo>;
   listTools(): Promise<Tool[]>;
   hiddenTool?(name: string): string | undefined;
+  listHint?(): string | undefined;
   callTool(
     name: string,
     args?: Record<string, unknown>,

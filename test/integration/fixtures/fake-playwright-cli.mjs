@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -17,7 +17,8 @@ const fixtureFile =
     : process.env.FAKE_PWCLI_FIXTURE || join(dir, 'webmcp-tools.json');
 
 if (args[0] === '--version' || args[0] === '-V') {
-  process.stdout.write('playwright-cli 1.21.1-fake\n');
+  if (process.env.FAKE_PWCLI_VERSION === 'fail') process.exit(1);
+  process.stdout.write(`playwright-cli ${process.env.FAKE_PWCLI_VERSION || '1.32.0'}-fake\n`);
   process.exit(0);
 }
 
@@ -57,7 +58,49 @@ const drift = () => {
 };
 const usedTab = () => tab ?? currentTab();
 
-if (command === 'tab-list') {
+const holderFile = process.env.FAKE_PWCLI_HOLDER_FILE;
+const holderUp = () => Boolean(holderFile) && existsSync(holderFile);
+const holderRuns = () =>
+  process.env.FAKE_PWCLI_LOG && existsSync(process.env.FAKE_PWCLI_LOG)
+    ? readFileSync(process.env.FAKE_PWCLI_LOG, 'utf8')
+        .split('\n')
+        .filter((l) => l.includes('"command":"webmcp-polyfill"')).length
+    : 1;
+
+if (command === 'webmcp-polyfill') {
+  const reload = filtered.includes('--reload');
+  record({ command, tab, reload });
+  const mode = process.env.FAKE_PWCLI_HOLDER || 'native';
+  if (mode === 'fail') {
+    process.stderr.write('webmcp-polyfill: cannot attach\n');
+    process.exit(2);
+  }
+  const emit = (event) => process.stdout.write(`${JSON.stringify({ tab, ...event })}\n`);
+  if (mode !== 'native' && holderFile) writeFileSync(holderFile, String(process.pid));
+  emit({ event: 'ready', loaderId: 'L1', mode, late: !reload, reloaded: reload });
+  const stop = (code) => {
+    if (holderUp() && readFileSync(holderFile, 'utf8') === String(process.pid)) rmSync(holderFile);
+    process.exit(code);
+  };
+  if (process.env.FAKE_PWCLI_HOLDER_EXIT_FIRST && holderRuns() === 1) {
+    setTimeout(() => {
+      process.stderr.write('webmcp-polyfill: target closed, changed or was refused by the guard\n');
+      stop(1);
+    }, Number(process.env.FAKE_PWCLI_HOLDER_EXIT_FIRST));
+  }
+  if (process.env.FAKE_PWCLI_HOLDER_NAVIGATE) {
+    setTimeout(
+      () => emit({ event: 'document-ready', loaderId: 'L2' }),
+      Number(process.env.FAKE_PWCLI_HOLDER_NAVIGATE)
+    );
+  }
+  process.stdin.on('data', () => {});
+  process.stdin.on('end', () => {
+    record({ command: 'webmcp-polyfill-stdin-closed', tab });
+    stop(0);
+  });
+  setInterval(() => {}, 1000);
+} else if (command === 'tab-list') {
   record({ command });
   if (process.env.FAKE_PWCLI_TAB_LIST_FAIL) {
     process.stderr.write('boom \x1b]0;pwned\x07 \x1b[2J \x9b31m end\n');
@@ -82,9 +125,17 @@ if (command === 'webmcp-list') {
     process.stderr.write('webmcp-list requires --json\n');
     process.exit(2);
   }
-  record({ command, tab: usedTab() });
+  record({ command, tab: usedTab(), holder: holderUp() });
   drift();
-  if (process.env.FAKE_PWCLI_HANG_LIST) {
+  if (process.env.FAKE_PWCLI_UNAVAILABLE || (process.env.FAKE_PWCLI_NEEDS_HOLDER && !holderUp())) {
+    process.stderr.write(
+      'webmcp-list: WebMCP is unavailable on this page (document.modelContext is absent)\n'
+    );
+    process.exit(2);
+  } else if (process.env.FAKE_PWCLI_HOLDER_EMPTY && holderUp()) {
+    process.stdout.write('[]\n');
+    process.exit(0);
+  } else if (process.env.FAKE_PWCLI_HANG_LIST) {
     if (process.env.FAKE_PWCLI_DIALOG_URL) fetch(process.env.FAKE_PWCLI_DIALOG_URL).catch(() => {});
     setInterval(() => {}, 1000);
   } else if (tab && !tabIds.includes(tab)) {
@@ -196,7 +247,7 @@ if (command === 'webmcp-list') {
     process.stdout.write(`result for ${toolName} on ${tool.origin}: ${JSON.stringify(input)}`);
     process.exit(0);
   });
-} else {
+} else if (command !== 'webmcp-polyfill') {
   process.stderr.write(`unknown command: ${command}\n`);
   process.exit(2);
 }
