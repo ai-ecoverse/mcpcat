@@ -202,6 +202,60 @@ describe('serve --webmcp --webmcp-dialog', () => {
     assert.match(r.stdout, /after the dialog was dismissed/);
   });
 
+  it('holds a tool call that arrives during the restart backoff until the new holder is ready', async () => {
+    const dirs = scratch();
+    const { cmd, args } = mcpcatArgs([
+      'serve',
+      '--webmcp',
+      '--http',
+      '0',
+      '--no-auth',
+      '--call-timeout',
+      '6',
+      '--webmcp-polyfill',
+      'off',
+      '--webmcp-dialog',
+      'dismiss',
+      '--playwright-cli',
+      fakePwCli,
+    ]);
+    const child = spawn(cmd, args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: env(dirs, { FAKE_PWCLI_CALL_DIALOG: 'confirm', FAKE_PWCLI_HOLD_EXIT_FIRST: '1500' }),
+    });
+    cleanups.push(() => child.kill('SIGKILL'));
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    await waitFor(() => /listening on http:\/\/[^:]+:\d+\/mcp/.test(stderr));
+    const url = `http://127.0.0.1:${stderr.match(/listening on http:\/\/[^:]+:(\d+)\/mcp/)[1]}/mcp`;
+    const post = async (body) => {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          'mcp-protocol-version': '2025-11-25',
+        },
+        body,
+      });
+      const text = await res.text();
+      const line = text.split('\n').find((l) => l.startsWith('data: '));
+      return JSON.parse(line ? line.slice(6) : text);
+    };
+    await post(INIT);
+    await waitFor(() => /restarting in 1s/.test(stderr), 10_000);
+    assert.equal(readLog(dirs.log).filter((e) => e.command === 'dialog-hold').length, 1);
+    const call = await post(CALL);
+    assert.equal(call.error, undefined, JSON.stringify(call.error));
+    assert.match(call.result.content[0].text, /after the dialog was dismissed/);
+    const log = readLog(dirs.log);
+    const holds = log.flatMap((e, i) => (e.command === 'dialog-hold' ? [i] : []));
+    const started = log.findIndex((e) => e.command === 'webmcp-call');
+    assert.ok(holds.length === 2 && holds[1] < started, JSON.stringify(log));
+  });
+
   it('keeps reporting a dialog that was open before the holder attached', async () => {
     const dirs = scratch();
     const cdp = await fakeCdp({ openDialog: 'confirm' });
