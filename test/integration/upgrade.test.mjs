@@ -220,6 +220,25 @@ test('mcpcat upgrade replaces an install.sh install with the verified latest rel
       assert.equal(result.stderr, notice(command));
       assert.equal(result.stdout, want);
     }
+    for (const flag of ['--help', '-h']) {
+      for (const command of ['upgrade', 'update']) {
+        const global = await go(inst, [flag, command]);
+        assert.equal(global.code, 0, global.stderr);
+        assert.equal(global.stderr, '');
+        assert.match(global.stdout, /^mcpcat \S+ – a curl for the Model Context Protocol\n/);
+      }
+    }
+    for (const flag of ['--version', '-V']) {
+      for (const args of [
+        [flag, 'upgrade'],
+        ['-v', flag, 'update', '--force'],
+      ]) {
+        const shown = await go(inst, args);
+        assert.equal(shown.code, 0, shown.stderr);
+        assert.equal(shown.stderr, '');
+        assert.equal(shown.stdout, `${version}\n`);
+      }
+    }
     const help = await go(inst, ['--silent', 'update', '--help']);
     assert.equal(help.code, 0);
     assert.match(help.stdout, /^mcpcat update \[--check\] \[--force\]\n/);

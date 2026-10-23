@@ -58,6 +58,20 @@ describe('kernel: upgrade is host only', () => {
       }
     });
 
+    it(`leading --help and --version are kept before ${command}`, async () => {
+      for (const flag of ['--help', '-h']) {
+        const r = await run([flag, command]);
+        assert.equal(r.status, 0, String(r.stderr));
+        assert.match(String(r.stdout), /^mcpcat \S+ – a curl for the Model Context Protocol\n/);
+      }
+      for (const flag of ['--version', '-V']) {
+        const r = await run(['-v', flag, command, '--force']);
+        assert.equal(r.status, 0, String(r.stderr));
+        assert.equal(String(r.stdout), `${pkg.version}\n`);
+        assert.equal(String(r.stderr), '');
+      }
+    });
+
     it(`${command} --help still prints its usage`, async () => {
       const r = await run([command, '--help']);
       assert.equal(r.status, 0, String(r.stderr));

@@ -1302,10 +1302,12 @@ function wantsServeHelp(args: string[]): boolean {
 
 const UPGRADE_VERBS = new Set(['upgrade', 'update']);
 
+const LEADING_STOPS = new Set(['--', '--help', '-h', '--version', '-V']);
+
 function upgradeAt(args: string[]): number {
   const at = args.findIndex((arg) => UPGRADE_VERBS.has(arg));
   if (at < 0) return -1;
-  if (args.slice(0, at).includes('--')) return -1;
+  if (args.slice(0, at).some((arg) => LEADING_STOPS.has(arg))) return -1;
   const flags = parseFlags(args.slice(0, at + 1));
   return flags.positional.length === 1 && flags.positional[0] === args[at] ? at : -1;
 }
