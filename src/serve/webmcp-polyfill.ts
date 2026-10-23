@@ -47,7 +47,7 @@ export function parseCliVersion(text: string): string | undefined {
   return /playwright-cli\s+v?(\d+\.\d+\.\d+)/.exec(text)?.[1];
 }
 
-async function drain(stream: ReadableStream<Uint8Array>, onLine: (line: string) => void) {
+export async function drain(stream: ReadableStream<Uint8Array>, onLine: (line: string) => void) {
   const reader = stream.getReader();
   const dec = new TextDecoder();
   let buffer = '';

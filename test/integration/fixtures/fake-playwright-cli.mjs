@@ -67,7 +67,76 @@ const holderRuns = () =>
         .filter((l) => l.includes('"command":"webmcp-polyfill"')).length
     : 1;
 
-if (command === 'webmcp-polyfill') {
+const dialogDir = process.env.FAKE_PWCLI_DIALOG_DIR;
+const dialogOpen = () => Boolean(dialogDir) && existsSync(join(dialogDir, 'open'));
+const holdRuns = () =>
+  process.env.FAKE_PWCLI_LOG && existsSync(process.env.FAKE_PWCLI_LOG)
+    ? readFileSync(process.env.FAKE_PWCLI_LOG, 'utf8')
+        .split('\n')
+        .filter((l) => l.includes('"command":"dialog-hold"')).length
+    : 1;
+
+if (command === 'dialog-hold') {
+  record({ command, tab, cdp });
+  if (process.env.FAKE_PWCLI_HOLD_FAIL) {
+    process.stderr.write('dialog-hold: cannot attach\n');
+    process.exit(2);
+  }
+  const emit = (event) => process.stdout.write(`${JSON.stringify({ target: tab, ...event })}\n`);
+  let preexisting = dialogOpen();
+  let dialogId = 0;
+  let announced;
+  emit({ event: 'ready', loaderId: null, loaderIdSource: 'unavailable', status: 'observing' });
+  const stop = (reason, code) => {
+    emit({ event: 'stopped', reason });
+    process.exit(code);
+  };
+  setInterval(() => {
+    const open = dialogOpen();
+    if (!open) preexisting = false;
+    if (open && !preexisting && announced === undefined) {
+      announced = ++dialogId;
+      emit({
+        event: process.env.FAKE_PWCLI_HOLD_REFUSE ? 'dialog-refused' : 'dialog-opened',
+        dialogId: announced,
+      });
+    } else if (!open && announced !== undefined) {
+      emit({ event: 'dialog-closed', dialogId: announced });
+      announced = undefined;
+    }
+  }, 50);
+  if (process.env.FAKE_PWCLI_HOLD_EXIT_FIRST && holdRuns() === 1) {
+    setTimeout(() => {
+      process.stderr.write('dialog-hold: target closed, changed or refused\n');
+      stop('target closed, changed or refused', 1);
+    }, Number(process.env.FAKE_PWCLI_HOLD_EXIT_FIRST));
+  }
+  let buffer = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => {
+    buffer += chunk;
+    let nl;
+    while ((nl = buffer.indexOf('\n')) >= 0) {
+      const request = JSON.parse(buffer.slice(0, nl));
+      buffer = buffer.slice(nl + 1);
+      record({ command: 'dialog-hold-request', request });
+      if (process.env.FAKE_PWCLI_HOLD_SILENT) continue;
+      if (announced === undefined || !dialogOpen()) {
+        emit({ event: 'no-dialog', id: request.id });
+      } else if (request.dialogId !== announced) {
+        emit({ event: 'stale-dialog', id: request.id, dialogId: request.dialogId });
+      } else if (process.env.FAKE_PWCLI_HOLD_REFUSE) {
+        emit({ event: 'dialog-refused', id: request.id, dialogId: request.dialogId });
+      } else {
+        const accept = request.command === 'dialog-accept';
+        writeFileSync(join(dialogDir, 'answer'), accept ? 'accepted' : 'dismissed');
+        rmSync(join(dialogDir, 'open'));
+        emit({ event: 'handled', id: request.id, dialogId: request.dialogId, accept });
+      }
+    }
+  });
+  process.stdin.on('end', () => stop('stdin-eof', 0));
+} else if (command === 'webmcp-polyfill') {
   const reload = filtered.includes('--reload');
   record({ command, tab, reload });
   const mode = process.env.FAKE_PWCLI_HOLDER || 'native';
@@ -215,6 +284,18 @@ if (command === 'webmcp-list') {
       process.stderr.write(`CALL_LOG:${callLog}\n`);
     }
 
+    if (process.env.FAKE_PWCLI_CALL_DIALOG) {
+      writeFileSync(join(dialogDir, 'open'), process.env.FAKE_PWCLI_CALL_DIALOG);
+      const wait = setInterval(() => {
+        if (dialogOpen()) return;
+        clearInterval(wait);
+        const answer = readFileSync(join(dialogDir, 'answer'), 'utf8');
+        process.stdout.write(`result for ${toolName} after the dialog was ${answer}`);
+        process.exit(0);
+      }, 50);
+      return;
+    }
+
     if (process.env.FAKE_PWCLI_HANG) {
       if (process.env.FAKE_PWCLI_DIALOG_URL)
         fetch(process.env.FAKE_PWCLI_DIALOG_URL).catch(() => {});
@@ -253,7 +334,7 @@ if (command === 'webmcp-list') {
     process.stdout.write(`result for ${toolName} on ${tool.origin}: ${JSON.stringify(input)}`);
     process.exit(0);
   });
-} else if (command !== 'webmcp-polyfill') {
+} else if (command !== 'webmcp-polyfill' && command !== 'dialog-hold') {
   process.stderr.write(`unknown command: ${command}\n`);
   process.exit(2);
 }
