@@ -41,7 +41,13 @@ describe('kernel: upgrade is host only', () => {
 
   for (const command of ['upgrade', 'update']) {
     it(`${command} says it is not available and exits non-zero`, async () => {
-      for (const args of [[command], [command, '--check'], [command, '--force']]) {
+      for (const args of [
+        [command],
+        [command, '--check'],
+        [command, '--force'],
+        ['-v', command, '--check'],
+        ['--silent', '-m', '5', command],
+      ]) {
         const r = await run(args);
         assert.equal(r.status, 1, String(r.stderr));
         assert.equal(String(r.stdout), '');
@@ -49,6 +55,29 @@ describe('kernel: upgrade is host only', () => {
           String(r.stderr),
           `mcpcat ${command}: not available in the kernel build; the kernel updates it\n`
         );
+      }
+    });
+
+    it(`unknown options before ${command} are refused`, async () => {
+      const r = await run(['-v', '--bogus', command]);
+      assert.equal(r.status, 2);
+      assert.match(String(r.stderr), new RegExp(`^mcpcat ${command}: unknown option --bogus\\n`));
+      const check = await run(['--check', command]);
+      assert.equal(check.status, 1);
+      assert.match(String(check.stderr), /not available in the kernel build/);
+    });
+
+    it(`leading --help and --version are kept before ${command}`, async () => {
+      for (const flag of ['--help', '-h']) {
+        const r = await run([flag, command]);
+        assert.equal(r.status, 0, String(r.stderr));
+        assert.match(String(r.stdout), /^mcpcat \S+ – a curl for the Model Context Protocol\n/);
+      }
+      for (const flag of ['--version', '-V']) {
+        const r = await run(['-v', flag, command, '--force']);
+        assert.equal(r.status, 0, String(r.stderr));
+        assert.equal(String(r.stdout), `${pkg.version}\n`);
+        assert.equal(String(r.stderr), '');
       }
     });
 
