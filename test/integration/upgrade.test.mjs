@@ -247,6 +247,41 @@ test('mcpcat upgrade replaces an install.sh install with the verified latest rel
     untouched(inst);
   });
 
+  await t.test('upgrade options before the verb apply, and unknown ones are refused', async () => {
+    fake.reset();
+    const inst = install();
+    const want = development
+      ? `latest release: 9.9.9 (this is a development build, ${version})\n`
+      : `mcpcat 9.9.9 is available (you have ${version}); run \`mcpcat upgrade\`\n`;
+    for (const args of [
+      ['--check', 'upgrade'],
+      ['--check', 'update', '--force'],
+      ['--force', '-v', '--check', 'upgrade'],
+    ]) {
+      const command = args.find((arg) => arg === 'upgrade' || arg === 'update');
+      const result = await go(inst, args);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(result.stderr, notice(command));
+      assert.equal(result.stdout, want);
+    }
+    assert.equal(fake.state.downloads, 0);
+    assert.equal(fake.state.requests.length, 3);
+    for (const args of [
+      ['--bogus', 'upgrade', '--check'],
+      ['-v', '--nope', 'update'],
+    ]) {
+      const command = args.find((arg) => arg === 'upgrade' || arg === 'update');
+      const result = await go(inst, args);
+      assert.equal(result.code, 2);
+      assert.match(
+        result.stderr,
+        new RegExp(`^mcpcat ${command}: unknown option ${args[args.indexOf(command) - 1]}\\n`)
+      );
+    }
+    assert.equal(fake.state.requests.length, 3);
+    untouched(inst);
+  });
+
   await t.test(
     'a development build is not replaced without --force',
     { skip: development ? false : 'this build has a release version' },

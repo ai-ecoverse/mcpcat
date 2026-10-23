@@ -1281,8 +1281,8 @@ async function dispatchMultiTarget(
 
 export async function run(platform: Platform, version: string, args: string[]): Promise<number> {
   try {
-    const at = upgradeAt(args);
-    if (at >= 0) return await upgrade(platform, version, args.slice(at));
+    const upgrading = upgradeArgs(args);
+    if (upgrading) return await upgrade(platform, version, upgrading);
     return await runInner(platform, version, args);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EACCES') {
@@ -1304,12 +1304,53 @@ const UPGRADE_VERBS = new Set(['upgrade', 'update']);
 
 const LEADING_STOPS = new Set(['--', '--help', '-h', '--version', '-V']);
 
-function upgradeAt(args: string[]): number {
+const GLOBAL_VALUE_FLAGS = new Set([
+  '-H',
+  '--header',
+  '-d',
+  '--protocol-version',
+  '--budget',
+  '-e',
+  '-s',
+  '--server',
+  '-m',
+  '--timeout',
+  '--respond',
+  '--root',
+  '-o',
+  '--output',
+  '--memory',
+]);
+
+const GLOBAL_BOOLEAN_FLAGS = new Set([
+  '--schema',
+  '--ts',
+  '--json',
+  '--rank',
+  '-E',
+  '--allow-shell',
+  '-v',
+  '--verbose',
+  '--silent',
+  '--no-input',
+  '--no-validate',
+]);
+
+function upgradeArgs(args: string[]): string[] | undefined {
   const at = args.findIndex((arg) => UPGRADE_VERBS.has(arg));
-  if (at < 0) return -1;
-  if (args.slice(0, at).some((arg) => LEADING_STOPS.has(arg))) return -1;
-  const flags = parseFlags(args.slice(0, at + 1));
-  return flags.positional.length === 1 && flags.positional[0] === args[at] ? at : -1;
+  if (at < 0) return undefined;
+  const own: string[] = [];
+  for (let i = 0; i < at; i++) {
+    const arg = args[i];
+    if (LEADING_STOPS.has(arg) || !arg.startsWith('-')) return undefined;
+    if (GLOBAL_VALUE_FLAGS.has(arg)) {
+      if (i + 1 === at) return undefined;
+      i++;
+    } else if (!GLOBAL_BOOLEAN_FLAGS.has(arg)) {
+      own.push(arg);
+    }
+  }
+  return [args[at], ...own, ...args.slice(at + 1)];
 }
 
 async function upgrade(platform: Platform, version: string, args: string[]): Promise<number> {

@@ -58,6 +58,15 @@ describe('kernel: upgrade is host only', () => {
       }
     });
 
+    it(`unknown options before ${command} are refused`, async () => {
+      const r = await run(['-v', '--bogus', command]);
+      assert.equal(r.status, 2);
+      assert.match(String(r.stderr), new RegExp(`^mcpcat ${command}: unknown option --bogus\\n`));
+      const check = await run(['--check', command]);
+      assert.equal(check.status, 1);
+      assert.match(String(check.stderr), /not available in the kernel build/);
+    });
+
     it(`leading --help and --version are kept before ${command}`, async () => {
       for (const flag of ['--help', '-h']) {
         const r = await run([flag, command]);
