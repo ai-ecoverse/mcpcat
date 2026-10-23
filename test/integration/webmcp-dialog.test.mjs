@@ -256,6 +256,31 @@ describe('serve --webmcp --webmcp-dialog', () => {
     assert.ok(holds.length === 2 && holds[1] < started, JSON.stringify(log));
   });
 
+  it('stops waiting for a holder that keeps failing and runs the call at once', async () => {
+    const dirs = scratch();
+    const r = await run(
+      [
+        'serve',
+        '--webmcp',
+        '--call-timeout',
+        '30',
+        '--webmcp-polyfill',
+        'off',
+        '--webmcp-dialog',
+        'dismiss',
+        '--playwright-cli',
+        fakePwCli,
+      ],
+      env(dirs, { FAKE_PWCLI_HOLD_FAIL: '1' }),
+      `${INIT}\n${CALL}\n`
+    );
+    assert.equal(r.status, 0, r.stderr);
+    const [, call] = responses(r.stdout);
+    assert.match(call.result.content[0].text, /result for get_price on/);
+    assert.ok(r.ms < 8000, `took ${r.ms} ms`);
+    assert.ok(readLog(dirs.log).filter((e) => e.command === 'dialog-hold').length >= 2);
+  });
+
   it('keeps reporting a dialog that was open before the holder attached', async () => {
     const dirs = scratch();
     const cdp = await fakeCdp({ openDialog: 'confirm' });
