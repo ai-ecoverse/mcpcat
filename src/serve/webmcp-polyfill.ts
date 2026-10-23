@@ -4,6 +4,7 @@ import { sanitizeTerminal } from '../render/sanitize.ts';
 export const POLYFILL_MIN_VERSION = '1.32.0';
 export const HOLDER_RESTART_MIN_MS = 500;
 export const HOLDER_RESTART_MAX_MS = 30_000;
+export const HOLDER_STABLE_MS = 30_000;
 export const HOLDER_STOP_GRACE_MS = 2000;
 export const HOLDER_READY_MS = 20_000;
 
@@ -89,6 +90,7 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
   let stopped = false;
   let first = true;
   let delay = HOLDER_RESTART_MIN_MS;
+  let readyAt: number | undefined;
   let restartTimer: ReturnType<typeof setTimeout> | undefined;
   let pending!: Promise<void>;
   let settle!: () => void;
@@ -108,7 +110,7 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
       state.mode = typeof event.mode === 'string' ? event.mode : undefined;
       state.late = event.late === true;
       state.error = undefined;
-      delay = HOLDER_RESTART_MIN_MS;
+      readyAt = Date.now();
       if (state.mode === 'native') {
         state.native = true;
         void closeInput();
@@ -168,6 +170,10 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
       proc = undefined;
       writer = undefined;
       settle();
+      if (readyAt !== undefined && Date.now() - readyAt >= HOLDER_STABLE_MS) {
+        delay = HOLDER_RESTART_MIN_MS;
+      }
+      readyAt = undefined;
       if (stopped || state.native) return;
       state.late = false;
       state.mode = undefined;
