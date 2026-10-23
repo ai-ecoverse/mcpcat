@@ -1,6 +1,7 @@
 import type { Platform, SpawnResult, WebSocketChannel } from '../platform/types.ts';
 import type { JsonObjectSchema } from './catalog.ts';
 import type { RpcTool, ToolListing, ToolRunResult } from './jsonrpc.ts';
+import { DIALOG_CLAIM_MS, type DialogHolder } from './webmcp-dialog.ts';
 
 export interface WebMcpAnnotations {
   readOnlyHint?: boolean;
@@ -27,6 +28,7 @@ export interface WebMcpOptions {
   callTimeoutMs: number;
   maxOutput: number;
   fromOrigins?: string[];
+  dialogs?: DialogHolder;
   beforeList?: () => Promise<void>;
   late?: () => boolean;
   emptyHint?: (unavailable: boolean) => string | undefined;
@@ -284,6 +286,40 @@ function dialogMessage(tab: string, type: string): string {
   return `tab ${tab} is blocked by a JavaScript ${type.replace(/[^a-z]/gi, '')} dialog; answer or dismiss it in the browser, then retry`;
 }
 
+function holderMessage(tab: string, problem: string): string {
+  return `tab ${tab} is blocked by a JavaScript dialog that mcpcat does not answer (${problem}); answer or dismiss it in the browser, then retry`;
+}
+
+function reportWatch(tab: string, watcher: DialogWatcher): Watch {
+  return () => {
+    const type = watcher.dialog();
+    return type ? dialogMessage(tab, type) : undefined;
+  };
+}
+
+function answeringWatch(tab: string, dialogs: DialogHolder, watcher?: DialogWatcher): Watch {
+  let seenAt: number | undefined;
+  return () => {
+    const problem = dialogs.problem();
+    if (problem) return holderMessage(tab, problem);
+    const type = watcher?.dialog();
+    if (!type || dialogs.open()) {
+      seenAt = undefined;
+      return undefined;
+    }
+    if (!dialogs.attached()) return dialogMessage(tab, type);
+    seenAt ??= Date.now();
+    return Date.now() - seenAt >= DIALOG_CLAIM_MS ? dialogMessage(tab, type) : undefined;
+  };
+}
+
+async function settleWatcher(watcher: DialogWatcher): Promise<void> {
+  const until = Date.now() + DIALOG_CLAIM_MS;
+  while (watcher.dialog() && Date.now() < until) {
+    await new Promise((resolve) => setTimeout(resolve, DIALOG_POLL_MS));
+  }
+}
+
 function timeoutMessage(
   verb: string,
   timeoutMs: number,
@@ -361,7 +397,7 @@ async function runProcess(
 
   const watcher = watch ? watchLoop(watch) : undefined;
   const blocked = watcher
-    ? watcher.result.then((type) => ({ blocked: type }))
+    ? watcher.result.then((message) => ({ blocked: message }))
     : new Promise<never>(() => {});
 
   const result = await Promise.race([work, timer, blocked]);
@@ -530,10 +566,15 @@ function ambiguityError(name: string, peers: WebMcpTool[]): Error {
 
 async function blockedNow(
   watcher: DialogWatcher | undefined,
-  tab: string | undefined
+  tab: string | undefined,
+  dialogs: DialogHolder | undefined
 ): Promise<string | undefined> {
+  const problem = dialogs?.problem();
+  if (problem) return holderMessage(tab!, problem);
   if (!watcher) return undefined;
   await watcher.ready();
+  if (dialogs?.open()) return undefined;
+  if (dialogs?.attached()) await settleWatcher(watcher);
   const open = watcher.dialog();
   return open ? dialogMessage(tab!, open) : undefined;
 }
@@ -572,7 +613,8 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
   const listLimit = Math.max(options.maxOutput, WEBMCP_LIST_FLOOR);
   const { cdp, tab } = options;
   const watcher = cdp && tab ? watchJsDialogs(platform, cdp, tab) : undefined;
-  const watch: Watch | undefined = watcher ? () => watcher.dialog() : undefined;
+  const watch = watcher ? reportWatch(tab!, watcher) : undefined;
+  const { dialogs } = options;
 
   async function listRaw(fresh = false): Promise<{
     tools: WebMcpTool[];
@@ -580,7 +622,7 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
     notFound?: boolean;
     unavailable?: boolean;
   }> {
-    const blocked = await blockedNow(watcher, tab);
+    const blocked = await blockedNow(watcher, tab, dialogs);
     if (blocked) return { tools: [], error: blocked };
 
     if (!fresh && cache && Date.now() < cache.expiresAt) {
@@ -605,7 +647,7 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
     }
 
     if (result.blocked) {
-      return { tools: [], error: dialogMessage(tab!, result.blocked) };
+      return { tools: [], error: result.blocked };
     }
 
     if (result.exitCode === 124) {
@@ -666,6 +708,7 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
   }
 
   async function callTool(name: string, args: unknown): Promise<ToolRunResult> {
+    await dialogs?.ready();
     const { tools, error } = await listRaw(true);
     if (error) {
       return { stdout: '', stderr: error, exitCode: 2 };
@@ -686,21 +729,22 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
     }
 
     const stdinData = JSON.stringify(args ?? {});
+    const disarm = dialogs?.arm();
     const result = await runProcess(
       platform,
       argv,
       stdinData,
       options.callTimeoutMs,
       options.maxOutput,
-      watch
-    );
+      dialogs ? answeringWatch(tab!, dialogs, watcher) : watch
+    ).finally(disarm);
 
     if (result.exitCode === -1) {
       throw new Error(result.stderr || 'playwright-cli not found');
     }
 
     if (result.blocked) {
-      throw new Error(dialogMessage(tab!, result.blocked));
+      throw new Error(result.blocked);
     }
 
     if (result.exitCode === 124) {

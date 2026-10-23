@@ -36,6 +36,12 @@ import {
 import { createProxyHandler } from './proxy.ts';
 import { createWebMcpHandler, playwrightCliVersion, resolveWebMcpTab } from './webmcp.ts';
 import {
+  DIALOG_HOLD_MIN_VERSION,
+  DIALOG_MODES,
+  type DialogHolder,
+  startDialogHolder,
+} from './webmcp-dialog.ts';
+import {
   compareVersions,
   HOLDER_READY_MS,
   type Holder,
@@ -78,6 +84,7 @@ export interface ServeOptions {
   webmcpPolyfill: string;
   webmcpReload: boolean;
   webmcpFromOrigins: string[];
+  webmcpDialog: string;
 }
 
 function parseHttpFlag(args: string[], i: number): { host: string; port: number; next: number } {
@@ -128,6 +135,7 @@ function parseSingleFlag(
     webmcpPolyfill: string;
     webmcpReload: boolean;
     webmcpFromOrigins: string[];
+    webmcpDialog: string;
   }
 ): number {
   const arg = args[i];
@@ -178,6 +186,7 @@ function parseValueFlag(
     webmcpCdp?: string;
     webmcpPolyfill: string;
     webmcpFromOrigins: string[];
+    webmcpDialog: string;
   }
 ): number {
   const arg = args[i];
@@ -231,6 +240,9 @@ function parseValueFlag(
     case '--webmcp-from-origin':
       opts.webmcpFromOrigins.push(args[++i]);
       break;
+    case '--webmcp-dialog':
+      opts.webmcpDialog = args[++i];
+      break;
     case '-H':
     case '--header': {
       const hdr = args[++i];
@@ -274,6 +286,7 @@ export function parseServeFlags(args: string[]): ServeOptions {
     webmcpPolyfill: 'auto',
     webmcpReload: false,
     webmcpFromOrigins: [] as string[],
+    webmcpDialog: 'report',
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -1185,7 +1198,25 @@ async function runWebMcpServe(
     tab = resolved.tab;
   }
 
-  const polyfill = await startPolyfill(platform, options, cliPath, cdp, tab);
+  const cliVersion =
+    options.webmcpPolyfill === 'off' && options.webmcpDialog === 'report'
+      ? undefined
+      : parseCliVersion(
+          await playwrightCliVersion(platform, {
+            playwrightCli: cliPath,
+            callTimeoutMs: options.callTimeout,
+          })
+        );
+  const polyfill = startPolyfill(platform, options, cliPath, cdp, tab, cliVersion);
+  if (polyfill.oldVersion) {
+    await platform.write(
+      2,
+      sanitizeTerminal(
+        `mcpcat serve --webmcp: the WebMCP polyfill needs playwright-cli ${POLYFILL_MIN_VERSION} or newer (found ${polyfill.oldVersion}); continuing without it. Update with: curl -fsSL https://get.sliccy.ai/playwright-cli | sh\n`
+      )
+    );
+  }
+  const dialogs = await startDialogs(platform, options, cliPath, cdp, tab, cliVersion);
   const { holder } = polyfill;
   const handler = createWebMcpHandler(platform, {
     playwrightCli: cliPath,
@@ -1196,6 +1227,7 @@ async function runWebMcpServe(
     callTimeoutMs: options.callTimeout,
     maxOutput: options.maxOutput,
     fromOrigins: options.webmcpFromOrigins,
+    dialogs,
     beforeList: holder ? () => holder.ready() : undefined,
     late: () => isLate(holder),
     emptyHint: (unavailable) => emptyToolsHint(options, polyfill, unavailable),
@@ -1213,13 +1245,47 @@ async function runWebMcpServe(
     );
   } finally {
     handler.close();
-    await holder?.stop();
+    await Promise.all([holder?.stop(), dialogs?.stop()]);
   }
+}
+
+async function startDialogs(
+  platform: Platform,
+  options: ServeOptions,
+  playwrightCli: string,
+  cdp: string | undefined,
+  tab: string,
+  found: string | undefined
+): Promise<DialogHolder | undefined> {
+  if (options.webmcpDialog === 'report') return undefined;
+  if (found && compareVersions(found, DIALOG_HOLD_MIN_VERSION) < 0) {
+    await platform.write(
+      2,
+      sanitizeTerminal(
+        `mcpcat serve --webmcp: --webmcp-dialog ${options.webmcpDialog} needs playwright-cli ${DIALOG_HOLD_MIN_VERSION} or newer (found ${found}); reporting JavaScript dialogs instead. Update with: curl -fsSL https://get.sliccy.ai/playwright-cli | sh\n`
+      )
+    );
+    return undefined;
+  }
+  return startDialogHolder(platform, {
+    playwrightCli,
+    cdp,
+    tab,
+    accept: options.webmcpDialog === 'accept',
+    readyTimeoutMs: Math.min(options.callTimeout, HOLDER_READY_MS),
+    report: (line) => platform.write(2, line),
+  });
 }
 
 function webmcpUsageError(options: ServeOptions): string | undefined {
   if (options.webmcpPolyfill !== 'auto' && options.webmcpPolyfill !== 'off') {
     return `--webmcp-polyfill must be auto or off, not ${options.webmcpPolyfill}`;
+  }
+  if (!(DIALOG_MODES as readonly string[]).includes(options.webmcpDialog)) {
+    return `--webmcp-dialog must be report, dismiss or accept, not ${options.webmcpDialog}`;
+  }
+  if (options.webmcpDialog === 'accept' && !options.webmcpAllowConsequential) {
+    return '--webmcp-dialog accept confirms page dialogs on your behalf, so it needs --allow-consequential; use --webmcp-dialog dismiss otherwise';
   }
   if (options.webmcpReload && options.webmcpPolyfill === 'off') {
     return '--webmcp-reload needs the polyfill; drop --webmcp-polyfill off';
@@ -1241,24 +1307,16 @@ interface PolyfillState {
   oldVersion?: string;
 }
 
-async function startPolyfill(
+function startPolyfill(
   platform: Platform,
   options: ServeOptions,
   playwrightCli: string,
   cdp: string | undefined,
-  tab: string
-): Promise<PolyfillState> {
+  tab: string,
+  found: string | undefined
+): PolyfillState {
   if (options.webmcpPolyfill === 'off') return {};
-  const found = parseCliVersion(
-    await playwrightCliVersion(platform, { playwrightCli, callTimeoutMs: options.callTimeout })
-  );
   if (found && compareVersions(found, POLYFILL_MIN_VERSION) < 0) {
-    await platform.write(
-      2,
-      sanitizeTerminal(
-        `mcpcat serve --webmcp: the WebMCP polyfill needs playwright-cli ${POLYFILL_MIN_VERSION} or newer (found ${found}); continuing without it. Update with: curl -fsSL https://get.sliccy.ai/playwright-cli | sh\n`
-      )
-    );
     return { oldVersion: found };
   }
   const holder = startHolder(platform, {

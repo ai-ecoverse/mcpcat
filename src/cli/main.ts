@@ -194,6 +194,8 @@ WebMCP (serve --webmcp, see serve --help):
                              browser lacks WebMCP (default auto)
   --webmcp-reload            Reload the tab once so its load-time check sees the polyfill
   --webmcp-from-origin <o>   Also list tools a cross-origin frame exposes (repeatable)
+  --webmcp-dialog <mode>     report (default), dismiss or accept JavaScript dialogs a
+                             tool call opens (accept needs --allow-consequential)
   --playwright-cli <path>    playwright-cli binary (default: from PATH)
 `;
 }
@@ -243,6 +245,10 @@ WebMCP:
                              pages that check for WebMCP only at load (reloads your tab)
   --webmcp-from-origin <o>   Also list and call tools a cross-origin frame exposes
                              to the page (repeatable; playwright-cli --from-origin)
+  --webmcp-dialog <mode>     report (default): name a JavaScript dialog that blocks the
+                             page; dismiss or accept: answer dialogs a tool call opens
+                             through playwright-cli dialog-hold (needs playwright-cli
+                             1.39.0 or newer); accept needs --allow-consequential
   --playwright-cli <path>    playwright-cli binary (default: playwright-cli on PATH)
 
 Examples:

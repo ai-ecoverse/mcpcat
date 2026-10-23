@@ -11,7 +11,7 @@ function wsFrame(obj) {
   return Buffer.concat([header, data]);
 }
 
-export async function startFakeCdp({ stall = false } = {}) {
+export async function startFakeCdp({ stall = false, openDialog } = {}) {
   const seen = [];
   const sessions = new Set();
   const server = createServer((req, res) => {
@@ -82,6 +82,15 @@ export async function startFakeCdp({ stall = false } = {}) {
         } else if (msg.method === 'Page.enable') {
           sessions.add(socket);
           if (!stall) socket.write(wsFrame({ id: msg.id, sessionId: msg.sessionId, result: {} }));
+          if (openDialog) {
+            socket.write(
+              wsFrame({
+                method: 'Page.javascriptDialogOpening',
+                sessionId: msg.sessionId,
+                params: { type: openDialog, message: 'Send it?', url: 'https://shop.example.com/' },
+              })
+            );
+          }
         }
       }
     });
