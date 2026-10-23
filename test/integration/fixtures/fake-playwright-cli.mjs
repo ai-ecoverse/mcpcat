@@ -82,6 +82,12 @@ if (command === 'webmcp-polyfill') {
     if (holderUp() && readFileSync(holderFile, 'utf8') === String(process.pid)) rmSync(holderFile);
     process.exit(code);
   };
+  if (process.env.FAKE_PWCLI_HOLDER_EXIT_ALWAYS) {
+    setTimeout(() => {
+      process.stderr.write('webmcp-polyfill: target closed\n');
+      stop(1);
+    }, Number(process.env.FAKE_PWCLI_HOLDER_EXIT_ALWAYS));
+  }
   if (process.env.FAKE_PWCLI_HOLDER_EXIT_FIRST && holderRuns() === 1) {
     setTimeout(() => {
       process.stderr.write('webmcp-polyfill: target closed, changed or was refused by the guard\n');

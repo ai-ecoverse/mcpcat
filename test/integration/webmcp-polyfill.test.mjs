@@ -193,6 +193,18 @@ describe('serve --webmcp polyfill', () => {
     );
   });
 
+  it('backs off a holder that becomes ready and exits right away', async () => {
+    const dirs = scratch();
+    const env = baseEnv(dirs, { FAKE_PWCLI_HOLDER_EXIT_ALWAYS: '50' });
+    const { child, stderr } = await httpServe([], env);
+    await new Promise((r) => setTimeout(r, 3500));
+    const holders = readLog(dirs.log).filter((e) => e.command === 'webmcp-polyfill').length;
+    child.kill('SIGTERM');
+    await stopped(child);
+    assert.ok(holders >= 2 && holders <= 4, `${holders} holder starts in 3.5s\n${stderr()}`);
+    assert.match(stderr(), /restarting in 2s/);
+  });
+
   it('surfaces policy and late in tools --json and the human tools output', async () => {
     const dirs = scratch();
     const { child, port } = await httpServe([], baseEnv(dirs));
