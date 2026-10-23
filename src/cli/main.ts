@@ -1304,53 +1304,26 @@ const UPGRADE_VERBS = new Set(['upgrade', 'update']);
 
 const LEADING_STOPS = new Set(['--', '--help', '-h', '--version', '-V']);
 
-const GLOBAL_VALUE_FLAGS = new Set([
-  '-H',
-  '--header',
-  '-d',
-  '--protocol-version',
-  '--budget',
-  '-e',
-  '-s',
-  '--server',
-  '-m',
-  '--timeout',
-  '--respond',
-  '--root',
-  '-o',
-  '--output',
-  '--memory',
-]);
+function takesValue(flag: string): boolean {
+  return parseFlags([flag, 'value']).positional.length === 0;
+}
 
-const GLOBAL_BOOLEAN_FLAGS = new Set([
-  '--schema',
-  '--ts',
-  '--json',
-  '--rank',
-  '-E',
-  '--allow-shell',
-  '-v',
-  '--verbose',
-  '--silent',
-  '--no-input',
-  '--no-validate',
-]);
+function isGlobalFlag(flag: string): boolean {
+  return JSON.stringify(parseFlags([flag])) !== JSON.stringify(parseFlags([]));
+}
 
 function upgradeArgs(args: string[]): string[] | undefined {
-  const at = args.findIndex((arg) => UPGRADE_VERBS.has(arg));
-  if (at < 0) return undefined;
   const own: string[] = [];
-  for (let i = 0; i < at; i++) {
+  for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (LEADING_STOPS.has(arg) || !arg.startsWith('-')) return undefined;
-    if (GLOBAL_VALUE_FLAGS.has(arg)) {
-      if (i + 1 === at) return undefined;
-      i++;
-    } else if (!GLOBAL_BOOLEAN_FLAGS.has(arg)) {
-      own.push(arg);
+    if (LEADING_STOPS.has(arg)) return undefined;
+    if (!arg.startsWith('-')) {
+      return UPGRADE_VERBS.has(arg) ? [arg, ...own, ...args.slice(i + 1)] : undefined;
     }
+    if (args[i + 1] && takesValue(arg)) i++;
+    else if (!isGlobalFlag(arg)) own.push(arg);
   }
-  return [args[at], ...own, ...args.slice(at + 1)];
+  return undefined;
 }
 
 async function upgrade(platform: Platform, version: string, args: string[]): Promise<number> {

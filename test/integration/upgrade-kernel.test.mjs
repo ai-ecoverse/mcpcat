@@ -58,6 +58,15 @@ describe('kernel: upgrade is host only', () => {
       }
     });
 
+    it(`an option value named ${command} is not the verb`, async () => {
+      const r = await run(['-o', command, command, '--check']);
+      assert.equal(r.status, 1);
+      assert.equal(
+        String(r.stderr),
+        `mcpcat ${command}: not available in the kernel build; the kernel updates it\n`
+      );
+    });
+
     it(`unknown options before ${command} are refused`, async () => {
       const r = await run(['-v', '--bogus', command]);
       assert.equal(r.status, 2);
