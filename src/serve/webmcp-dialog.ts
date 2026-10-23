@@ -48,6 +48,7 @@ interface HoldEvent {
 }
 
 const LABEL = 'mcpcat serve --webmcp';
+const REFUSED = 'playwright-cli refuses to answer it (protected, unverified or in a frame)';
 
 function parseHoldEvent(line: string): HoldEvent | undefined {
   try {
@@ -102,8 +103,21 @@ export function startDialogHolder(platform: Platform, options: DialogHolderOptio
   let delay = HOLDER_RESTART_MIN_MS;
   let readyAt: number | undefined;
   let restartTimer: ReturnType<typeof setTimeout> | undefined;
-  let pending!: Promise<void>;
-  let settle!: () => void;
+  let settled = true;
+  let pending: Promise<void> = Promise.resolve();
+  let settle: () => void = () => {};
+  const unready = () => {
+    isReady = false;
+    waitedOut = false;
+    if (!settled) return;
+    settled = false;
+    pending = new Promise<void>((resolve) => {
+      settle = () => {
+        settled = true;
+        resolve();
+      };
+    });
+  };
   let exited: Promise<unknown> = Promise.resolve();
 
   const report = reporter(options);
@@ -154,15 +168,11 @@ export function startDialogHolder(platform: Platform, options: DialogHolderOptio
       current = { id: event.dialogId, armed: armed > 0 };
       if (current.armed) answer(current);
     } else if (event.event === 'dialog-refused' && isId(event.dialogId)) {
-      current = {
-        id: event.dialogId,
-        armed: armed > 0,
-        problem: 'playwright-cli refuses to answer it (protected, unverified or in a frame)',
-      };
+      current = { id: event.dialogId, armed: armed > 0, problem: REFUSED };
     } else if (event.event === 'dialog-closed') {
       current = undefined;
     } else if (event.event === 'stopped') {
-      isReady = false;
+      unready();
       current = undefined;
     }
   };
@@ -171,16 +181,11 @@ export function startDialogHolder(platform: Platform, options: DialogHolderOptio
     const argv = [options.playwrightCli];
     if (options.cdp) argv.push('--cdp', options.cdp);
     argv.push('dialog-hold', '--tab', options.tab);
-    waitedOut = false;
-    pending = new Promise<void>((resolve) => {
-      settle = resolve;
-    });
     let child: SpawnResult;
     try {
       child = await platform.spawn({ argv, dieWithParent: true });
     } catch (err) {
       report(`cannot start playwright-cli dialog-hold: ${(err as Error).message}`);
-      settle();
       scheduleRestart();
       return;
     }
@@ -188,7 +193,6 @@ export function startDialogHolder(platform: Platform, options: DialogHolderOptio
       try {
         await child.stdin.getWriter().close();
       } catch {}
-      settle();
       return;
     }
     proc = child;
@@ -201,10 +205,9 @@ export function startDialogHolder(platform: Platform, options: DialogHolderOptio
     exited = Promise.all([out, err, child.wait()]).then(([, , result]) => {
       proc = undefined;
       writer = undefined;
-      isReady = false;
       current = undefined;
       reply?.resolve('holder-gone');
-      settle();
+      if (!stopped) unready();
       if (readyAt !== undefined && Date.now() - readyAt >= HOLDER_STABLE_MS) {
         delay = HOLDER_RESTART_MIN_MS;
       }
@@ -228,6 +231,7 @@ export function startDialogHolder(platform: Platform, options: DialogHolderOptio
     }, wait);
   };
 
+  unready();
   void spawn();
 
   return {
@@ -253,6 +257,7 @@ export function startDialogHolder(platform: Platform, options: DialogHolderOptio
     },
     async stop() {
       stopped = true;
+      settle();
       clearTimeout(restartTimer);
       const child = proc;
       const w = writer;
