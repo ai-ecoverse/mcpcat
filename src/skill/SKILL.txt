@@ -65,6 +65,10 @@ mcpcat serve --help
 - `-v` traces show expanded headers as `[REDACTED]`. Don't try to work around redaction.
 - If a request needs a secret that isn't there, ask the user to add it to the vault; don't ask them to paste it.
 
+## Upgrade
+
+`mcpcat upgrade` (alias `update`) replaces an `install.sh` install with the latest GitHub release, verified against its `SHA256SUMS`; `--check` only reports, `--force` reinstalls. It prints the command for npm, npx, pnpm and git installs, and is not available in the kernel.
+
 ## Exit codes
 
 | Code | Meaning |

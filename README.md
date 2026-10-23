@@ -16,6 +16,8 @@ curl -fsSL https://github.com/ai-ecoverse/mcpcat/releases/latest/download/instal
 
 Options pass through, for example `curl -fsSL https://get.sliccy.ai/mcpcat | sh -s -- --help`.
 
+`mcpcat upgrade` (alias `update`) replaces an installer install with the latest release, after checking it against the release's `SHA256SUMS`; `mcpcat upgrade --check` only reports.
+
 Or via npm:
 
 ```sh

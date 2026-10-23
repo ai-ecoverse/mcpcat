@@ -270,6 +270,7 @@ mcpcat [options] &lt;verb&gt; …                             everything else</c
   <tr><td><code>code [-e src | file.js] [-s target]…</code></td><td>Run a codemode script over configured servers (<a href="#codemode">§16</a>).</td><td><span class="tag p1">P1</span></td></tr>
   <tr><td><code>discover &lt;url&gt;</code>, <code>add --from-discovery -</code>, <code>inbox</code></td><td>Find candidate servers and stage them (<a href="#discovery">§15</a>).</td><td><span class="tag p1">P1</span></td></tr>
   <tr><td><code>help [verb]</code>, <code>help --skill</code></td><td>Help text; the agent skill (SKILL.md) matching this version.</td><td><span class="tag p0">P0</span></td></tr>
+  <tr><td><code>upgrade [--check] [--force]</code>, alias <code>update</code></td><td>Replace an <code>install.sh</code> install with the latest GitHub release (<a href="#upgrade">§5.5</a>). Host only.</td><td><span class="tag p1">P1</span></td></tr>
 </table>
 
 <h3>5.4 Global options</h3>
@@ -288,6 +289,16 @@ mcpcat [options] &lt;verb&gt; …                             everything else</c
   <tr><td><code>--no-input</code></td><td>Never prompt; non-TTY implies it.</td></tr>
   <tr><td><code>-V, --version</code>, <code>-h, --help</code></td><td>Version from <code>package.json</code>; help.</td></tr>
 </table>
+
+<h3 id="upgrade">5.5 Upgrade</h3>
+<ul>
+  <li><code>mcpcat upgrade</code> (alias <code>update</code>) asks <code>https://api.github.com/repos/ai-ecoverse/mcpcat/releases/latest</code> for the latest release and picks the assets <code>install.sh</code> uses: <code>mcpcat-&lt;version&gt;.tgz</code> and <code>SHA256SUMS</code>. <code>--check</code> only prints the current and the latest version. A newer release replaces the install; the same or an older one is up to date, and a development build (<code>0.0.0</code>) is refused, unless <code>--force</code>.</li>
+  <li>Every URL, the API base, the asset URLs and each redirect, must be https; plain http is allowed only to <code>127.0.0.1</code>, <code>::1</code> or <code>localhost</code>, and a redirect from https to http is refused. <code>MCPCAT_UPDATE_API_BASE</code> replaces the API base for tests, and mcpcat prints one stderr line naming it when it is set.</li>
+  <li>Only an <code>install.sh</code> install is replaced: <code>&lt;data&gt;/&lt;version&gt;/dist/host/mcpcat.mjs</code> beside a <code>&lt;data&gt;/current</code> symlink, run by a launcher on <code>PATH</code> or in <code>INSTALL_DIR</code>. An npm, npx or pnpm install, a git checkout and any other layout are left alone, with the command that updates them (for example <code>npm i -g @ai-ecoverse/mcpcat</code>).</li>
+  <li>Before downloading anything, mcpcat checks that the launcher, its directory and the data directory are writable. It downloads <code>SHA256SUMS</code>, refuses a tarball without an entry before downloading it, checks the tarball's SHA-256, unpacks it beside the current version, and runs the unpacked <code>mcpcat --version</code> with the launcher's Node, which must print the release version within 30 seconds. Then it renames the new version into place, renames a new launcher over the old one, points <code>current</code> at it, and only then removes the old version.</li>
+  <li>mcpcat does not check a build provenance attestation: the GitHub release assets have none, and the npm provenance of the same tarball would need a Sigstore verifier (Fulcio chain, Rekor inclusion, SCTs, a trusted root) in the host bundle.</li>
+  <li>The kernel build prints <code>mcpcat upgrade: not available in the kernel build; the kernel updates it</code> and exits 1.</li>
+</ul>
 
 <h2 id="targets">6. Targets</h2>
 <table>

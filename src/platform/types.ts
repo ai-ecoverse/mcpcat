@@ -1,3 +1,5 @@
+import type { UpgradeRequest } from '../upgrade/plan.ts';
+
 export interface SpawnResult {
   stdin: WritableStream<Uint8Array>;
   stdout: ReadableStream<Uint8Array>;
@@ -73,4 +75,5 @@ export interface Platform {
   onSignal?(signal: 'SIGINT' | 'SIGTERM' | 'SIGHUP', handler: () => void): void | Promise<void>;
   seal?(request: string): Promise<string>;
   packageDir?: string;
+  upgrade?(request: UpgradeRequest): Promise<number>;
 }
