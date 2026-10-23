@@ -99,12 +99,12 @@ jobs:
 
       - name: Fetch the published npm tarball
         run: |
+          mkdir assets
           for _ in $(seq 1 30); do
-            npm view "@ai-ecoverse/mcpcat@$VERSION" version >/dev/null 2>&1 && break
+            npm pack "@ai-ecoverse/mcpcat@$VERSION" --pack-destination assets && break
             sleep 10
           done
-          mkdir assets
-          npm pack "@ai-ecoverse/mcpcat@$VERSION" --pack-destination assets
+          [ -f "assets/ai-ecoverse-mcpcat-$VERSION.tgz" ] || { echo "npm pack: @ai-ecoverse/mcpcat@$VERSION not fetchable after 30 attempts"; exit 1; }
           mv "assets/ai-ecoverse-mcpcat-$VERSION.tgz" "assets/mcpcat-$VERSION.tgz"
           cd assets && sha256sum "mcpcat-$VERSION.tgz" | tee SHA256SUMS
 
