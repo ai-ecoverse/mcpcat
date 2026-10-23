@@ -1281,7 +1281,8 @@ async function dispatchMultiTarget(
 
 export async function run(platform: Platform, version: string, args: string[]): Promise<number> {
   try {
-    if (UPGRADE_VERBS.has(args[0])) return await upgrade(platform, version, args);
+    const at = upgradeAt(args);
+    if (at >= 0) return await upgrade(platform, version, args.slice(at));
     return await runInner(platform, version, args);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EACCES') {
@@ -1300,6 +1301,14 @@ function wantsServeHelp(args: string[]): boolean {
 }
 
 const UPGRADE_VERBS = new Set(['upgrade', 'update']);
+
+function upgradeAt(args: string[]): number {
+  const at = args.findIndex((arg) => UPGRADE_VERBS.has(arg));
+  if (at < 0) return -1;
+  if (args.slice(0, at).includes('--')) return -1;
+  const flags = parseFlags(args.slice(0, at + 1));
+  return flags.positional.length === 1 && flags.positional[0] === args[at] ? at : -1;
+}
 
 async function upgrade(platform: Platform, version: string, args: string[]): Promise<number> {
   const command = args[0];

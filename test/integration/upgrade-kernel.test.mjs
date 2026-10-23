@@ -41,7 +41,13 @@ describe('kernel: upgrade is host only', () => {
 
   for (const command of ['upgrade', 'update']) {
     it(`${command} says it is not available and exits non-zero`, async () => {
-      for (const args of [[command], [command, '--check'], [command, '--force']]) {
+      for (const args of [
+        [command],
+        [command, '--check'],
+        [command, '--force'],
+        ['-v', command, '--check'],
+        ['--silent', '-m', '5', command],
+      ]) {
         const r = await run(args);
         assert.equal(r.status, 1, String(r.stderr));
         assert.equal(String(r.stdout), '');
