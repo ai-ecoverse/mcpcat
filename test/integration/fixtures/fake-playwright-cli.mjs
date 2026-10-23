@@ -67,6 +67,51 @@ const holderRuns = () =>
         .filter((l) => l.includes('"command":"webmcp-polyfill"')).length
     : 1;
 
+const liveScript = process.env.FAKE_PWCLI_LIVE;
+const livePage = liveScript && `${liveScript}.page.json`;
+const fromOrigins = filtered.flatMap((arg, i) =>
+  arg === '--from-origin' && filtered[i + 1] ? [filtered[i + 1]] : []
+);
+const script = () => JSON.parse(readFileSync(liveScript, 'utf8'));
+const page = () =>
+  existsSync(livePage)
+    ? JSON.parse(readFileSync(livePage, 'utf8'))
+    : { loaderId: 'L1', frames: script().frames };
+const pageTools = () => {
+  const { frames } = page();
+  const top = frames[tab ?? currentTab()]?.origin ?? 'https://shop.example.com';
+  return Object.entries(frames).flatMap(([frameId, frame]) =>
+    frame.origin === top || fromOrigins.includes(frame.origin)
+      ? frame.tools.map((tool) => ({ ...tool, origin: frame.origin, frameId }))
+      : []
+  );
+};
+const runLive = (emit) => {
+  const { steps } = script();
+  writeFileSync(livePage, JSON.stringify(page()));
+  let next = 0;
+  setInterval(() => {
+    if (next >= steps.length || !existsSync(`${liveScript}.step${next}`)) return;
+    const step = steps[next++];
+    const state = page();
+    if (step.navigate) {
+      writeFileSync(livePage, JSON.stringify({ loaderId: step.navigate, frames: step.frames }));
+      emit({ event: 'document-ready', loaderId: step.navigate });
+      return;
+    }
+    state.frames[step.frame] = { origin: step.origin, tools: step.tools };
+    writeFileSync(livePage, JSON.stringify(state));
+    emit({
+      event: 'tools-changed',
+      target: step.target ?? tab,
+      frameId: step.frame,
+      loaderId: step.loaderId ?? state.loaderId,
+      origin: step.origin,
+      tools: step.tools.map((tool) => ({ ...tool, origin: step.origin, frameId: step.frame })),
+    });
+  }, 50);
+};
+
 const dialogDir = process.env.FAKE_PWCLI_DIALOG_DIR;
 const dialogOpen = () => Boolean(dialogDir) && existsSync(join(dialogDir, 'open'));
 const holdRuns = () =>
@@ -163,6 +208,7 @@ if (command === 'dialog-hold') {
       stop(1);
     }, Number(process.env.FAKE_PWCLI_HOLDER_EXIT_FIRST));
   }
+  if (liveScript) runLive(emit);
   if (process.env.FAKE_PWCLI_HOLDER_NAVIGATE) {
     setTimeout(
       () => emit({ event: 'document-ready', loaderId: 'L2' }),
@@ -216,6 +262,9 @@ if (command === 'webmcp-list') {
   } else if (tab && !tabIds.includes(tab)) {
     process.stdout.write('[]\n');
     process.exit(0);
+  } else if (liveScript) {
+    process.stdout.write(`${JSON.stringify(pageTools())}\n`);
+    process.exit(0);
   } else {
     try {
       const data = readFileSync(fixtureFile, 'utf8');
@@ -238,7 +287,7 @@ if (command === 'webmcp-list') {
 
   let tools;
   try {
-    tools = JSON.parse(readFileSync(fixtureFile, 'utf8'));
+    tools = liveScript ? pageTools() : JSON.parse(readFileSync(fixtureFile, 'utf8'));
   } catch {
     process.stderr.write('no fixture\n');
     process.exit(2);

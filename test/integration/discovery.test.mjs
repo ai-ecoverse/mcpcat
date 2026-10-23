@@ -196,6 +196,69 @@ describe('discovery: add --from-discovery', () => {
     assert.ok(r.stdout.includes('invalid'));
     assert.ok(r.stdout.includes('bad manifest'));
   });
+
+  it('ignores webmcp tools-changed events instead of adding servers', () => {
+    const home = createTmpDir();
+    const ownState = join(home, 'state');
+    const changed = (url, origin, frameId) =>
+      JSON.stringify({
+        v: 1,
+        standard: 'webmcp',
+        origin,
+        url,
+        via: 'page-api',
+        page: 'https://live.example.com/',
+        targetId: 't9',
+        status: 'valid',
+        summary: {
+          event: 'tools-changed',
+          target: 't9',
+          frameId,
+          loaderId: 'L1',
+          origin,
+          tools: [{ name: 'search', origin }],
+        },
+      });
+    const loaded = JSON.stringify({
+      v: 1,
+      standard: 'webmcp',
+      origin: 'https://live.example.com',
+      url: 'https://live.example.com/',
+      via: 'page-api',
+      page: 'https://live.example.com/',
+      targetId: 't9',
+      status: 'valid',
+      summary: { tools: ['search'] },
+    });
+    const only = runMcpcat(['add', '--from-discovery', '-'], {
+      stateHome: ownState,
+      piDir,
+      input: `${changed('https://frame.example.org/widget', 'https://frame.example.org', 'F2')}\n`,
+    });
+    assert.equal(only.status, 0);
+    assert.equal(only.stdout, 'no MCP candidates found\n');
+    const mixed = runMcpcat(['add', '--from-discovery', '-'], {
+      stateHome: ownState,
+      piDir,
+      input: `${[
+        loaded,
+        changed('https://live.example.com/?tab=2', 'https://live.example.com', 't9'),
+        changed('https://frame.example.org/widget', 'https://frame.example.org', 'F2'),
+      ].join('\n')}\n`,
+    });
+    assert.equal(mixed.status, 0);
+    assert.equal(mixed.stdout.match(/^#\d+ /gm).length, 1, mixed.stdout);
+    const again = runMcpcat(['add', '--from-discovery', '-'], {
+      stateHome: ownState,
+      piDir,
+      input: `${changed('https://live.example.com/?tab=3', 'https://live.example.com', 't9')}\n`,
+    });
+    assert.equal(again.stdout, 'no MCP candidates found\n');
+    const inbox = runMcpcat(['inbox', '--json'], { stateHome: ownState, piDir });
+    const endpoints = JSON.parse(inbox.stdout).map((c) => c.endpoint);
+    assert.deepEqual(endpoints, ['https://live.example.com/']);
+    rmSync(home, { recursive: true, force: true });
+  });
 });
 
 describe('discovery: inbox', () => {

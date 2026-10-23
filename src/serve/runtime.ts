@@ -27,6 +27,17 @@ import {
 import { type HttpRequest, type HttpResponse, handleConnection } from './http.ts';
 import { handleJsonRpc, type RpcTool, type ToolListing, type ToolRunResult } from './jsonrpc.ts';
 import {
+  acknowledgedMessage,
+  completedMessage,
+  createNotifier,
+  isInitialize,
+  listChangedMessage,
+  type Notifier,
+  parseCancelled,
+  parseListen,
+  sseResponse,
+} from './live.ts';
+import {
   buildAllowedHosts,
   buildServerOrigins,
   checkHost,
@@ -48,6 +59,7 @@ import {
   POLYFILL_MIN_VERSION,
   parseCliVersion,
   startHolder,
+  TOOLS_CHANGED_MIN_VERSION,
 } from './webmcp-polyfill.ts';
 
 const CALL_TIMEOUT_MS = 120_000;
@@ -322,6 +334,10 @@ function generateToken(): string {
 function checkContentType(ct: string | undefined): boolean {
   if (!ct) return false;
   return ct.toLowerCase().startsWith('application/json');
+}
+
+function acceptsEventStream(accept: string | undefined): boolean {
+  return (accept ?? '').toLowerCase().includes('text/event-stream');
 }
 
 function checkAcceptHeader(accept: string | undefined): boolean {
@@ -1218,6 +1234,7 @@ async function runWebMcpServe(
   }
   const dialogs = await startDialogs(platform, options, cliPath, cdp, tab, cliVersion);
   const { holder } = polyfill;
+  const notifier = polyfill.live ? createNotifier() : undefined;
   const handler = createWebMcpHandler(platform, {
     playwrightCli: cliPath,
     tab,
@@ -1231,8 +1248,14 @@ async function runWebMcpServe(
     beforeList: holder ? () => holder.ready() : undefined,
     late: () => isLate(holder),
     emptyHint: (unavailable) => emptyToolsHint(options, polyfill, unavailable),
+    topLoader: () => holder?.status().loaderId,
+    onChange: notifier ? () => notifier.notify() : undefined,
   });
-  holder?.onDocument(() => handler.invalidateCache());
+  holder?.onDocument(() => {
+    handler.invalidateCache();
+    notifier?.notify();
+  });
+  if (notifier) holder?.onToolsChanged((event) => void handler.applyToolsChanged(event));
 
   try {
     return await serveWebMcpHandler(
@@ -1241,9 +1264,11 @@ async function runWebMcpServe(
       handler,
       version,
       resolvedBearer,
-      generatedBearer
+      generatedBearer,
+      notifier
     );
   } finally {
+    notifier?.close();
     handler.close();
     await Promise.all([holder?.stop(), dialogs?.stop()]);
   }
@@ -1305,6 +1330,7 @@ function webmcpUsageError(options: ServeOptions): string | undefined {
 interface PolyfillState {
   holder?: Holder;
   oldVersion?: string;
+  live?: boolean;
 }
 
 function startPolyfill(
@@ -1319,15 +1345,17 @@ function startPolyfill(
   if (found && compareVersions(found, POLYFILL_MIN_VERSION) < 0) {
     return { oldVersion: found };
   }
+  const live = found !== undefined && compareVersions(found, TOOLS_CHANGED_MIN_VERSION) >= 0;
   const holder = startHolder(platform, {
     playwrightCli,
     cdp,
     tab,
     reload: options.webmcpReload,
     readyTimeoutMs: Math.min(options.callTimeout, HOLDER_READY_MS),
+    watch: live,
     report: (line) => platform.write(2, line),
   });
-  return { holder };
+  return { holder, live };
 }
 
 function isLate(holder: Holder | undefined): boolean {
@@ -1365,7 +1393,8 @@ async function serveWebMcpHandler(
   handler: ReturnType<typeof createWebMcpHandler>,
   version: string,
   resolvedBearer: string | undefined,
-  generatedBearer: boolean
+  generatedBearer: boolean,
+  notifier: Notifier | undefined
 ): Promise<number> {
   const probe = await handler.getRpcTools();
   if (probe === null) {
@@ -1385,7 +1414,7 @@ async function serveWebMcpHandler(
   const callTool = (name: string, args: unknown) => handler.callTool(name, args);
 
   if (options.transport === 'stdio') {
-    return runWebMcpStdio(platform, getTools, callTool, serverName, version);
+    return runWebMcpStdio(platform, getTools, callTool, serverName, version, notifier);
   }
 
   return runWebMcpHttp(
@@ -1396,7 +1425,8 @@ async function serveWebMcpHandler(
     serverName,
     version,
     resolvedBearer,
-    generatedBearer
+    generatedBearer,
+    notifier
   );
 }
 
@@ -1405,12 +1435,26 @@ async function runWebMcpStdio(
   getTools: () => Promise<ToolListing>,
   callTool: (name: string, args: unknown) => Promise<ToolRunResult>,
   serverName: string,
-  version: string
+  version: string,
+  notifier: Notifier | undefined
 ): Promise<number> {
   const reader = platform.stdin.getReader();
   let buffer = '';
   const dec = new TextDecoder();
   const enc = new TextEncoder();
+  let chain = Promise.resolve();
+  const out = (body: string): Promise<void> => {
+    chain = chain.then(async () => {
+      const writer = platform.stdout.getWriter();
+      try {
+        await writer.write(enc.encode(`${body}\n`));
+      } finally {
+        writer.releaseLock();
+      }
+    });
+    return chain;
+  };
+  const live = notifier ? stdioLive(notifier, out) : undefined;
 
   try {
     for (;;) {
@@ -1423,12 +1467,18 @@ async function runWebMcpStdio(
         const line = buffer.slice(0, nlIdx).trim();
         buffer = buffer.slice(nlIdx + 1);
         if (!line) continue;
+        if (live?.take(line)) continue;
 
-        const outcome = await handleJsonRpc(line, getTools, callTool, serverName, version);
+        const outcome = await handleJsonRpc(
+          line,
+          getTools,
+          callTool,
+          serverName,
+          version,
+          notifier !== undefined
+        );
         if (outcome.status === 202) continue;
-        const writer = platform.stdout.getWriter();
-        await writer.write(enc.encode(`${outcome.body}\n`));
-        writer.releaseLock();
+        await out(outcome.body);
       }
     }
   } finally {
@@ -1436,6 +1486,32 @@ async function runWebMcpStdio(
   }
 
   return 0;
+}
+
+function stdioLive(notifier: Notifier, out: (body: string) => Promise<void>) {
+  const subscriptions = new Set<string | number>();
+  let initialized = false;
+  notifier.subscribe({
+    change() {
+      if (initialized) void out(listChangedMessage()).catch(() => {});
+      for (const id of subscriptions) void out(listChangedMessage(id)).catch(() => {});
+    },
+    close() {},
+  });
+  return {
+    take(line: string): boolean {
+      const listen = parseListen(line);
+      if (listen) {
+        if (listen.tools) subscriptions.add(listen.id);
+        void out(acknowledgedMessage(listen)).catch(() => {});
+        return true;
+      }
+      const cancelled = parseCancelled(line);
+      if (cancelled !== undefined) subscriptions.delete(cancelled);
+      initialized ||= isInitialize(line);
+      return false;
+    },
+  };
 }
 
 async function runWebMcpHttp(
@@ -1446,7 +1522,8 @@ async function runWebMcpHttp(
   serverName: string,
   version: string,
   resolvedBearer: string | undefined,
-  generatedBearer: boolean
+  generatedBearer: boolean,
+  notifier: Notifier | undefined
 ): Promise<number> {
   if (!platform.listen) {
     await platform.write(2, 'mcpcat serve --webmcp: HTTP transport requires platform.listen\n');
@@ -1479,6 +1556,7 @@ async function runWebMcpHttp(
     if (shutdownRequested) return;
     shutdownRequested = true;
     listener.close();
+    notifier?.close();
     if (tokenFilePath) {
       platform.fs.unlink?.(tokenFilePath).catch(() => {});
     }
@@ -1510,84 +1588,18 @@ async function runWebMcpHttp(
     }
   }
 
-  const handler = async (request: HttpRequest): Promise<HttpResponse> => {
-    if (request.target !== '/mcp') {
-      return {
-        status: 404,
-        reason: 'Not Found',
-        headers: { 'content-type': 'text/plain' },
-        body: 'Not Found',
-      };
-    }
-
-    if (request.method !== 'POST') {
-      return {
-        status: 405,
-        reason: 'Method Not Allowed',
-        headers: { 'content-type': 'text/plain', allow: 'POST' },
-        body: 'Method Not Allowed',
-      };
-    }
-
-    if (!checkContentType(request.headers['content-type'])) {
-      return {
-        status: 415,
-        reason: 'Unsupported Media Type',
-        headers: { 'content-type': 'text/plain' },
-        body: 'Content-Type must be application/json',
-      };
-    }
-
-    if (!checkAcceptHeader(request.headers.accept)) {
-      return {
-        status: 406,
-        reason: 'Not Acceptable',
-        headers: { 'content-type': 'text/plain' },
-        body: 'Accept must include application/json or text/event-stream',
-      };
-    }
-
-    const originCheck = checkOrigin(request.headers.origin, serverOrigins, allowedOrigins);
-    if (!originCheck.ok) {
-      return {
-        status: 403,
-        reason: 'Forbidden',
-        headers: { 'content-type': 'text/plain' },
-        body: originCheck.reason ?? 'Forbidden',
-      };
-    }
-
-    const hostCheck = checkHost(request.headers.host, allowedHosts);
-    if (!hostCheck.ok) {
-      return {
-        status: 403,
-        reason: 'Forbidden',
-        headers: { 'content-type': 'text/plain' },
-        body: hostCheck.reason ?? 'Forbidden',
-      };
-    }
-
-    if (resolvedBearer) {
-      const authHeader = request.headers.authorization;
-      const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
-      if (!provided || !constantTimeEqual(provided, resolvedBearer)) {
-        return {
-          status: 401,
-          reason: 'Unauthorized',
-          headers: { 'content-type': 'text/plain' },
-          body: 'Unauthorized',
-        };
-      }
-    }
-
-    const outcome = await handleJsonRpc(request.body, getTools, callTool, serverName, version);
-    return {
-      status: outcome.status,
-      reason: outcome.status === 200 ? 'OK' : 'Accepted',
-      headers: { 'content-type': outcome.contentType },
-      body: outcome.body,
-    };
-  };
+  const handler = (request: HttpRequest): Promise<HttpResponse> =>
+    handleWebMcpRequest(request, {
+      getTools,
+      callTool,
+      serverName,
+      version,
+      serverOrigins,
+      allowedOrigins,
+      allowedHosts,
+      resolvedBearer,
+      notifier,
+    });
 
   try {
     for await (const connection of listener) {
@@ -1610,6 +1622,97 @@ async function runWebMcpHttp(
   }
 
   return 0;
+}
+
+interface WebMcpRequestContext {
+  getTools: () => Promise<ToolListing>;
+  callTool: (name: string, args: unknown) => Promise<ToolRunResult>;
+  serverName: string;
+  version: string;
+  serverOrigins: Set<string>;
+  allowedOrigins: Set<string>;
+  allowedHosts: Set<string>;
+  resolvedBearer: string | undefined;
+  notifier: Notifier | undefined;
+}
+
+function plain(status: number, reason: string, body: string, extra = {}): HttpResponse {
+  return { status, reason, headers: { 'content-type': 'text/plain', ...extra }, body };
+}
+
+function webMcpShape(request: HttpRequest, live: boolean): HttpResponse | undefined {
+  if (request.target !== '/mcp') return plain(404, 'Not Found', 'Not Found');
+  if (live && request.method === 'GET') {
+    return acceptsEventStream(request.headers.accept)
+      ? undefined
+      : plain(406, 'Not Acceptable', 'Accept must include text/event-stream');
+  }
+  if (request.method !== 'POST') {
+    return plain(405, 'Method Not Allowed', 'Method Not Allowed', {
+      allow: live ? 'GET, POST' : 'POST',
+    });
+  }
+  if (!checkContentType(request.headers['content-type'])) {
+    return plain(415, 'Unsupported Media Type', 'Content-Type must be application/json');
+  }
+  if (!checkAcceptHeader(request.headers.accept)) {
+    return plain(
+      406,
+      'Not Acceptable',
+      'Accept must include application/json or text/event-stream'
+    );
+  }
+  return undefined;
+}
+
+function webMcpGuard(request: HttpRequest, ctx: WebMcpRequestContext): HttpResponse | undefined {
+  const originCheck = checkOrigin(request.headers.origin, ctx.serverOrigins, ctx.allowedOrigins);
+  if (!originCheck.ok) return plain(403, 'Forbidden', originCheck.reason ?? 'Forbidden');
+  const hostCheck = checkHost(request.headers.host, ctx.allowedHosts);
+  if (!hostCheck.ok) return plain(403, 'Forbidden', hostCheck.reason ?? 'Forbidden');
+  if (ctx.resolvedBearer) {
+    const authHeader = request.headers.authorization;
+    const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    if (!provided || !constantTimeEqual(provided, ctx.resolvedBearer)) {
+      return plain(401, 'Unauthorized', 'Unauthorized');
+    }
+  }
+  return undefined;
+}
+
+async function handleWebMcpRequest(
+  request: HttpRequest,
+  ctx: WebMcpRequestContext
+): Promise<HttpResponse> {
+  const { notifier } = ctx;
+  const rejected = webMcpShape(request, notifier !== undefined) ?? webMcpGuard(request, ctx);
+  if (rejected) return rejected;
+  if (notifier && request.method === 'GET') {
+    return sseResponse(notifier, [], listChangedMessage(), undefined);
+  }
+  const listen = notifier ? parseListen(request.body) : undefined;
+  if (notifier && listen) {
+    return sseResponse(
+      notifier,
+      [acknowledgedMessage(listen)],
+      listen.tools ? listChangedMessage(listen.id) : undefined,
+      completedMessage(listen.id)
+    );
+  }
+  const outcome = await handleJsonRpc(
+    request.body,
+    ctx.getTools,
+    ctx.callTool,
+    ctx.serverName,
+    ctx.version,
+    notifier !== undefined
+  );
+  return {
+    status: outcome.status,
+    reason: outcome.status === 200 ? 'OK' : 'Accepted',
+    headers: { 'content-type': outcome.contentType },
+    body: outcome.body,
+  };
 }
 
 async function runProxyServe(

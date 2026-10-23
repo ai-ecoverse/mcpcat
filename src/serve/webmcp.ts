@@ -2,6 +2,7 @@ import type { Platform, SpawnResult, WebSocketChannel } from '../platform/types.
 import type { JsonObjectSchema } from './catalog.ts';
 import type { RpcTool, ToolListing, ToolRunResult } from './jsonrpc.ts';
 import { DIALOG_CLAIM_MS, type DialogHolder } from './webmcp-dialog.ts';
+import type { ToolsChanged } from './webmcp-polyfill.ts';
 
 export interface WebMcpAnnotations {
   readOnlyHint?: boolean;
@@ -17,6 +18,7 @@ export interface WebMcpTool {
   origin: string;
   annotations?: WebMcpAnnotations;
   policy?: unknown;
+  frameId?: unknown;
 }
 
 export interface WebMcpOptions {
@@ -32,6 +34,13 @@ export interface WebMcpOptions {
   beforeList?: () => Promise<void>;
   late?: () => boolean;
   emptyHint?: (unavailable: boolean) => string | undefined;
+  topLoader?: () => string | undefined;
+  onChange?: () => void;
+}
+
+interface FrameTools {
+  tools: WebMcpTool[];
+  seq: number;
 }
 
 interface CacheEntry {
@@ -425,7 +434,13 @@ async function runProcess(
   };
 }
 
-type TabRows = { rows: { id: string; active: boolean }[] } | { error: string; notFound?: boolean };
+interface TabRow {
+  id: string;
+  active: boolean;
+  url: string;
+}
+
+type TabRows = { rows: TabRow[] } | { error: string; notFound?: boolean };
 
 async function listTabs(
   platform: Platform,
@@ -444,14 +459,14 @@ async function listTabs(
   if (result.exitCode !== 0) {
     return { error: result.stderr.trim() || `tab-list exited ${result.exitCode}` };
   }
-  const rows: { id: string; active: boolean }[] = [];
+  const rows: TabRow[] = [];
   for (const line of result.stdout.split('\n')) {
-    const match = /^(\d+): \[([^\]\s]+)\] /.exec(line);
+    const match = /^(\d+): \[([^\]\s]+)\] (\S*)/.exec(line);
     if (!match) continue;
     if (Number(match[1]) !== rows.length + 1) {
       return { error: 'could not read playwright-cli tab-list' };
     }
-    rows.push({ id: match[2]!, active: line.endsWith('" (active)') });
+    rows.push({ id: match[2]!, active: line.endsWith('" (active)'), url: match[3]! });
   }
   const active = rows.filter((r) => r.active);
   if (new Set(rows.map((r) => r.id)).size !== rows.length || active.length > 1) {
@@ -579,6 +594,21 @@ async function blockedNow(
   return open ? dialogMessage(tab!, open) : undefined;
 }
 
+function urlOrigin(url: string): string | undefined {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+async function tabOrigin(platform: Platform, options: WebMcpOptions): Promise<string | undefined> {
+  const listed = await listTabs(platform, options);
+  if ('error' in listed) return undefined;
+  const row = listed.rows.find((r) => r.id === options.tab);
+  return row ? urlOrigin(row.url) : undefined;
+}
+
 async function tabGone(platform: Platform, options: WebMcpOptions): Promise<string | undefined> {
   const { tab } = options;
   if (!tab) return undefined;
@@ -606,15 +636,84 @@ function parseListOutput(
   return parsed as WebMcpTool[];
 }
 
+interface Mark {
+  epoch: number;
+  seq: number;
+}
+
+function createLiveFrames(platform: Platform, options: WebMcpOptions) {
+  const { tab } = options;
+  const fromOrigins = options.fromOrigins ?? [];
+  const frames = new Map<string, FrameTools>();
+  let seq = 0;
+  let epoch = 0;
+  let topOrigin: Promise<string | undefined> | undefined;
+  let changes: Promise<void> = Promise.resolve();
+
+  const frameOf = (tool: WebMcpTool): string =>
+    typeof tool.frameId === 'string' ? tool.frameId : (tab ?? '');
+
+  async function admitted(frameId: string, origin: string): Promise<boolean> {
+    if (frameId === tab || fromOrigins.includes(origin)) return true;
+    topOrigin ??= tabOrigin(platform, options);
+    const known = await topOrigin.catch(() => undefined);
+    if (known === undefined) topOrigin = undefined;
+    return origin === known;
+  }
+
+  async function applyNow(event: ToolsChanged, at: number): Promise<void> {
+    const { frameId, loaderId, origin, tools } = event;
+    if (typeof frameId !== 'string' || typeof origin !== 'string' || !Array.isArray(tools)) return;
+    const top = options.topLoader?.();
+    if (frameId === tab && top !== undefined && loaderId !== top) return;
+    if (!(await admitted(frameId, origin)) || at !== epoch) return;
+    frames.set(frameId, {
+      tools: (tools as WebMcpTool[]).map((tool) => ({ ...tool, frameId })),
+      seq: ++seq,
+    });
+    options.onChange?.();
+  }
+
+  return {
+    mark: (): Mark => ({ epoch, seq }),
+    keep(mark: Mark): boolean {
+      if (mark.epoch !== epoch) return false;
+      for (const [id, frame] of frames) {
+        if (frame.seq <= mark.seq) frames.delete(id);
+      }
+      return true;
+    },
+    merged(tools: WebMcpTool[]): WebMcpTool[] {
+      if (frames.size === 0) return tools;
+      const out = tools.filter((tool) => !frames.has(frameOf(tool)));
+      for (const frame of frames.values()) out.push(...frame.tools);
+      return out;
+    },
+    reset(): void {
+      frames.clear();
+      topOrigin = undefined;
+      epoch++;
+    },
+    apply(event: ToolsChanged): Promise<void> {
+      const at = epoch;
+      changes = changes.then(() => applyNow(event, at)).catch(() => {});
+      return changes;
+    },
+  };
+}
+
 export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) {
   let cache: CacheEntry | undefined;
   const baseArgs = buildBaseArgs(options);
 
   const listLimit = Math.max(options.maxOutput, WEBMCP_LIST_FLOOR);
-  const { cdp, tab } = options;
+  const { cdp, tab, dialogs } = options;
   const watcher = cdp && tab ? watchJsDialogs(platform, cdp, tab) : undefined;
   const watch = watcher ? reportWatch(tab!, watcher) : undefined;
-  const { dialogs } = options;
+  const live = createLiveFrames(platform, options);
+  const remember = (mark: Mark, entry: CacheEntry) => {
+    if (live.keep(mark)) cache = entry;
+  };
 
   async function listRaw(fresh = false): Promise<{
     tools: WebMcpTool[];
@@ -626,11 +725,12 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
     if (blocked) return { tools: [], error: blocked };
 
     if (!fresh && cache && Date.now() < cache.expiresAt) {
-      return { tools: cache.tools, unavailable: cache.unavailable };
+      return { tools: live.merged(cache.tools), unavailable: cache.unavailable };
     }
 
     await options.beforeList?.();
     const now = Date.now();
+    const mark = live.mark();
 
     const argv = [options.playwrightCli, 'webmcp-list', '--json', ...baseArgs];
     const result = await runProcess(
@@ -658,8 +758,8 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
     }
 
     if (result.exitCode === 2 && UNAVAILABLE_RE.test(result.stderr)) {
-      cache = { tools: [], unavailable: true, expiresAt: now + options.ttlMs };
-      return { tools: [], unavailable: true };
+      remember(mark, { tools: [], unavailable: true, expiresAt: now + options.ttlMs });
+      return { tools: live.merged([]), unavailable: true };
     }
 
     if (result.exitCode !== 0) {
@@ -674,9 +774,8 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
       if (gone) return { tools: [], error: gone };
     }
 
-    const tools = parsed;
-    cache = { tools, unavailable: false, expiresAt: now + options.ttlMs };
-    return { tools };
+    remember(mark, { tools: parsed, unavailable: false, expiresAt: now + options.ttlMs });
+    return { tools: live.merged(parsed) };
   }
 
   async function getRpcTools(): Promise<ToolListing | null> {
@@ -775,11 +874,12 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
 
   function invalidateCache(): void {
     cache = undefined;
+    live.reset();
   }
 
   function close(): void {
     watcher?.close();
   }
 
-  return { getRpcTools, callTool, invalidateCache, close };
+  return { getRpcTools, callTool, invalidateCache, applyToolsChanged: live.apply, close };
 }

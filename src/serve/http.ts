@@ -16,6 +16,7 @@ export interface HttpResponse {
   reason: string;
   headers: Record<string, string>;
   body: string;
+  stream?: (send: (text: string) => Promise<void>, signal: AbortSignal) => Promise<void>;
 }
 
 export type HttpHandler = (request: HttpRequest, signal: AbortSignal) => Promise<HttpResponse>;
@@ -187,11 +188,11 @@ export async function handleConnection(
       void watch(live, disconnect);
       let response: HttpResponse;
       try {
-        response = await handler(request, disconnect.signal);
+        response = await respond(handler, request, disconnect.signal, writer);
       } finally {
         live.on = false;
       }
-      if (disconnect.signal.aborted) break;
+      if (disconnect.signal.aborted || response.stream) break;
       await writeResponse(writer, response);
 
       const connectionHeader = (parsed.headers.connection ?? '').toLowerCase();
@@ -217,19 +218,40 @@ export async function handleConnection(
   }
 }
 
-async function writeResponse(
+async function respond(
+  handler: HttpHandler,
+  request: HttpRequest,
+  signal: AbortSignal,
+  writer: WritableStreamDefaultWriter<Uint8Array>
+): Promise<HttpResponse> {
+  const response = await handler(request, signal);
+  if (response.stream && !signal.aborted) {
+    await writeHead(writer, response, { connection: 'close' });
+    await response.stream((text) => writer.write(encoder.encode(text)), signal);
+  }
+  return response;
+}
+
+async function writeHead(
   writer: WritableStreamDefaultWriter<Uint8Array>,
-  response: HttpResponse
+  response: HttpResponse,
+  extra: Record<string, string>
 ): Promise<void> {
-  const bodyLength = new TextEncoder().encode(response.body).length;
-  const headers = { ...response.headers, 'content-length': String(bodyLength) };
+  const headers = { ...response.headers, ...extra };
   const lines = [`HTTP/1.1 ${response.status} ${response.reason}`];
   for (const [name, value] of Object.entries(headers)) {
     lines.push(`${name}: ${value}`);
   }
   lines.push('', '');
-  const headBytes = encoder.encode(lines.join('\r\n'));
-  await writer.write(headBytes);
+  await writer.write(encoder.encode(lines.join('\r\n')));
+}
+
+async function writeResponse(
+  writer: WritableStreamDefaultWriter<Uint8Array>,
+  response: HttpResponse
+): Promise<void> {
+  const bodyLength = new TextEncoder().encode(response.body).length;
+  await writeHead(writer, response, { 'content-length': String(bodyLength) });
   if (response.body.length > 0) {
     const bodyBytes = encoder.encode(response.body);
     await writer.write(bodyBytes);

@@ -41,7 +41,8 @@ export async function handleJsonRpc(
   source: ToolSource,
   call: (name: string, args: unknown) => Promise<ToolRunResult>,
   serverName: string,
-  serverVersion: string
+  serverVersion: string,
+  listChanged = false
 ): Promise<RpcOutcome> {
   let parsed: unknown;
   try {
@@ -57,7 +58,7 @@ export async function handleJsonRpc(
   const id = readId(parsed);
   const params = Object.getOwnPropertyDescriptor(parsed, 'params')?.value;
   return completeModernOutcome(
-    await dispatch(id, method, params, source, call, serverName, serverVersion),
+    await dispatch(id, method, params, source, call, serverName, serverVersion, listChanged),
     params
   );
 }
@@ -69,11 +70,13 @@ async function dispatch(
   source: ToolSource,
   call: (name: string, args: unknown) => Promise<ToolRunResult>,
   serverName: string,
-  serverVersion: string
+  serverVersion: string,
+  listChanged: boolean
 ): Promise<RpcOutcome> {
   if (method === 'initialize')
-    return rpcOk(id, initializeResult(params, serverName, serverVersion));
-  if (method === 'server/discover') return rpcOk(id, discoverResult(serverName, serverVersion));
+    return rpcOk(id, initializeResult(params, serverName, serverVersion, listChanged));
+  if (method === 'server/discover')
+    return rpcOk(id, discoverResult(serverName, serverVersion, listChanged));
   if (method === 'ping') return rpcOk(id, {});
   if (method === 'tools/list' || method === 'tools/call') {
     const listing = Array.isArray(source) ? { tools: source } : await source();
@@ -137,10 +140,11 @@ function toolResult(result: ToolRunResult): {
 function initializeResult(
   params: unknown,
   serverName: string,
-  serverVersion: string
+  serverVersion: string,
+  listChanged: boolean
 ): {
   protocolVersion: string;
-  capabilities: { tools: { listChanged: false } };
+  capabilities: { tools: { listChanged: boolean } };
   serverInfo: { name: string; version: string };
 } {
   const requested =
@@ -149,15 +153,19 @@ function initializeResult(
     PROTOCOL_VERSIONS.find((version) => version === requested) ?? PROTOCOL_VERSIONS[0];
   return {
     protocolVersion,
-    capabilities: { tools: { listChanged: false } },
+    capabilities: { tools: { listChanged } },
     serverInfo: { name: serverName, version: serverVersion },
   };
 }
 
-function discoverResult(serverName: string, serverVersion: string): Record<string, unknown> {
+function discoverResult(
+  serverName: string,
+  serverVersion: string,
+  listChanged: boolean
+): Record<string, unknown> {
   return modernDiscoverResult(
     PROTOCOL_VERSIONS,
-    { tools: { listChanged: false } },
+    { tools: { listChanged } },
     { name: serverName, version: serverVersion }
   );
 }

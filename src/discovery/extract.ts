@@ -180,6 +180,7 @@ function extractNlweb(event: DiscoveryEvent): Candidate[] {
 }
 
 function extractWebmcp(event: DiscoveryEvent): Candidate[] {
+  if (isRecord(event.summary) && event.summary.event === 'tools-changed') return [];
   return [
     {
       id: candidateId(),
