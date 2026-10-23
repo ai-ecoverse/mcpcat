@@ -7,7 +7,7 @@ import type {
   Tool,
 } from '@earendil-works/pi-mcp';
 import { AuthStepUpError } from '../auth/auth-provider.ts';
-import { JerkTimeoutError } from '../auth/jerk-token-source.ts';
+import { JerkInvalidUrlError, JerkTimeoutError } from '../auth/jerk-token-source.ts';
 import type { VerboseLogger } from '../cli/verbose.ts';
 import type {
   CallToolOptions,
@@ -481,7 +481,12 @@ export async function createStatelessConnection(
         token,
       });
     } catch (authErr) {
-      if (authErr instanceof AuthStepUpError || authErr instanceof JerkTimeoutError) throw authErr;
+      if (
+        authErr instanceof AuthStepUpError ||
+        authErr instanceof JerkTimeoutError ||
+        authErr instanceof JerkInvalidUrlError
+      )
+        throw authErr;
       throw new McpAuthError(err.response.status, url, err.reason);
     }
   }
