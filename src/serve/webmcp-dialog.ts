@@ -11,6 +11,7 @@ import {
 export const DIALOG_HOLD_MIN_VERSION = '1.39.0';
 export const DIALOG_ANSWER_MS = 7000;
 export const DIALOG_CLAIM_MS = 1000;
+export const DIALOG_FAIL_FAST = 2;
 export const DIALOG_MODES = ['report', 'dismiss', 'accept'] as const;
 
 export type DialogMode = (typeof DIALOG_MODES)[number];
@@ -85,6 +86,26 @@ function answerProblem(event: string, answerMs: number): string {
     : `playwright-cli dialog-hold replied ${event}`;
 }
 
+function latch() {
+  let shut = false;
+  let wait: Promise<void> = Promise.resolve();
+  let release = () => {};
+  return {
+    close() {
+      if (shut) return;
+      shut = true;
+      wait = new Promise<void>((resolve) => {
+        release = () => {
+          shut = false;
+          resolve();
+        };
+      });
+    },
+    open: () => release(),
+    wait: () => wait,
+  };
+}
+
 const isId = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
 
 export function startDialogHolder(platform: Platform, options: DialogHolderOptions): DialogHolder {
@@ -95,6 +116,8 @@ export function startDialogHolder(platform: Platform, options: DialogHolderOptio
   let stopped = false;
   let isReady = false;
   let waitedOut = false;
+  let failing = false;
+  let failures = 0;
   let armed = 0;
   let current: DialogState | undefined;
   let nextId = 1;
@@ -103,20 +126,11 @@ export function startDialogHolder(platform: Platform, options: DialogHolderOptio
   let delay = HOLDER_RESTART_MIN_MS;
   let readyAt: number | undefined;
   let restartTimer: ReturnType<typeof setTimeout> | undefined;
-  let settled = true;
-  let pending: Promise<void> = Promise.resolve();
-  let settle: () => void = () => {};
+  const gate = latch();
   const unready = () => {
     isReady = false;
     waitedOut = false;
-    if (!settled) return;
-    settled = false;
-    pending = new Promise<void>((resolve) => {
-      settle = () => {
-        settled = true;
-        resolve();
-      };
-    });
+    gate.close();
   };
   let exited: Promise<unknown> = Promise.resolve();
 
@@ -162,8 +176,9 @@ export function startDialogHolder(platform: Platform, options: DialogHolderOptio
     }
     if (event.event === 'ready') {
       isReady = true;
+      failing = false;
       readyAt = Date.now();
-      settle();
+      gate.open();
     } else if (event.event === 'dialog-opened' && isId(event.dialogId)) {
       current = { id: event.dialogId, armed: armed > 0 };
       if (current.armed) answer(current);
@@ -186,7 +201,7 @@ export function startDialogHolder(platform: Platform, options: DialogHolderOptio
       child = await platform.spawn({ argv, dieWithParent: true });
     } catch (err) {
       report(`cannot start playwright-cli dialog-hold: ${(err as Error).message}`);
-      scheduleRestart();
+      scheduleRestart(false);
       return;
     }
     if (stopped) {
@@ -208,23 +223,25 @@ export function startDialogHolder(platform: Platform, options: DialogHolderOptio
       current = undefined;
       reply?.resolve('holder-gone');
       if (!stopped) unready();
-      if (readyAt !== undefined && Date.now() - readyAt >= HOLDER_STABLE_MS) {
-        delay = HOLDER_RESTART_MIN_MS;
-      }
+      const reached = readyAt !== undefined;
+      if (reached && Date.now() - readyAt! >= HOLDER_STABLE_MS) delay = HOLDER_RESTART_MIN_MS;
       readyAt = undefined;
       if (stopped) return;
       const why = lastError ?? `exited ${result.status}`;
       report(
         `the dialog holder for tab ${options.tab} stopped (playwright-cli dialog-hold: ${why}); restarting in ${Math.ceil(delay / 1000)}s`
       );
-      scheduleRestart();
+      scheduleRestart(reached);
     });
   };
 
-  const scheduleRestart = () => {
+  const scheduleRestart = (reached: boolean) => {
     if (stopped) return;
     const wait = delay;
     delay = Math.min(delay * 2, HOLDER_RESTART_MAX_MS);
+    failures = reached ? 0 : failures + 1;
+    failing = failures >= DIALOG_FAIL_FAST || wait >= options.readyTimeoutMs;
+    if (failing) gate.open();
     restartTimer = setTimeout(() => {
       restartTimer = undefined;
       if (!stopped) void spawn();
@@ -236,8 +253,8 @@ export function startDialogHolder(platform: Platform, options: DialogHolderOptio
 
   return {
     async ready() {
-      if (waitedOut || isReady) return;
-      if (!(await within(pending, options.readyTimeoutMs))) waitedOut = true;
+      if (failing || waitedOut || isReady) return;
+      if (!(await within(gate.wait(), options.readyTimeoutMs))) waitedOut = true;
     },
     attached: () => isReady,
     open: () => current !== undefined,
@@ -257,7 +274,7 @@ export function startDialogHolder(platform: Platform, options: DialogHolderOptio
     },
     async stop() {
       stopped = true;
-      settle();
+      gate.open();
       clearTimeout(restartTimer);
       const child = proc;
       const w = writer;
