@@ -3,14 +3,17 @@ import type { Platform } from '../platform/types.ts';
 import type { TokenResult, TokenSource } from './token-source.ts';
 
 const MIN_VERSION = [0, 14, 1];
+const URL_IDS_VERSION = [0, 19, 0];
 const VERSION_TIMEOUT_MS = 2_000;
 export const JERK_TIMEOUT_MS = 15_000;
 
 let cachedAvailable: boolean | undefined;
+let cachedVersion: number[] | undefined;
 let cachedKnown: Promise<Set<string>> | undefined;
 
 export function resetJerkCache(): void {
   cachedAvailable = undefined;
+  cachedVersion = undefined;
   cachedKnown = undefined;
 }
 
@@ -38,10 +41,10 @@ function parseVersion(raw: string): number[] | undefined {
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
-function versionSatisfied(actual: number[]): boolean {
+function versionSatisfied(actual: number[], min: number[]): boolean {
   for (let i = 0; i < 3; i++) {
-    if (actual[i] > MIN_VERSION[i]) return true;
-    if (actual[i] < MIN_VERSION[i]) return false;
+    if (actual[i] > min[i]) return true;
+    if (actual[i] < min[i]) return false;
   }
   return true;
 }
@@ -83,11 +86,33 @@ export async function jerkAvailable(platform: Platform): Promise<boolean> {
   try {
     const result = await runJerk(platform, ['jerk', '--version'], VERSION_TIMEOUT_MS);
     const ver = result.status === 0 ? parseVersion(result.stdout) : undefined;
-    cachedAvailable = ver !== undefined && versionSatisfied(ver);
+    cachedAvailable = ver !== undefined && versionSatisfied(ver, MIN_VERSION);
+    cachedVersion = ver;
   } catch {
     cachedAvailable = false;
   }
   return cachedAvailable;
+}
+
+export async function jerkHasUrlIds(platform: Platform): Promise<boolean> {
+  if (!(await jerkAvailable(platform))) return false;
+  return cachedVersion !== undefined && versionSatisfied(cachedVersion, URL_IDS_VERSION);
+}
+
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
+
+export function canonicalJerkUrl(raw: string): string | undefined {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return undefined;
+  }
+  const canonical = `${u.origin}${u.pathname}`;
+  if (u.href !== canonical) return undefined;
+  if (u.protocol === 'https:') return canonical;
+  if (u.protocol === 'http:' && LOOPBACK_HOSTS.has(u.hostname)) return canonical;
+  return undefined;
 }
 
 export interface JerkRun {
@@ -127,12 +152,13 @@ export async function runJerk(
   return { status: result.status, stdout, stderr };
 }
 
-function jerkId(name: string): string {
+export function jerkId(name: string, serverUrl: string): string {
+  if (name.startsWith('url:')) return `mcp:url:${canonicalJerkUrl(serverUrl) ?? serverUrl}`;
   if (name.startsWith('mcp:')) return name;
-  if (name.startsWith('url:')) return `mcp:${name}`;
   return `mcp:${name}`;
 }
 
+export const JERK_EXIT_INVALID = 2;
 export const JERK_EXIT_SIGN_IN = 3;
 export const JERK_EXIT_UNAVAILABLE = 4;
 
@@ -146,6 +172,17 @@ export class JerkSignInRequiredError extends Error {
     this.id = id;
     this.scope = scope;
   }
+}
+
+export class JerkInvalidUrlError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'JerkInvalidUrlError';
+  }
+}
+
+export function jerkMessage(stderr: string): string {
+  return stderr.trim().replace(/^jerk:\s*/, '') || 'jerk refused the URL';
 }
 
 export class JerkTokenSource implements TokenSource {
@@ -162,7 +199,7 @@ export class JerkTokenSource implements TokenSource {
     serverUrl: string,
     scope?: string
   ): Promise<TokenResult | undefined> {
-    const id = jerkId(name);
+    const id = jerkId(name, serverUrl);
     const argv = ['jerk', id, 'get', '--reveal', '--json'];
     if (scope) {
       argv.push('--scope', scope);
@@ -171,6 +208,10 @@ export class JerkTokenSource implements TokenSource {
 
     if (result.status === JERK_EXIT_SIGN_IN) {
       throw new JerkSignInRequiredError(id, scope);
+    }
+
+    if (result.status === JERK_EXIT_INVALID && name.startsWith('url:')) {
+      throw new JerkInvalidUrlError(jerkMessage(result.stderr));
     }
 
     if (result.status === JERK_EXIT_UNAVAILABLE) {

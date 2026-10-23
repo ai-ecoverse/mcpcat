@@ -1,7 +1,11 @@
 import type { Tool } from '@earendil-works/pi-mcp';
 import { coerceArgsBySchema, mergeArgs } from '../args/coerce.ts';
 import { AuthStepUpError, createMcpAuthProvider } from '../auth/auth-provider.ts';
-import { JerkSignInRequiredError, JerkTimeoutError } from '../auth/jerk-token-source.ts';
+import {
+  JerkInvalidUrlError,
+  JerkSignInRequiredError,
+  JerkTimeoutError,
+} from '../auth/jerk-token-source.ts';
 import { PiFileTokenSource } from '../auth/pi-store.ts';
 import { connect } from '../client/connect.ts';
 import type { McpConnection } from '../client/connection.ts';
@@ -147,6 +151,8 @@ Configuration verbs:
   import <file>              Import from other configs
   login <target>             OAuth sign-in
   logout <target>            Remove stored tokens
+                             (in jerk when it has the target, else pi's
+                             mcp-auth.json)
 
 Server and code verbs:
   serve [--stdio|--http] …   Expose commands or proxy upstream as MCP server
@@ -1494,6 +1500,9 @@ function classifyError(err: unknown): { code: number; kind: string; msg: string 
   if (err instanceof JerkSignInRequiredError || err instanceof JerkTimeoutError) {
     return { code: EXIT_AUTH, kind: 'auth', msg: err.message };
   }
+  if (err instanceof JerkInvalidUrlError) {
+    return { code: EXIT_USAGE, kind: 'error', msg: err.message };
+  }
   if (err instanceof AuthStepUpError) {
     const scopeHint = err.scope ? ` --scope ${err.scope}` : '';
     return {
@@ -1583,7 +1592,8 @@ function classifyConnectionError(
     err instanceof McpAuthError ||
     err instanceof AuthStepUpError ||
     err instanceof JerkSignInRequiredError ||
-    err instanceof JerkTimeoutError
+    err instanceof JerkTimeoutError ||
+    err instanceof JerkInvalidUrlError
   ) {
     return classifyError(err);
   }

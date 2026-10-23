@@ -1,10 +1,14 @@
 import {
+  JERK_EXIT_INVALID,
   JERK_EXIT_SIGN_IN,
   JERK_TIMEOUT_MS,
   JerkTimeoutError,
   JerkTokenSource,
   jerkAvailable,
+  jerkHasUrlIds,
+  jerkId,
   jerkKnows,
+  jerkMessage,
   runJerk,
 } from '../auth/jerk-token-source.ts';
 import { SignInCancelledError, signIn } from '../auth/oauth.ts';
@@ -21,12 +25,13 @@ export async function createTokenSource(
   name: string,
   timeoutMs: number = JERK_TIMEOUT_MS
 ): Promise<TokenSource> {
-  if (
-    !isKernel(platform) &&
-    !name.startsWith('url:') &&
-    (await jerkAvailable(platform)) &&
-    (await jerkKnows(platform, jerkMcpId(name)))
-  ) {
+  if (isKernel(platform) || !(await jerkAvailable(platform))) {
+    return new PiFileTokenSource(platform);
+  }
+  const viaJerk = name.startsWith('url:')
+    ? await jerkHasUrlIds(platform)
+    : await jerkKnows(platform, jerkId(name, ''));
+  if (viaJerk) {
     return new JerkTokenSource(platform, timeoutMs);
   }
   return new PiFileTokenSource(platform);
@@ -43,9 +48,13 @@ function positionals(args: string[]): string[] {
   return out;
 }
 
+function withScheme(target: string): string {
+  return /^https?:\/\//i.test(target) ? target : `https://${target}`;
+}
+
 function resolveServerName(target: string): { name: string; isUrl: boolean } {
   try {
-    const u = new URL(target.startsWith('http') ? target : `https://${target}`);
+    const u = new URL(withScheme(target));
     if (target.includes('.') || target.includes(':')) {
       return { name: `url:${u.origin}${u.pathname}`, isUrl: true };
     }
@@ -74,17 +83,11 @@ async function resolveLoginTarget(
 
   const resolved = resolveServerName(target);
   if (resolved.isUrl) {
-    const url = target.startsWith('http') ? target : `https://${target}`;
+    const url = withScheme(target);
     return { name: resolved.name, serverUrl: url, oauth: undefined };
   }
 
   throw new Error(`unknown target '${target}': not a URL and not found in mcp.json`);
-}
-
-function jerkMcpId(name: string): string {
-  if (name.startsWith('mcp:')) return name;
-  if (name.startsWith('url:')) return `mcp:${name}`;
-  return `mcp:${name}`;
 }
 
 async function readStream(stream: ReadableStream<Uint8Array>): Promise<string> {
@@ -113,7 +116,7 @@ async function jerkLogin(
   resolved: LoginTarget,
   args: string[]
 ): Promise<number> {
-  const id = jerkMcpId(resolved.name);
+  const id = jerkId(resolved.name, resolved.serverUrl);
   const argv = ['jerk', id, 'create'];
   const scopeIdx = args.indexOf('--scope');
   if (scopeIdx !== -1 && args[scopeIdx + 1]) {
@@ -146,8 +149,12 @@ async function jerkLogout(
   resolved: LoginTarget,
   source: JerkTokenSource
 ): Promise<number> {
-  const id = jerkMcpId(resolved.name);
+  const id = jerkId(resolved.name, resolved.serverUrl);
   const result = await runJerk(platform, ['jerk', id, 'drop', '--yes'], source.timeoutMs);
+  if (result.status === JERK_EXIT_INVALID && resolved.name.startsWith('url:')) {
+    await platform.write(2, sanitizeTerminal(`mcpcat: ${jerkMessage(result.stderr)}\n`));
+    return 2;
+  }
   if (result.status === 0) {
     await platform.write(1, `Signed out of ${target}\n`);
   } else {
