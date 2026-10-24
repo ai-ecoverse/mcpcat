@@ -8,7 +8,7 @@ const STAMP = {
 function task(taskId) {
   const kind = taskId.split('-')[0];
   const base = { resultType: 'complete', taskId, ...STAMP };
-  if (taskId === '--json') {
+  if (taskId.startsWith('-')) {
     return {
       ...base,
       status: 'completed',

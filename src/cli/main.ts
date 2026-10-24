@@ -1579,13 +1579,19 @@ function missingClientArg(parsed: ParsedArgs): string | undefined {
   return undefined;
 }
 
+function beforeSeparator(args: string[]): string[] {
+  const end = args.indexOf('--');
+  return end < 0 ? args : args.slice(0, end);
+}
+
 async function runInner(platform: Platform, version: string, args: string[]): Promise<number> {
-  if (args.includes('--version') || args.includes('-V')) {
+  const lead = beforeSeparator(args);
+  if (lead.includes('--version') || lead.includes('-V')) {
     await platform.write(1, `${version}\n`);
     return 0;
   }
 
-  if (args.includes('--help') || args.includes('-h') || args[0] === 'help') {
+  if (lead.includes('--help') || lead.includes('-h') || args[0] === 'help') {
     return help(platform, version, args);
   }
 
