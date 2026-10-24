@@ -73,7 +73,7 @@ jobs:
     needs: released
     if: needs.released.outputs.version != ''
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     permissions:
       contents: write
     defaults:
@@ -100,11 +100,11 @@ jobs:
       - name: Fetch the published npm tarball
         run: |
           mkdir assets
-          for _ in $(seq 1 30); do
+          for _ in $(seq 1 90); do
             npm pack "@ai-ecoverse/mcpcat@$VERSION" --pack-destination assets && break
             sleep 10
           done
-          [ -f "assets/ai-ecoverse-mcpcat-$VERSION.tgz" ] || { echo "npm pack: @ai-ecoverse/mcpcat@$VERSION not fetchable after 30 attempts"; exit 1; }
+          [ -f "assets/ai-ecoverse-mcpcat-$VERSION.tgz" ] || { echo "npm pack: @ai-ecoverse/mcpcat@$VERSION not fetchable after 90 attempts"; exit 1; }
           mv "assets/ai-ecoverse-mcpcat-$VERSION.tgz" "assets/mcpcat-$VERSION.tgz"
           cd assets && sha256sum "mcpcat-$VERSION.tgz" | tee SHA256SUMS
 
