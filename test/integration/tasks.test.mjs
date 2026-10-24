@@ -76,6 +76,18 @@ function checks(run, targets) {
       assert.equal(JSON.parse(j.stdout).taskId, '--json');
     });
 
+    for (const id of ['--help', '-V']) {
+      it(`${label}: task get and cancel take ${id} as an id after --`, async () => {
+        const r = await run(['task', 'get', target(), '--', id]);
+        assert.equal(r.status, 0, r.stderr);
+        assert.equal(r.stdout, 'dashed ok\n');
+        const c = await run(['task', 'cancel', target(), '--', id]);
+        assert.equal(c.status, 0, c.stderr);
+        assert.equal(c.stdout, '');
+        assert.match(c.stderr, new RegExp(`cancel requested for task ${id}`));
+      });
+    }
+
     it(`${label}: --json call --async prints the CreateTaskResult`, async () => {
       const r = await run(['--json', 'call', target(), 'build', '--async']);
       assert.equal(r.status, 0, r.stderr);
@@ -202,19 +214,36 @@ describe('host: tasks extension', () => {
     assert.deepEqual(argv, [target, id]);
   });
 
-  it('the poll hint for a dashed id runs as printed', async () => {
-    const target = `stdio:node ${hostFixture}`;
-    const r = await run(['call', '--async', target, 'build', '-d', '{"id":"--json"}']);
+  for (const id of ['--json', '--help']) {
+    it(`the poll hint for id ${id} runs as printed`, async () => {
+      const target = `stdio:node ${hostFixture}`;
+      const r = await run(['call', '--async', target, 'build', '-d', JSON.stringify({ id })]);
+      assert.equal(r.status, 0, r.stderr);
+      const hint = r.stderr.split('poll with: mcpcat task get ')[1].trimEnd();
+      const argv = execFileSync('sh', ['-c', `printf '%s\\0' ${hint}`], { cwd: home })
+        .toString()
+        .split('\0')
+        .slice(0, -1);
+      assert.deepEqual(argv, [target, '--', id]);
+      const g = await run(['task', 'get', ...argv]);
+      assert.equal(g.status, 0, g.stderr);
+      assert.equal(g.stdout, 'dashed ok\n');
+    });
+  }
+
+  it('a stdio command after -- keeps its own --help', async () => {
+    const r = await run(['tools', '--', 'node', hostFixture, '--help']);
     assert.equal(r.status, 0, r.stderr);
-    const hint = r.stderr.split('poll with: mcpcat task get ')[1].trimEnd();
-    const argv = execFileSync('sh', ['-c', `printf '%s\\0' ${hint}`], { cwd: home })
-      .toString()
-      .split('\0')
-      .slice(0, -1);
-    assert.deepEqual(argv, [target, '--', '--json']);
-    const g = await run(['task', 'get', ...argv]);
-    assert.equal(g.status, 0, g.stderr);
-    assert.equal(g.stdout, 'dashed ok\n');
+    assert.equal(r.stdout, 'build\n');
+  });
+
+  it('--help and --version before -- still win', async () => {
+    const h = await run(['task', 'get', '--help', `stdio:node ${hostFixture}`, '--', 'done-1']);
+    assert.equal(h.status, 0, h.stderr);
+    assert.match(h.stdout, /^ {2}task get\|cancel <target> \[--\] <id>$/m);
+    const v = await run(['-V', 'task', 'get', `stdio:node ${hostFixture}`, '--', 'done-1']);
+    assert.equal(v.status, 0, v.stderr);
+    assert.equal(v.stdout, `${pkg.version}\n`);
   });
 
   it('task get -o writes a completed result to the file', async () => {
