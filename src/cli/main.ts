@@ -722,6 +722,11 @@ interface RunCallOptions {
   onProgress?: (progress: number, total?: number, message?: string) => void;
   inputResponses?: Record<string, unknown>;
   target?: string;
+  silent?: boolean;
+}
+
+function shellQuote(value: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 async function renderTaskHandle(
@@ -734,13 +739,12 @@ async function renderTaskHandle(
     return EXIT_OK;
   }
   const id = String(task.taskId);
-  const target = /\s/.test(opts.target ?? '') ? `'${opts.target}'` : opts.target;
   await platform.write(1, sanitizeTerminal(`${id}\n`));
+  if (opts.silent) return EXIT_OK;
+  const hint = `mcpcat task get ${shellQuote(opts.target ?? '')} ${shellQuote(id)}`;
   await platform.write(
     2,
-    sanitizeTerminal(
-      `mcpcat: task ${id} ${String(task.status)}; poll with: mcpcat task get ${target} ${id}\n`
-    )
+    sanitizeTerminal(`mcpcat: task ${id} ${String(task.status)}; poll with: ${hint}\n`)
   );
   return EXIT_OK;
 }
@@ -772,27 +776,47 @@ function taskExit(task: Record<string, unknown>): number {
   return TASK_EXIT[String(task.status)] ?? EXIT_OK;
 }
 
+interface RunTaskOptions {
+  json: boolean;
+  silent: boolean;
+  outputPath?: string;
+}
+
+async function writeTaskJson(
+  platform: Platform,
+  value: unknown,
+  outputPath: string | undefined
+): Promise<void> {
+  const text = `${sanitizeJson(JSON.stringify(value ?? {}, null, 2))}\n`;
+  if (outputPath) await platform.fs.writeFile(outputPath, text);
+  else await platform.write(1, text);
+}
+
 async function runTask(
   platform: Platform,
   conn: McpConnection,
   sub: string,
   taskId: string,
-  json: boolean
+  opts: RunTaskOptions
 ): Promise<number> {
   if (sub === 'cancel') {
     const ack = await conn.cancelTask(taskId);
-    if (json) await platform.write(1, `${sanitizeJson(JSON.stringify(ack ?? {}, null, 2))}\n`);
-    else await platform.write(2, sanitizeTerminal(`mcpcat: cancel requested for task ${taskId}\n`));
+    if (opts.json) await writeTaskJson(platform, ack, opts.outputPath);
+    else if (!opts.silent) {
+      await platform.write(2, sanitizeTerminal(`mcpcat: cancel requested for task ${taskId}\n`));
+    }
     return EXIT_OK;
   }
   const task = await conn.getTask(taskId);
-  if (json) {
-    await platform.write(1, `${sanitizeJson(JSON.stringify(task, null, 2))}\n`);
+  if (opts.json) {
+    await writeTaskJson(platform, task, opts.outputPath);
     return taskExit(task);
   }
   const status = String(task.status);
   if (status === 'completed') {
-    return renderCallResult(platform, (task.result ?? {}) as CallToolResult, {});
+    return renderCallResult(platform, (task.result ?? {}) as CallToolResult, {
+      outputPath: opts.outputPath,
+    });
   }
   if (status === 'input_required') {
     const requests = { taskId, inputRequests: task.inputRequests };
@@ -1102,6 +1126,7 @@ async function runVerb(
         noValidate: parsed.noValidate,
         async: parsed.async,
         target: parsed.target,
+        silent: parsed.silent,
         outputPath: parsed.outputPath,
         onProgress,
         inputResponses: respondData,
@@ -1126,7 +1151,11 @@ async function runVerb(
     case 'complete':
       return runComplete(platform, conn, parsed.toolArgs, parsed.jsonOutput);
     case 'task':
-      return runTask(platform, conn, parsed.toolName!, parsed.toolArgs[0], parsed.jsonOutput);
+      return runTask(platform, conn, parsed.toolName!, parsed.toolArgs[0], {
+        json: parsed.jsonOutput,
+        silent: parsed.silent,
+        outputPath: parsed.outputPath,
+      });
     default:
       await platform.write(2, `mcpcat: unknown command '${parsed.verb}'\n`);
       return EXIT_USAGE;

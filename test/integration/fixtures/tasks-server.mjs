@@ -76,7 +76,7 @@ export function createHandler() {
         return reply(id, { resultType: 'complete', content: [{ type: 'text', text: 'sync' }] });
       return reply(id, {
         resultType: 'task',
-        taskId: 'done-1',
+        taskId: params?.arguments?.id ?? 'done-1',
         status: 'working',
         ...STAMP,
         pollIntervalMs: 1000,

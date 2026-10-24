@@ -1,6 +1,6 @@
 import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -117,6 +117,16 @@ function checks(run, targets) {
       assert.match(r.stderr, /Task not found/);
     });
 
+    it(`${label}: --silent drops the polling and cancel notices`, async () => {
+      const r = await run(['--silent', 'call', '--async', target(), 'build']);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout, 'done-1\n');
+      assert.equal(r.stderr, '');
+      const c = await run(['--silent', 'task', 'cancel', target(), 'work-1']);
+      assert.equal(c.status, 0, c.stderr);
+      assert.equal(c.stderr, '');
+    });
+
     it(`${label}: task cancel`, async () => {
       const r = await run(['task', 'cancel', target(), 'work-1']);
       assert.equal(r.status, 0, r.stderr);
@@ -158,6 +168,32 @@ describe('host: tasks extension', () => {
     ['stdio', () => `stdio:node ${hostFixture}`],
     ['http', () => `http://127.0.0.1:${http.port}/mcp`],
   ]);
+
+  it('the poll hint shell-quotes the target and task id', async () => {
+    const id = `it's $(touch nope) "x"`;
+    const target = `stdio:node ${hostFixture}`;
+    const r = await run(['call', '--async', target, 'build', '-d', JSON.stringify({ id })]);
+    assert.equal(r.status, 0, r.stderr);
+    const hint = r.stderr.split('poll with: mcpcat task get ')[1].trimEnd();
+    const argv = execFileSync('sh', ['-c', `printf '%s\\0' ${hint}`], { cwd: home })
+      .toString()
+      .split('\0')
+      .slice(0, -1);
+    assert.deepEqual(argv, [target, id]);
+  });
+
+  it('task get -o writes a completed result to the file', async () => {
+    const out = join(home, 'result.txt');
+    const r = await run(['task', 'get', `stdio:node ${hostFixture}`, 'done-1', '-o', out]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, '');
+    assert.equal(readFileSync(out, 'utf8'), 'built ok');
+    const j = join(home, 'task.json');
+    const rj = await run(['--json', '-o', j, 'task', 'get', `stdio:node ${hostFixture}`, 'work-1']);
+    assert.equal(rj.status, 0, rj.stderr);
+    assert.equal(rj.stdout, '');
+    assert.equal(JSON.parse(readFileSync(j, 'utf8')).status, 'working');
+  });
 
   it('call --async on a legacy server gets the plain result', async () => {
     const legacy = `stdio:node ${join(fixtures, 'server-stdio-legacy.mjs')}`;
