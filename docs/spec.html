@@ -371,13 +371,13 @@ jq -n '{q:"cimd"}' | mcpcat call docs search -d @-</code></pre>
   <tr><td>Resources, prompts, completion</td><td>P1/P2</td><td>Not in v1</td></tr>
   <tr><td>Progress, cancellation</td><td>Progress on stderr (<code>-v</code> or TTY spinner); SIGINT sends cancel</td><td>Cancellation kills the child (SIGTERM, then SIGKILL)</td></tr>
   <tr><td>Logging</td><td>Server log messages to stderr with <code>-v</code> (2026-07-28: <code>io.modelcontextprotocol/logLevel</code> in <code>_meta</code>)</td><td>—</td></tr>
-  <tr><td>Sampling</td><td>Declined (no LLM)</td><td>—</td></tr>
-  <tr><td>Roots</td><td><code>--root &lt;dir&gt;</code> (repeatable), default: cwd for stdio servers</td><td>—</td></tr>
+  <tr><td>Sampling</td><td>Declined (no LLM): <code>sampling/createMessage</code> gets error <code>-1</code></td><td>—</td></tr>
+  <tr><td>Roots</td><td><code>roots/list</code> answered from <code>--root &lt;dir&gt;</code> (repeatable) over stdio and HTTP; default: cwd for stdio servers</td><td>—</td></tr>
   <tr><td>Tasks extension</td><td>P2</td><td>—</td></tr>
 </table>
 
 <h4 id="mrtr">Elicitation and multi-round-trip requests</h4>
-<p>On a TTY, mcpcat renders the requested schema as a prompt, asks, and retries with <code>inputResponses</code> (2026-07-28) or answers <code>elicitation/create</code> (≤ 2025-11-25). Without a TTY, or with <code>--no-input</code>, it exits 6 and prints the request; <code>--respond @answers.json</code> on a rerun supplies the answers. URL-mode elicitation prints the URL and waits for Enter, except with <code>--no-input</code>.</p>
+<p>On a TTY, mcpcat renders the requested schema as a prompt, asks, and retries with <code>inputResponses</code> (2026-07-28) or answers <code>elicitation/create</code> (≤ 2025-11-25, through pi-mcp's server-request hook, with <code>form</code> and <code>url</code> modes declared only by the client verbs that can answer). Without a TTY, or with <code>--no-input</code>, it exits 6 and prints the request (the 2026-07-28 result, or <code>{"method":"elicitation/create","params":…}</code>), redacted; <code>--respond @answers.json</code> on a rerun supplies the answers. URL-mode elicitation prints the URL and waits for Enter, except with <code>--no-input</code>.</p>
 
 <h2 id="config">10. Configuration</h2>
 

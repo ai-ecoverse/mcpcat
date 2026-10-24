@@ -30,6 +30,12 @@ mcpcat grep issue
 - `--json` prints deterministic JSON for scripts; human output otherwise. `-m <s>` sets the timeout (default 60 s).
 - `code -e '<js>'` runs a short script over configured servers (`tools.mcp__<server>__<tool>(args)`), with `-s <server>` to pick servers.
 
+## When a server asks for input
+
+- A server can ask for input mid-call (elicitation). On a terminal mcpcat prompts; otherwise it exits 6 and prints the request, with its schema, as JSON on stderr.
+- Answer on a rerun with `--respond '{"name":"ada"}'` (or `@file`, `@-`). Ask the user for answers you don't know; never guess a confirmation.
+- `--root <dir>` (repeatable) sets the roots a server sees; stdio servers default to the current directory. Sampling requests are always declined.
+
 ## Configure servers
 
 ```bash
