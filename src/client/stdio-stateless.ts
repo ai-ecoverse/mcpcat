@@ -9,6 +9,8 @@ import type { VerboseLogger } from '../cli/verbose.ts';
 import type { Platform, SpawnResult } from '../platform/types.ts';
 import type {
   CallToolOptions,
+  CompleteResult,
+  CompletionRef,
   GetPromptResult,
   McpConnection,
   PromptInfo,
@@ -228,6 +230,12 @@ function buildConnectionMethods(
     },
     async getPrompt(name: string, args?: Record<string, unknown>): Promise<GetPromptResult> {
       return (await rpc.request('prompts/get', { name, arguments: args ?? {} })) as GetPromptResult;
+    },
+    async complete(
+      ref: CompletionRef,
+      argument: { name: string; value: string }
+    ): Promise<CompleteResult> {
+      return (await rpc.request('completion/complete', { ref, argument })) as CompleteResult;
     },
     async close(): Promise<void> {
       rpc.close();
