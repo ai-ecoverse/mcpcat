@@ -95,13 +95,20 @@ test('npm pack is retried until the published version is fetchable, then the tar
   );
 });
 
-test('npm pack that never succeeds fails the step clearly after 30 attempts', () => {
+test('npm pack keeps retrying for about 15 minutes before giving up', () => {
+  const result = run(89);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.packs, 90);
+  assert.equal(result.sleeps, 89);
+});
+
+test('npm pack that never succeeds fails the step clearly after 90 attempts', () => {
   const result = run(1000);
   assert.equal(result.status, 1);
-  assert.equal(result.packs, 30);
+  assert.equal(result.packs, 90);
   assert.match(
     result.stdout,
-    /npm pack: @ai-ecoverse\/mcpcat@0\.24\.0 not fetchable after 30 attempts/
+    /npm pack: @ai-ecoverse\/mcpcat@0\.24\.0 not fetchable after 90 attempts/
   );
   assert.equal(existsSync(join(result.work, 'assets/SHA256SUMS')), false);
 });
