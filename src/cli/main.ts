@@ -978,12 +978,14 @@ async function runComplete(
     return EXIT_OK;
   }
   const completion = result?.completion;
-  for (const v of completion?.values ?? []) {
-    await platform.write(1, sanitizeTerminal(`${v}\n`));
+  const values = completion?.values ?? [];
+  for (const v of values) {
+    const line = String(v).replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+    await platform.write(1, sanitizeTerminal(`${line}\n`));
   }
   if (completion?.hasMore) {
     const total = completion.total !== undefined ? ` of ${completion.total}` : '';
-    await platform.write(2, `mcpcat: ${completion.values.length}${total} values, more available\n`);
+    await platform.write(2, `mcpcat: ${values.length}${total} values, more available\n`);
   }
   return EXIT_OK;
 }
