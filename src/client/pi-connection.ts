@@ -99,12 +99,15 @@ export async function createPiConnection(options: PiConnectionOptions): Promise<
   const client = new McpClient(clientOptions);
   const onElicit = options.onElicit;
   const inFlight = new Set<(err: unknown) => void>();
+  let abortError: { err: unknown } | undefined;
   function abortWith(err: unknown): void {
+    abortError ??= { err };
     for (const reject of inFlight) reject(err);
   }
   function guard<T>(p: Promise<T>): Promise<T> {
     if (!onElicit) return p;
     return new Promise<T>((resolve, reject) => {
+      if (abortError) reject(abortError.err);
       inFlight.add(reject);
       p.then(resolve, reject).finally(() => inFlight.delete(reject));
     });
