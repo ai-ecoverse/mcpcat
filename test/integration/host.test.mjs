@@ -116,10 +116,4 @@ describe('host: mcpcat', () => {
     assert.equal(status, 2);
     assert.ok(stderr.includes('unknown target'));
   });
-
-  it('known but unimplemented verb exits 1', () => {
-    const { stderr, status } = runHost(['task']);
-    assert.equal(status, 1);
-    assert.ok(stderr.includes('not implemented yet'));
-  });
 });

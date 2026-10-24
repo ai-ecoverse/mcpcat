@@ -194,6 +194,7 @@ function buildConnectionMethods(
       if (callOptions?.inputResponses) {
         params._inputResponses = callOptions.inputResponses;
       }
+      if (callOptions?.async) params._tasks = true;
       const result = (await rpc.request('tools/call', params)) as CallToolResult & {
         resultType?: string;
       };
@@ -236,6 +237,15 @@ function buildConnectionMethods(
       argument: { name: string; value: string }
     ): Promise<CompleteResult> {
       return (await rpc.request('completion/complete', { ref, argument })) as CompleteResult;
+    },
+    async getTask(taskId: string): Promise<Record<string, unknown>> {
+      return (await rpc.request('tasks/get', { taskId, _tasks: true })) as Record<string, unknown>;
+    },
+    async cancelTask(taskId: string): Promise<Record<string, unknown>> {
+      return (await rpc.request('tasks/cancel', { taskId, _tasks: true })) as Record<
+        string,
+        unknown
+      >;
     },
     async close(): Promise<void> {
       rpc.close();

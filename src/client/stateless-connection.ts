@@ -172,6 +172,7 @@ function mcpNameForMethod(method: string, params: Record<string, unknown>): stri
   if (method === 'tools/call') return params.name as string | undefined;
   if (method === 'prompts/get') return params.name as string | undefined;
   if (method === 'resources/read') return params.uri as string | undefined;
+  if (method.startsWith('tasks/')) return params.taskId as string | undefined;
   return undefined;
 }
 
@@ -281,6 +282,8 @@ function buildStatelessMethods(
   | 'listPrompts'
   | 'getPrompt'
   | 'complete'
+  | 'getTask'
+  | 'cancelTask'
 > {
   let serverInfoCache: ServerInfo | undefined;
   let hidden: Record<string, string> = {};
@@ -313,6 +316,7 @@ function buildStatelessMethods(
       if (_callOptions?.inputResponses) {
         params._inputResponses = _callOptions.inputResponses;
       }
+      if (_callOptions?.async) params._tasks = true;
       const result = (await requestFn('tools/call', params)) as CallToolResult & {
         resultType?: string;
       };
@@ -357,6 +361,12 @@ function buildStatelessMethods(
       argument: { name: string; value: string }
     ): Promise<CompleteResult> {
       return (await requestFn('completion/complete', { ref, argument })) as CompleteResult;
+    },
+    async getTask(taskId: string): Promise<Record<string, unknown>> {
+      return (await requestFn('tasks/get', { taskId, _tasks: true })) as Record<string, unknown>;
+    },
+    async cancelTask(taskId: string): Promise<Record<string, unknown>> {
+      return (await requestFn('tasks/cancel', { taskId, _tasks: true })) as Record<string, unknown>;
     },
   };
 }

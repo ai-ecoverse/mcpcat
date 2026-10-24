@@ -212,6 +212,12 @@ export async function createPiConnection(options: PiConnectionOptions): Promise<
           client.request<CompleteResult>('completion/complete', { ref, argument }, reqOpts())
         );
       },
+      async getTask(taskId: string): Promise<Record<string, unknown>> {
+        return guard(client.request('tasks/get', { taskId }, reqOpts()));
+      },
+      async cancelTask(taskId: string): Promise<Record<string, unknown>> {
+        return guard(client.request('tasks/cancel', { taskId }, reqOpts()));
+      },
       async close(): Promise<void> {
         await client.close();
       },

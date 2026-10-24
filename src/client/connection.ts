@@ -41,6 +41,7 @@ export interface ServerInfo {
 export interface CallToolOptions {
   onProgress?: (progress: number, total?: number, message?: string) => void;
   inputResponses?: Record<string, unknown>;
+  async?: boolean;
 }
 
 export interface CompletionRef {
@@ -69,5 +70,7 @@ export interface McpConnection {
   listPrompts(): Promise<PromptInfo[]>;
   getPrompt(name: string, args?: Record<string, unknown>): Promise<GetPromptResult>;
   complete(ref: CompletionRef, argument: { name: string; value: string }): Promise<CompleteResult>;
+  getTask(taskId: string): Promise<Record<string, unknown>>;
+  cancelTask(taskId: string): Promise<Record<string, unknown>>;
   close(): Promise<void>;
 }

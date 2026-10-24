@@ -19,14 +19,17 @@ export function isModernErrorCode(code: number): boolean {
   return MODERN_ERROR_CODES.has(code);
 }
 
+export const TASKS_EXTENSION = 'io.modelcontextprotocol/tasks';
+
 export function modernRequestMeta(
   protocolVersion: string,
-  clientInfo: { name: string; version: string }
+  clientInfo: { name: string; version: string },
+  capabilities: Record<string, unknown> = {}
 ): Record<string, unknown> {
   return {
     [META_PROTOCOL_VERSION]: protocolVersion,
     [META_CLIENT_INFO]: clientInfo,
-    [META_CLIENT_CAPABILITIES]: {},
+    [META_CLIENT_CAPABILITIES]: capabilities,
   };
 }
 
@@ -35,10 +38,11 @@ export function modernRequestParams(
   protocolVersion: string,
   clientInfo: { name: string; version: string }
 ): Record<string, unknown> {
-  const { _inputResponses, ...rest } = params;
+  const { _inputResponses, _tasks, ...rest } = params;
   const out: Record<string, unknown> = { ...rest };
   if (_inputResponses) out.inputResponses = _inputResponses;
-  out._meta = modernRequestMeta(protocolVersion, clientInfo);
+  const capabilities = _tasks ? { extensions: { [TASKS_EXTENSION]: {} } } : {};
+  out._meta = modernRequestMeta(protocolVersion, clientInfo, capabilities);
   return out;
 }
 
