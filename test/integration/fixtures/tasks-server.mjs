@@ -8,6 +8,13 @@ const STAMP = {
 function task(taskId) {
   const kind = taskId.split('-')[0];
   const base = { resultType: 'complete', taskId, ...STAMP };
+  if (taskId === '--json') {
+    return {
+      ...base,
+      status: 'completed',
+      result: { content: [{ type: 'text', text: 'dashed ok' }] },
+    };
+  }
   if (kind === 'done') {
     return {
       ...base,

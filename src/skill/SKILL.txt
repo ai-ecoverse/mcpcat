@@ -29,7 +29,7 @@ mcpcat grep issue
 - `describe` prints a tool's schema and help; `--schema` prints the raw JSON Schema, `--ts` TypeScript declarations.
 - `--json` prints deterministic JSON for scripts; human output otherwise. `-m <s>` sets the timeout (default 60 s).
 - `complete <target> prompt <name> <arg>=<partial>` (or `resource <uri-template> <var>=<partial>`) lists the server's completions, one per line.
-- `call --async <target> <tool> …` lets a server that supports tasks answer with a task id (stdout) instead of waiting; `task get <target> <id>` prints the result once it is `completed` (exit 0 while `working`, 5 when `failed`), `task cancel <target> <id>` asks the server to stop.
+- `call --async <target> <tool> …` lets a server that supports tasks answer with a task id (stdout) instead of waiting; `task get <target> <id>` prints the result once it is `completed` (exit 0 while `working`, 5 when `failed`), `task cancel <target> <id>` asks the server to stop; put `--` before an id that starts with `-` (`task get <target> -- <id>`), as the stderr hint does.
 - `code -e '<js>'` runs a short script over configured servers (`tools.mcp__<server>__<tool>(args)`), with `-s <server>` to pick servers.
 
 ## When a server asks for input
