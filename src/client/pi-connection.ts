@@ -3,6 +3,7 @@ import {
   type CallToolResult,
   McpClient,
   type McpClientOptions,
+  McpError,
   type McpRequestOptions,
   type McpTransport,
   type ReadResourceResult,
@@ -40,6 +41,7 @@ export interface PiConnectionOptions {
   authProvider?: AuthProvider;
   roots?: { uri: string; name?: string }[];
   existingProcess?: { proc: SpawnResult; pendingStdout: string };
+  onElicit?: (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
 }
 
 function buildStderrHandler(options: PiConnectionOptions): ((chunk: string) => void) | undefined {
@@ -90,11 +92,33 @@ export async function createPiConnection(options: PiConnectionOptions): Promise<
     name: 'mcpcat',
     version: options.version ?? '0.0.0',
     requestTimeoutMs: options.timeoutMs,
-    capabilities: { elicitation: {} },
+    capabilities: options.onElicit ? { elicitation: { form: {}, url: {} } } : {},
     roots: options.roots,
   };
 
   const client = new McpClient(clientOptions);
+  let abortWith: (err: unknown) => void = () => {};
+  const aborted = new Promise<never>((_, reject) => {
+    abortWith = reject;
+  });
+  aborted.catch(() => {});
+  function guard<T>(p: Promise<T>): Promise<T> {
+    return Promise.race([p, aborted]);
+  }
+  const onElicit = options.onElicit;
+  if (onElicit) {
+    client.setRequestHandler('elicitation/create', async (params) => {
+      try {
+        return await onElicit((params ?? {}) as Record<string, unknown>);
+      } catch (err) {
+        abortWith(err);
+        return { action: 'cancel' };
+      }
+    });
+  }
+  client.setRequestHandler('sampling/createMessage', () => {
+    throw new McpError(-1, 'sampling declined: mcpcat has no LLM');
+  });
   const transport = buildTransport(options);
 
   if (options.verbose?.enabled) {
@@ -131,7 +155,7 @@ export async function createPiConnection(options: PiConnectionOptions): Promise<
         };
       },
       async listTools(): Promise<Tool[]> {
-        return client.listTools(reqOpts());
+        return guard(client.listTools(reqOpts()));
       },
       async callTool(
         name: string,
@@ -150,30 +174,26 @@ export async function createPiConnection(options: PiConnectionOptions): Promise<
         const callArgs = callOptions?.inputResponses
           ? { ...args, _meta: { inputResponses: callOptions.inputResponses } }
           : args;
-        return client.callTool(name, callArgs, o);
+        return guard(client.callTool(name, callArgs, o));
       },
       async listResources(): Promise<Resource[]> {
-        return client.listResources(reqOpts());
+        return guard(client.listResources(reqOpts()));
       },
       async listResourceTemplates(): Promise<ResourceTemplate[]> {
-        return client.listResourceTemplates(reqOpts());
+        return guard(client.listResourceTemplates(reqOpts()));
       },
       async readResource(uri: string): Promise<ReadResourceResult> {
-        return client.readResource(uri, reqOpts());
+        return guard(client.readResource(uri, reqOpts()));
       },
       async listPrompts(): Promise<PromptInfo[]> {
-        const result = await client.request<{ prompts?: PromptInfo[] }>(
-          'prompts/list',
-          {},
-          reqOpts()
+        const result = await guard(
+          client.request<{ prompts?: PromptInfo[] }>('prompts/list', {}, reqOpts())
         );
         return result?.prompts ?? [];
       },
       async getPrompt(name: string, args?: Record<string, unknown>): Promise<GetPromptResult> {
-        return client.request<GetPromptResult>(
-          'prompts/get',
-          { name, arguments: args ?? {} },
-          reqOpts()
+        return guard(
+          client.request<GetPromptResult>('prompts/get', { name, arguments: args ?? {} }, reqOpts())
         );
       },
       async close(): Promise<void> {

@@ -9,7 +9,12 @@ import {
 import { PiFileTokenSource } from '../auth/pi-store.ts';
 import { connect } from '../client/connect.ts';
 import type { McpConnection } from '../client/connection.ts';
-import { handleElicitation, parseInputRequest } from '../client/elicit.ts';
+import {
+  answerElicitationRequest,
+  ElicitationRequiredError,
+  handleElicitation,
+  parseInputRequest,
+} from '../client/elicit.ts';
 import {
   InputRequiredError,
   McpAuthError,
@@ -186,7 +191,11 @@ Options:
   -v, --verbose              Trace on stderr
   --silent                   Suppress progress
   -o, --output <path>        Write result to file
-  --no-input                 Never prompt (non-TTY implies it)
+  --no-input                 Never prompt (non-TTY implies it); a server asking
+                             for input then exits 6 with the request on stderr
+  --respond <json>           Answers to a server's input request (or @file, @-)
+  --root <dir>               Root offered to the server (repeatable; stdio
+                             default: cwd)
   -V, --version              Print version
   -h, --help                 Show this help
 
@@ -1789,6 +1798,10 @@ async function runClientVerb(
     if ('exitCode' in loaded) return loaded.exitCode;
     respondData = loaded.data;
   }
+  const isTty =
+    !parsed.noInput && platform.kind === 'host' && platform.isatty(0) && platform.isatty(2);
+  const onElicit = (params: Record<string, unknown>) =>
+    answerElicitationRequest(redactWrites(platform, redact), params, isTty, respondData);
 
   let conn: McpConnection;
   try {
@@ -1803,6 +1816,7 @@ async function runClientVerb(
       authProvider,
       roots,
       redact,
+      onElicit,
     });
     activeConn = conn;
   } catch (err) {
@@ -1847,6 +1861,11 @@ async function runClientVerb(
         redact,
         parsed.noInput
       );
+    }
+    if (err instanceof ElicitationRequiredError) {
+      const out = sanitizeJson(JSON.stringify(redactDeep(err.request, redact), null, 2));
+      await platform.write(2, `${out}\n`);
+      return EXIT_INPUT_REQUIRED;
     }
     const e = classifyError(err);
     await writeErrRedacted(platform, parsed.jsonOutput, e.kind, e.msg, redact);

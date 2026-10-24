@@ -133,3 +133,35 @@ export async function handleElicitation(
   const answers = await promptForSchema(platform, schema);
   return { answers };
 }
+
+export class ElicitationRequiredError extends Error {
+  readonly request: Record<string, unknown>;
+  constructor(request: Record<string, unknown>) {
+    super('Server requires input (elicitation/create)');
+    this.name = 'ElicitationRequiredError';
+    this.request = request;
+  }
+}
+
+export async function answerElicitationRequest(
+  platform: Platform,
+  params: Record<string, unknown>,
+  isTty: boolean,
+  respondData: Record<string, unknown> | undefined
+): Promise<Record<string, unknown>> {
+  const url = params.mode === 'url' && typeof params.url === 'string' ? params.url : undefined;
+  const result = await handleElicitation(
+    platform,
+    {
+      message: typeof params.message === 'string' ? params.message : undefined,
+      schema: params.requestedSchema as InputSchema | undefined,
+      url,
+    },
+    isTty,
+    respondData
+  );
+  if ('exitCode' in result) {
+    throw new ElicitationRequiredError({ method: 'elicitation/create', params });
+  }
+  return url ? { action: 'accept' } : { action: 'accept', content: result.answers };
+}

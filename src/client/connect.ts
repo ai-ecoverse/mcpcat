@@ -27,6 +27,7 @@ export interface ConnectOptions {
   authProvider?: AuthProvider;
   roots?: { uri: string; name?: string }[];
   redact?: (text: string) => string;
+  onElicit?: (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: protocol negotiation requires many branches
@@ -36,6 +37,7 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
     timeoutMs: options.timeoutMs,
     signal: options.signal,
     verbose: options.verbose,
+    onElicit: options.onElicit,
     platform,
   };
 
@@ -86,6 +88,7 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
       headers: options.headers,
       fetchImpl: platform.fetch,
       authProvider: options.authProvider,
+      roots: options.roots,
       ...shared,
     });
   }
@@ -114,6 +117,7 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
         headers: options.headers,
         fetchImpl: platform.fetch,
         authProvider: options.authProvider,
+        roots: options.roots,
         ...shared,
       });
     }
