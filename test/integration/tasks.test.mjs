@@ -54,6 +54,26 @@ function checks(run, targets) {
       assert.equal(r.status, 0, r.stderr);
       assert.equal(r.stdout, 'done-1\n');
       assert.match(r.stderr, /task done-1 working; poll with: mcpcat task get .* done-1/);
+      assert.doesNotMatch(r.stderr, / -- /);
+    });
+
+    it(`${label}: the poll hint puts -- before an id that starts with -`, async () => {
+      const r = await run(['call', '--async', target(), 'build', '-d', '{"id":"--json"}']);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout, '--json\n');
+      assert.match(r.stderr, /poll with: mcpcat task get .* -- --json\n$/);
+    });
+
+    it(`${label}: task get and cancel take an id that looks like an option after --`, async () => {
+      const r = await run(['task', 'get', target(), '--', '--json']);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout, 'dashed ok\n');
+      const c = await run(['task', 'cancel', target(), '--', '--json']);
+      assert.equal(c.status, 0, c.stderr);
+      assert.match(c.stderr, /cancel requested for task --json/);
+      const j = await run(['--json', 'task', 'get', target(), '--', '--json']);
+      assert.equal(j.status, 0, j.stderr);
+      assert.equal(JSON.parse(j.stdout).taskId, '--json');
     });
 
     it(`${label}: --json call --async prints the CreateTaskResult`, async () => {
@@ -182,6 +202,21 @@ describe('host: tasks extension', () => {
     assert.deepEqual(argv, [target, id]);
   });
 
+  it('the poll hint for a dashed id runs as printed', async () => {
+    const target = `stdio:node ${hostFixture}`;
+    const r = await run(['call', '--async', target, 'build', '-d', '{"id":"--json"}']);
+    assert.equal(r.status, 0, r.stderr);
+    const hint = r.stderr.split('poll with: mcpcat task get ')[1].trimEnd();
+    const argv = execFileSync('sh', ['-c', `printf '%s\\0' ${hint}`], { cwd: home })
+      .toString()
+      .split('\0')
+      .slice(0, -1);
+    assert.deepEqual(argv, [target, '--', '--json']);
+    const g = await run(['task', 'get', ...argv]);
+    assert.equal(g.status, 0, g.stderr);
+    assert.equal(g.stdout, 'dashed ok\n');
+  });
+
   it('task get -o writes a completed result to the file', async () => {
     const out = join(home, 'result.txt');
     const r = await run(['task', 'get', `stdio:node ${hostFixture}`, 'done-1', '-o', out]);
@@ -206,18 +241,20 @@ describe('host: tasks extension', () => {
     ['task', 'bogus', 'x', 'id'],
     ['task', 'get', 'x'],
     ['task', 'get', 'x', 'id', 'extra'],
+    ['task', 'get', 'x', '--json'],
+    ['task', 'get', 'x', '--'],
     ['task'],
   ]) {
     it(`usage error for ${args.join(' ')}`, async () => {
       const r = await run(args);
       assert.equal(r.status, 2, r.stderr);
-      assert.match(r.stderr, /usage: mcpcat task get\|cancel <target> <id>/);
+      assert.match(r.stderr, /usage: mcpcat task get\|cancel <target> \[--\] <id>/);
     });
   }
 
   it('--help names task and --async', async () => {
     const r = await run(['--help']);
-    assert.match(r.stdout, /^ {2}task get\|cancel <target> <id>$/m);
+    assert.match(r.stdout, /^ {2}task get\|cancel <target> \[--\] <id>$/m);
     assert.match(r.stdout, /^ {2}--async {2,}/m);
   });
 });

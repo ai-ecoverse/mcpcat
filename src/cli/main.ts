@@ -146,8 +146,9 @@ Client verbs:
   complete <target> prompt|resource <ref> <arg>=<partial>
                              Complete an argument of a prompt or resource
                              template (completion/complete)
-  task get|cancel <target> <id>
-                             Poll or cancel a task from call --async
+  task get|cancel <target> [--] <id>
+                             Poll or cancel a task from call --async; put --
+                             before an id that starts with -
 
 Configuration verbs:
   add <name> <url>           Add a server to mcp.json
@@ -482,6 +483,9 @@ function parseFlags(args: string[]): {
       respondArg = rest[++j];
     } else if ((ra === '-o' || ra === '--output') && rest[j + 1] !== undefined) {
       outputPath = rest[++j];
+    } else if (ra === '--' && positional[0] === 'task') {
+      toolArgs.push(...rest.slice(j + 1));
+      break;
     } else if (ra === '--help' || ra === '-h') {
       toolArgs.length = 0;
       break;
@@ -741,7 +745,8 @@ async function renderTaskHandle(
   const id = String(task.taskId);
   await platform.write(1, sanitizeTerminal(`${id}\n`));
   if (opts.silent) return EXIT_OK;
-  const hint = `mcpcat task get ${shellQuote(opts.target ?? '')} ${shellQuote(id)}`;
+  const sep = id.startsWith('-') ? ' --' : '';
+  const hint = `mcpcat task get ${shellQuote(opts.target ?? '')}${sep} ${shellQuote(id)}`;
   await platform.write(
     2,
     sanitizeTerminal(`mcpcat: task ${id} ${String(task.status)}; poll with: ${hint}\n`)
@@ -760,7 +765,7 @@ function finishCall(
   return renderCallResult(platform, result, { json: opts.json, outputPath: opts.outputPath });
 }
 
-const TASK_USAGE = 'usage: mcpcat task get|cancel <target> <id>';
+const TASK_USAGE = 'usage: mcpcat task get|cancel <target> [--] <id>';
 
 const TASK_EXIT: Record<string, number> = {
   working: EXIT_OK,
