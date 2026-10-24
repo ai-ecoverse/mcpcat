@@ -980,7 +980,7 @@ async function runComplete(
   const completion = result?.completion;
   const values = completion?.values ?? [];
   for (const v of values) {
-    const line = String(v).replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+    const line = String(v).replace(/\\/g, '\\\\').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
     await platform.write(1, sanitizeTerminal(`${line}\n`));
   }
   if (completion?.hasMore) {

@@ -88,10 +88,10 @@ function checks(run, targets) {
       assert.ok(r.stdout.includes('ann'), r.stdout);
     });
 
-    it(`${label}: newlines inside a value are escaped`, async () => {
+    it(`${label}: backslashes, newlines and CRs inside a value are escaped`, async () => {
       const r = await run(['complete', target(), 'prompt', 'greet', 'name=l']);
       assert.equal(r.status, 0, r.stderr);
-      assert.equal(r.stdout, 'line\\nbreak\\r\n');
+      assert.equal(r.stdout, 'line\\nbreak\\r\nlit\\\\n\n');
     });
 
     it(`${label}: hasMore without values`, async () => {
