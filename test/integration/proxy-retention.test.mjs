@@ -48,7 +48,7 @@ describe('serve --proxy to a legacy upstream', { skip: isStandalone }, () => {
       tail = lines.pop();
       for (const line of lines) if (line.includes('"result"')) answered += 1;
     });
-    const exited = new Promise((resolve) => child.on('exit', resolve));
+    const exited = new Promise((resolve) => child.on('close', resolve));
     const write = (msg) =>
       child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...msg })}\n`)
         ? Promise.resolve()

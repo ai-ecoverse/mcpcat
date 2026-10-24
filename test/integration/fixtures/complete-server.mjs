@@ -1,4 +1,4 @@
-const NAMES = ['ada', 'alan', 'alonzo', 'bob', '\u001b]0;evil\u0007ann', 'line\nbreak\r'];
+const NAMES = ['ada', 'alan', 'alonzo', 'bob', '\u001b]0;evil\u0007ann', 'line\nbreak\r', 'lit\\n'];
 const IDS = ['1', '10', '100', '2'];
 
 export function createHandler(legacy) {
