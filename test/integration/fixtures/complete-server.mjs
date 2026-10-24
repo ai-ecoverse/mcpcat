@@ -1,11 +1,20 @@
-const NAMES = ['ada', 'alan', 'alonzo', 'bob', '\u001b]0;evil\u0007ann'];
+const NAMES = ['ada', 'alan', 'alonzo', 'bob', '\u001b]0;evil\u0007ann', 'line\nbreak\r'];
 const IDS = ['1', '10', '100', '2'];
 
 export function createHandler(legacy) {
   const reply = (id, result) => ({ jsonrpc: '2.0', id, result });
   const fail = (id, code, message) => ({ jsonrpc: '2.0', id, error: { code, message } });
+  let asking;
   return (msg) => {
     const { id, method, params } = msg;
+    if (!method && id === 'ask-1' && asking !== undefined) {
+      const action = msg.result?.action ?? 'error';
+      const out = reply(asking, {
+        completion: { values: [`${action} ${JSON.stringify(msg.result?.content)}`] },
+      });
+      asking = undefined;
+      return out;
+    }
     if (id === undefined) return null;
     if (method === 'server/discover') {
       if (legacy) return fail(id, -32601, 'Method not found');
@@ -24,6 +33,20 @@ export function createHandler(legacy) {
     }
     if (method === 'completion/complete') {
       const { ref, argument } = params ?? {};
+      if (legacy && ref?.name === 'ask') {
+        asking = id;
+        return {
+          jsonrpc: '2.0',
+          id: 'ask-1',
+          method: 'elicitation/create',
+          params: {
+            mode: 'form',
+            message: 'Which?',
+            requestedSchema: { type: 'object', properties: { pick: { type: 'string' } } },
+          },
+        };
+      }
+      if (ref?.name === 'empty') return reply(id, { completion: { hasMore: true } });
       if (ref?.type === 'ref/prompt' && ref.name === 'greet' && argument?.name === 'name') {
         const values = NAMES.filter((n) => n.startsWith(argument.value));
         return reply(id, { completion: { values, total: values.length, hasMore: false } });
