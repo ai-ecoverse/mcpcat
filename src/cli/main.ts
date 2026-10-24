@@ -1,4 +1,4 @@
-import type { Tool } from '@earendil-works/pi-mcp';
+import type { CallToolResult, Tool } from '@earendil-works/pi-mcp';
 import { coerceArgsBySchema, mergeArgs } from '../args/coerce.ts';
 import { AuthStepUpError, createMcpAuthProvider } from '../auth/auth-provider.ts';
 import {
@@ -114,8 +114,6 @@ const CONFIG_VERBS: Record<string, boolean> = {
   import: true,
 };
 
-const UNIMPLEMENTED_VERBS = new Set(['task']);
-
 const CLIENT_VERBS = new Set([
   'info',
   'tools',
@@ -127,6 +125,7 @@ const CLIENT_VERBS = new Set([
   'prompts',
   'prompt',
   'complete',
+  'task',
 ]);
 
 function helpText(version: string): string {
@@ -147,6 +146,8 @@ Client verbs:
   complete <target> prompt|resource <ref> <arg>=<partial>
                              Complete an argument of a prompt or resource
                              template (completion/complete)
+  task get|cancel <target> <id>
+                             Poll or cancel a task from call --async
 
 Configuration verbs:
   add <name> <url>           Add a server to mcp.json
@@ -195,6 +196,8 @@ Options:
   -v, --verbose              Trace on stderr
   --silent                   Suppress progress
   -o, --output <path>        Write result to file
+  --async                    Let the server answer call with a task handle
+                             (io.modelcontextprotocol/tasks); prints its id
   --no-input                 Never prompt (non-TTY implies it); a server asking
                              for input then exits 6 with the request on stderr
   --respond <json>           Answers to a server's input request (or @file, @-)
@@ -304,6 +307,7 @@ interface ParsedArgs {
   verbose: boolean;
   silent: boolean;
   noValidate: boolean;
+  async: boolean;
   trailingCommand: string[] | undefined;
   respondArg: string | undefined;
   noInput: boolean;
@@ -368,6 +372,7 @@ function parseFlags(args: string[]): {
   roots: string[];
   outputPath: string | undefined;
   noValidate: boolean;
+  async: boolean;
   rest: string[];
 } {
   const headers: Record<string, string> = {};
@@ -393,6 +398,7 @@ function parseFlags(args: string[]): {
   const roots: string[] = [];
   let outputPath: string | undefined;
   let noValidate = false;
+  let asyncCall = false;
   const rest: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -447,6 +453,8 @@ function parseFlags(args: string[]): {
       memoryLimitMiB = Number(args[++i]);
     } else if (arg === '--no-validate') {
       noValidate = true;
+    } else if (arg === '--async') {
+      asyncCall = true;
     } else if (!arg.startsWith('-')) {
       positional.push(arg);
       const maxPositional = resolveMaxPositional(positional);
@@ -466,6 +474,8 @@ function parseFlags(args: string[]): {
       jsonOutput = true;
     } else if (ra === '--no-validate') {
       noValidate = true;
+    } else if (ra === '--async') {
+      asyncCall = true;
     } else if (ra === '--no-input') {
       noInput = true;
     } else if (ra === '--respond' && rest[j + 1] !== undefined) {
@@ -504,6 +514,7 @@ function parseFlags(args: string[]): {
     roots,
     outputPath,
     noValidate,
+    async: asyncCall,
     rest: toolArgs,
   };
 }
@@ -570,6 +581,7 @@ function parseArgs(args: string[]): ParsedArgs {
     verbose: flags.verbose,
     silent: flags.silent,
     noValidate: flags.noValidate,
+    async: flags.async,
     respondArg: flags.respondArg,
     noInput: flags.noInput,
     roots: flags.roots,
@@ -705,9 +717,117 @@ async function runTools(platform: Platform, conn: McpConnection, json: boolean):
 interface RunCallOptions {
   json?: boolean;
   noValidate?: boolean;
+  async?: boolean;
   outputPath?: string;
   onProgress?: (progress: number, total?: number, message?: string) => void;
   inputResponses?: Record<string, unknown>;
+  target?: string;
+  silent?: boolean;
+}
+
+function shellQuote(value: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+async function renderTaskHandle(
+  platform: Platform,
+  task: Record<string, unknown>,
+  opts: RunCallOptions
+): Promise<number> {
+  if (opts.json) {
+    await platform.write(1, `${sanitizeJson(JSON.stringify(task, null, 2))}\n`);
+    return EXIT_OK;
+  }
+  const id = String(task.taskId);
+  await platform.write(1, sanitizeTerminal(`${id}\n`));
+  if (opts.silent) return EXIT_OK;
+  const hint = `mcpcat task get ${shellQuote(opts.target ?? '')} ${shellQuote(id)}`;
+  await platform.write(
+    2,
+    sanitizeTerminal(`mcpcat: task ${id} ${String(task.status)}; poll with: ${hint}\n`)
+  );
+  return EXIT_OK;
+}
+
+function finishCall(
+  platform: Platform,
+  result: CallToolResult,
+  opts: RunCallOptions
+): Promise<number> {
+  if ((result as { resultType?: string }).resultType === 'task') {
+    return renderTaskHandle(platform, result as unknown as Record<string, unknown>, opts);
+  }
+  return renderCallResult(platform, result, { json: opts.json, outputPath: opts.outputPath });
+}
+
+const TASK_USAGE = 'usage: mcpcat task get|cancel <target> <id>';
+
+const TASK_EXIT: Record<string, number> = {
+  working: EXIT_OK,
+  cancelled: EXIT_TOOL_ERROR,
+  failed: EXIT_RPC_ERROR,
+  input_required: EXIT_INPUT_REQUIRED,
+};
+
+function taskExit(task: Record<string, unknown>): number {
+  if (task.status === 'completed') {
+    return (task.result as { isError?: boolean } | undefined)?.isError ? EXIT_TOOL_ERROR : EXIT_OK;
+  }
+  return TASK_EXIT[String(task.status)] ?? EXIT_OK;
+}
+
+interface RunTaskOptions {
+  json: boolean;
+  silent: boolean;
+  outputPath?: string;
+}
+
+async function writeTaskJson(
+  platform: Platform,
+  value: unknown,
+  outputPath: string | undefined
+): Promise<void> {
+  const text = `${sanitizeJson(JSON.stringify(value ?? {}, null, 2))}\n`;
+  if (outputPath) await platform.fs.writeFile(outputPath, text);
+  else await platform.write(1, text);
+}
+
+async function runTask(
+  platform: Platform,
+  conn: McpConnection,
+  sub: string,
+  taskId: string,
+  opts: RunTaskOptions
+): Promise<number> {
+  if (sub === 'cancel') {
+    const ack = await conn.cancelTask(taskId);
+    if (opts.json) await writeTaskJson(platform, ack, opts.outputPath);
+    else if (!opts.silent) {
+      await platform.write(2, sanitizeTerminal(`mcpcat: cancel requested for task ${taskId}\n`));
+    }
+    return EXIT_OK;
+  }
+  const task = await conn.getTask(taskId);
+  if (opts.json) {
+    await writeTaskJson(platform, task, opts.outputPath);
+    return taskExit(task);
+  }
+  const status = String(task.status);
+  if (status === 'completed') {
+    return renderCallResult(platform, (task.result ?? {}) as CallToolResult, {
+      outputPath: opts.outputPath,
+    });
+  }
+  if (status === 'input_required') {
+    const requests = { taskId, inputRequests: task.inputRequests };
+    await platform.write(2, `${sanitizeJson(JSON.stringify(requests, null, 2))}\n`);
+    return EXIT_INPUT_REQUIRED;
+  }
+  const error = (task.error as { message?: string } | undefined)?.message;
+  const detail = error ?? (task.statusMessage as string | undefined);
+  const line = `${taskId} ${status}${detail ? `: ${detail}` : ''}\n`;
+  await platform.write(status === 'working' ? 1 : 2, sanitizeTerminal(line));
+  return taskExit(task);
 }
 
 async function runCall(
@@ -761,14 +881,12 @@ async function runCall(
       }
     }
   }
-  return renderCallResult(
-    platform,
-    await conn.callTool(toolName, fin, {
-      onProgress: opts.onProgress,
-      inputResponses: opts.inputResponses,
-    }),
-    { json: opts.json, outputPath: opts.outputPath }
-  );
+  const result = await conn.callTool(toolName, fin, {
+    onProgress: opts.onProgress,
+    inputResponses: opts.inputResponses,
+    async: opts.async,
+  });
+  return finishCall(platform, result, opts);
 }
 
 async function runDescribe(
@@ -1006,6 +1124,9 @@ async function runVerb(
       return runCall(platform, conn, parsed.toolName!, parsed.dataArg, parsed.toolArgs, {
         json: parsed.jsonOutput,
         noValidate: parsed.noValidate,
+        async: parsed.async,
+        target: parsed.target,
+        silent: parsed.silent,
         outputPath: parsed.outputPath,
         onProgress,
         inputResponses: respondData,
@@ -1029,6 +1150,12 @@ async function runVerb(
       );
     case 'complete':
       return runComplete(platform, conn, parsed.toolArgs, parsed.jsonOutput);
+    case 'task':
+      return runTask(platform, conn, parsed.toolName!, parsed.toolArgs[0], {
+        json: parsed.jsonOutput,
+        silent: parsed.silent,
+        outputPath: parsed.outputPath,
+      });
     default:
       await platform.write(2, `mcpcat: unknown command '${parsed.verb}'\n`);
       return EXIT_USAGE;
@@ -1486,14 +1613,11 @@ async function runInner(platform: Platform, version: string, args: string[]): Pr
     return runLogout(platform, withoutVerb(args, 'logout'), parsed.timeoutMs);
   }
 
-  if (UNIMPLEMENTED_VERBS.has(parsed.verb)) {
-    await platform.write(2, `mcpcat: '${parsed.verb}' is not implemented yet\n`);
-    return EXIT_TOOL_ERROR;
-  }
-
   if (parsed.verb === 'serve') {
     return dispatchServeVerb(platform, args, version);
   }
+
+  if (parsed.verb === 'task') return runTaskVerb(platform, version, parsed);
 
   if (
     parsed.verb === 'code' ||
@@ -1519,6 +1643,20 @@ async function runInner(platform: Platform, version: string, args: string[]): Pr
   }
 
   return runClientVerb(platform, version, parsed);
+}
+
+async function runTaskVerb(
+  platform: Platform,
+  version: string,
+  parsed: ParsedArgs
+): Promise<number> {
+  const sub = parsed.target;
+  if ((sub !== 'get' && sub !== 'cancel') || parsed.toolArgs.length !== 2) {
+    await writeErr(platform, parsed.jsonOutput, 'usage', TASK_USAGE);
+    return EXIT_USAGE;
+  }
+  const [target, taskId] = parsed.toolArgs;
+  return runClientVerb(platform, version, { ...parsed, target, toolName: sub, toolArgs: [taskId] });
 }
 
 function expandAndCollect(
