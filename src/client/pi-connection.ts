@@ -202,7 +202,9 @@ export async function createPiConnection(options: PiConnectionOptions): Promise<
         ref: CompletionRef,
         argument: { name: string; value: string }
       ): Promise<CompleteResult> {
-        return client.request<CompleteResult>('completion/complete', { ref, argument }, reqOpts());
+        return guard(
+          client.request<CompleteResult>('completion/complete', { ref, argument }, reqOpts())
+        );
       },
       async close(): Promise<void> {
         await client.close();

@@ -42,6 +42,21 @@ async function startHttp(legacy) {
   return { child, port };
 }
 
+function elicitChecks(run, target) {
+  it('stdio 2025-11-25: an elicitation during completion exits 6 without input', async () => {
+    const r = await run(['complete', target, 'prompt', 'ask', 'x=']);
+    assert.equal(r.status, 6, r.stderr);
+    assert.equal(r.stdout, '');
+    assert.equal(JSON.parse(r.stderr).method, 'elicitation/create');
+  });
+
+  it('stdio 2025-11-25: --respond answers an elicitation during completion', async () => {
+    const r = await run(['--respond', '{"pick":"z"}', 'complete', target, 'prompt', 'ask', 'x=']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, 'accept {"pick":"z"}\n');
+  });
+}
+
 function checks(run, targets) {
   for (const [label, target] of targets) {
     it(`${label}: prompt argument values, one per line`, async () => {
@@ -71,6 +86,19 @@ function checks(run, targets) {
       assert.equal(r.status, 0, r.stderr);
       assert.ok(!r.stdout.includes('\u001b'), r.stdout);
       assert.ok(r.stdout.includes('ann'), r.stdout);
+    });
+
+    it(`${label}: newlines inside a value are escaped`, async () => {
+      const r = await run(['complete', target(), 'prompt', 'greet', 'name=l']);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout, 'line\\nbreak\\r\n');
+    });
+
+    it(`${label}: hasMore without values`, async () => {
+      const r = await run(['complete', target(), 'prompt', 'empty', 'x=']);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout, '');
+      assert.match(r.stderr, /0 values, more available/);
     });
 
     it(`${label}: a server error exits 5`, async () => {
@@ -115,6 +143,7 @@ describe('host: complete', () => {
     ['http 2026-07-28', () => `http://127.0.0.1:${http.modern.port}/mcp`],
     ['http 2025-11-25', () => `http://127.0.0.1:${http.legacy.port}/mcp`],
   ]);
+  elicitChecks(run, `stdio:node ${hostFixture} --legacy`);
 
   for (const args of [
     ['complete', 'x', 'prompt', 'greet'],
@@ -198,4 +227,5 @@ describe('kernel: complete', () => {
     ['http 2026-07-28', () => `${hostUrl(http.modern.port)}/mcp`],
     ['http 2025-11-25', () => `${hostUrl(http.legacy.port)}/mcp`],
   ]);
+  elicitChecks(run, 'stdio:complete-srv --legacy');
 });
