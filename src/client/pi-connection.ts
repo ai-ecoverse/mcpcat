@@ -17,6 +17,8 @@ import type { VerboseLogger } from '../cli/verbose.ts';
 import type { Platform, SpawnResult } from '../platform/types.ts';
 import type {
   CallToolOptions,
+  CompleteResult,
+  CompletionRef,
   GetPromptResult,
   McpConnection,
   PromptInfo,
@@ -195,6 +197,12 @@ export async function createPiConnection(options: PiConnectionOptions): Promise<
         return guard(
           client.request<GetPromptResult>('prompts/get', { name, arguments: args ?? {} }, reqOpts())
         );
+      },
+      async complete(
+        ref: CompletionRef,
+        argument: { name: string; value: string }
+      ): Promise<CompleteResult> {
+        return client.request<CompleteResult>('completion/complete', { ref, argument }, reqOpts());
       },
       async close(): Promise<void> {
         await client.close();

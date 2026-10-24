@@ -8,7 +8,7 @@ import {
 } from '../auth/jerk-token-source.ts';
 import { PiFileTokenSource } from '../auth/pi-store.ts';
 import { connect } from '../client/connect.ts';
-import type { McpConnection } from '../client/connection.ts';
+import type { CompletionRef, McpConnection } from '../client/connection.ts';
 import {
   answerElicitationRequest,
   ElicitationRequiredError,
@@ -114,7 +114,7 @@ const CONFIG_VERBS: Record<string, boolean> = {
   import: true,
 };
 
-const UNIMPLEMENTED_VERBS = new Set(['complete', 'task']);
+const UNIMPLEMENTED_VERBS = new Set(['task']);
 
 const CLIENT_VERBS = new Set([
   'info',
@@ -126,6 +126,7 @@ const CLIENT_VERBS = new Set([
   'read',
   'prompts',
   'prompt',
+  'complete',
 ]);
 
 function helpText(version: string): string {
@@ -143,6 +144,9 @@ Client verbs:
   read <target> <uri>        Read a resource
   prompts <target>           List prompts
   prompt <target> <name>     Get a prompt
+  complete <target> prompt|resource <ref> <arg>=<partial>
+                             Complete an argument of a prompt or resource
+                             template (completion/complete)
 
 Configuration verbs:
   add <name> <url>           Add a server to mcp.json
@@ -947,6 +951,43 @@ async function runPrompt(
   return EXIT_OK;
 }
 
+const COMPLETE_USAGE = 'usage: mcpcat complete <target> prompt|resource <ref> <arg>=<partial>';
+
+function parseCompleteArgs(
+  args: string[]
+): { ref: CompletionRef; argument: { name: string; value: string } } | undefined {
+  const [kind, ref, pair] = args;
+  const eq = pair?.indexOf('=') ?? -1;
+  if (args.length !== 3 || (kind !== 'prompt' && kind !== 'resource') || eq < 1) return undefined;
+  return {
+    ref: kind === 'prompt' ? { type: 'ref/prompt', name: ref } : { type: 'ref/resource', uri: ref },
+    argument: { name: pair.slice(0, eq), value: pair.slice(eq + 1) },
+  };
+}
+
+async function runComplete(
+  platform: Platform,
+  conn: McpConnection,
+  args: string[],
+  json: boolean
+): Promise<number> {
+  const { ref, argument } = parseCompleteArgs(args)!;
+  const result = await conn.complete(ref, argument);
+  if (json) {
+    await platform.write(1, `${sanitizeJson(JSON.stringify(result, null, 2))}\n`);
+    return EXIT_OK;
+  }
+  const completion = result?.completion;
+  for (const v of completion?.values ?? []) {
+    await platform.write(1, sanitizeTerminal(`${v}\n`));
+  }
+  if (completion?.hasMore) {
+    const total = completion.total !== undefined ? ` of ${completion.total}` : '';
+    await platform.write(2, `mcpcat: ${completion.values.length}${total} values, more available\n`);
+  }
+  return EXIT_OK;
+}
+
 async function runVerb(
   platform: Platform,
   parsed: ParsedArgs,
@@ -984,6 +1025,8 @@ async function runVerb(
         parsed.toolArgs,
         parsed.jsonOutput
       );
+    case 'complete':
+      return runComplete(platform, conn, parsed.toolArgs, parsed.jsonOutput);
     default:
       await platform.write(2, `mcpcat: unknown command '${parsed.verb}'\n`);
       return EXIT_USAGE;
@@ -1389,6 +1432,19 @@ async function help(platform: Platform, version: string, args: string[]): Promis
   return 0;
 }
 
+const NEEDS_NAME: Record<string, string> = {
+  call: 'call requires a tool name',
+  read: 'read requires a URI',
+  prompt: 'prompt requires a name',
+};
+
+function missingClientArg(parsed: ParsedArgs): string | undefined {
+  const verb = parsed.verb!;
+  if (!parsed.toolName && Object.hasOwn(NEEDS_NAME, verb)) return NEEDS_NAME[verb];
+  if (!parsed.target) return `${verb} requires a target`;
+  return undefined;
+}
+
 async function runInner(platform: Platform, version: string, args: string[]): Promise<number> {
   if (args.includes('--version') || args.includes('-V')) {
     await platform.write(1, `${version}\n`);
@@ -1449,24 +1505,15 @@ async function runInner(platform: Platform, version: string, args: string[]): Pr
     return 2;
   }
 
-  if (parsed.verb === 'call' && !parsed.toolName) {
-    await platform.write(2, 'mcpcat: call requires a tool name\n');
+  const missing = missingClientArg(parsed);
+  if (missing) {
+    await platform.write(2, `mcpcat: ${missing}\n`);
     return 2;
   }
 
-  if (parsed.verb === 'read' && !parsed.toolName) {
-    await platform.write(2, 'mcpcat: read requires a URI\n');
-    return 2;
-  }
-
-  if (parsed.verb === 'prompt' && !parsed.toolName) {
-    await platform.write(2, 'mcpcat: prompt requires a name\n');
-    return 2;
-  }
-
-  if (!parsed.target) {
-    await platform.write(2, `mcpcat: ${parsed.verb} requires a target\n`);
-    return 2;
+  if (parsed.verb === 'complete' && !parseCompleteArgs(parsed.toolArgs)) {
+    await writeErr(platform, parsed.jsonOutput, 'usage', COMPLETE_USAGE);
+    return EXIT_USAGE;
   }
 
   return runClientVerb(platform, version, parsed);

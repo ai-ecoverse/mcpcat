@@ -11,6 +11,8 @@ import { JerkInvalidUrlError, JerkTimeoutError } from '../auth/jerk-token-source
 import type { VerboseLogger } from '../cli/verbose.ts';
 import type {
   CallToolOptions,
+  CompleteResult,
+  CompletionRef,
   GetPromptResult,
   McpConnection,
   PromptInfo,
@@ -278,6 +280,7 @@ function buildStatelessMethods(
   | 'readResource'
   | 'listPrompts'
   | 'getPrompt'
+  | 'complete'
 > {
   let serverInfoCache: ServerInfo | undefined;
   let hidden: Record<string, string> = {};
@@ -348,6 +351,12 @@ function buildStatelessMethods(
         name,
         arguments: args ?? {},
       })) as GetPromptResult;
+    },
+    async complete(
+      ref: CompletionRef,
+      argument: { name: string; value: string }
+    ): Promise<CompleteResult> {
+      return (await requestFn('completion/complete', { ref, argument })) as CompleteResult;
     },
   };
 }

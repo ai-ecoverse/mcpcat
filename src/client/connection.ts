@@ -43,6 +43,16 @@ export interface CallToolOptions {
   inputResponses?: Record<string, unknown>;
 }
 
+export interface CompletionRef {
+  type: 'ref/prompt' | 'ref/resource';
+  name?: string;
+  uri?: string;
+}
+
+export interface CompleteResult {
+  completion: { values: string[]; total?: number; hasMore?: boolean };
+}
+
 export interface McpConnection {
   info(): Promise<ServerInfo>;
   listTools(): Promise<Tool[]>;
@@ -58,5 +68,6 @@ export interface McpConnection {
   readResource(uri: string): Promise<ReadResourceResult>;
   listPrompts(): Promise<PromptInfo[]>;
   getPrompt(name: string, args?: Record<string, unknown>): Promise<GetPromptResult>;
+  complete(ref: CompletionRef, argument: { name: string; value: string }): Promise<CompleteResult>;
   close(): Promise<void>;
 }
