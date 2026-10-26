@@ -182,8 +182,10 @@ async function stalledStream(serve, params) {
 
 function alive(pidFile) {
   if (!existsSync(pidFile)) return false;
+  const pid = Number(readFileSync(pidFile, 'utf8'));
+  if (!(pid > 0)) return false;
   try {
-    process.kill(Number(readFileSync(pidFile, 'utf8')), 0);
+    process.kill(pid, 0);
     return true;
   } catch {
     return false;
