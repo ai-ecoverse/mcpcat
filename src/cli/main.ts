@@ -49,7 +49,7 @@ import {
   renderToolsJson,
 } from '../render/result.ts';
 import { sanitizeJson, sanitizeTerminal } from '../render/sanitize.ts';
-import { parseServeFlags, runServe } from '../serve/runtime.ts';
+import { eventFlagsUsed, parseServeFlags, runServe } from '../serve/runtime.ts';
 import { parseUpgradeArgs, upgradeUsage } from '../upgrade/plan.ts';
 import { createTokenSource, runLogin, runLogout } from './auth-verbs.ts';
 import {
@@ -302,6 +302,21 @@ WebMCP:
                              through playwright-cli dialog-hold (needs playwright-cli
                              1.39.0 or newer); accept needs --allow-consequential
   --playwright-cli <path>    playwright-cli binary (default: playwright-cli on PATH)
+
+Events (--experimental events; can change in any minor release):
+  --event '<name>: <cmd>'    Serve an event type: each stdout line of cmd is one event
+                             (a JSON object is its data, {"data", "eventId"?,
+                             "timestamp"?} an envelope, other lines {"line": …});
+                             {placeholders} become string arguments, and cmd runs
+                             once per distinct arguments while someone subscribes
+                             (repeatable; push and poll delivery)
+  --webhook-allow <prefix>   Also offer webhook delivery (events/subscribe) to https
+                             callback URLs under prefix (an https URL ending in /;
+                             repeatable; needs a bearer over HTTP)
+  --webhook-ttl <s>          Longest webhook subscription TTL granted (default 3600)
+  --event-buffer <n>         Events kept per source for replay and poll (default 1000)
+  --event-heartbeat <s>      Push heartbeat interval (default 15)
+  --event-poll <s>           nextPollMs suggested to poll clients (default 5)
 
 Examples:
   mcpcat serve --http 8808 ./scripts/jira.jsh
@@ -1317,13 +1332,27 @@ async function dispatchDiscoveryVerb(
 async function dispatchServeVerb(
   platform: Platform,
   args: string[],
-  version: string
+  version: string,
+  features: Set<string>
 ): Promise<number> {
   const serveArgs = args.slice(args.indexOf('serve') + 1);
   const serveOptions = parseServeFlags(serveArgs);
+  const events = eventFlagsUsed(serveOptions);
+  if (events && !features.has('events')) {
+    await platform.write(
+      2,
+      'mcpcat serve: --event and --webhook-allow need --experimental events\n'
+    );
+    return 2;
+  }
+  if (events && (serveOptions.proxy || serveOptions.webmcp)) {
+    await platform.write(2, 'mcpcat serve: --event does not combine with --proxy or --webmcp\n');
+    return 2;
+  }
   if (
     !serveOptions.proxy &&
     !serveOptions.webmcp &&
+    !events &&
     serveOptions.commands.length === 0 &&
     serveOptions.toolTemplates.length === 0
   ) {
@@ -1698,6 +1727,7 @@ function ownArgsEnd(args: string[]): number {
       if (args[i + 1] !== undefined && (EVENTS_VALUE_FLAGS.has(arg) || takesValue(arg))) i++;
     } else {
       positional.push(arg);
+      if (positional[0] === 'serve') continue;
       if (positional.length >= resolveMaxPositional(positional)) return i + 1;
     }
   }
@@ -1767,7 +1797,7 @@ async function runInner(platform: Platform, version: string, argv: string[]): Pr
   }
 
   if (parsed.verb === 'serve') {
-    return dispatchServeVerb(platform, args, version);
+    return dispatchServeVerb(platform, args, version, experimental.features);
   }
 
   if (parsed.verb === 'task') return runTaskVerb(platform, version, parsed);

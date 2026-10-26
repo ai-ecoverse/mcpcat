@@ -1,3 +1,4 @@
+import { EVENTS_EXTENSION } from '../client/modern.ts';
 import {
   containsPlaceholders,
   expandPlaceholders,
@@ -24,6 +25,9 @@ import {
   type ServeTool,
   templateToArgv,
 } from './catalog.ts';
+import { EventHub } from './event-hub.ts';
+import { handleEventsMessage } from './event-rpc.ts';
+import { type EventSpec, logLine, parseEventSpec } from './events.ts';
 import { type HttpRequest, type HttpResponse, handleConnection } from './http.ts';
 import { handleJsonRpc, type RpcTool, type ToolListing, type ToolRunResult } from './jsonrpc.ts';
 import {
@@ -35,6 +39,7 @@ import {
   type Notifier,
   parseCancelled,
   parseListen,
+  sseEvent,
   sseResponse,
 } from './live.ts';
 import {
@@ -97,6 +102,12 @@ export interface ServeOptions {
   webmcpReload: boolean;
   webmcpFromOrigins: string[];
   webmcpDialog: string;
+  events: string[];
+  eventBuffer: number;
+  eventHeartbeatMs: number;
+  eventPollMs: number;
+  webhookAllow: string[];
+  webhookTtlMs: number;
 }
 
 function parseHttpFlag(args: string[], i: number): { host: string; port: number; next: number } {
@@ -148,6 +159,12 @@ function parseSingleFlag(
     webmcpReload: boolean;
     webmcpFromOrigins: string[];
     webmcpDialog: string;
+    events: string[];
+    eventBuffer: number;
+    eventHeartbeatMs: number;
+    eventPollMs: number;
+    webhookAllow: string[];
+    webhookTtlMs: number;
   }
 ): number {
   const arg = args[i];
@@ -199,10 +216,17 @@ function parseValueFlag(
     webmcpPolyfill: string;
     webmcpFromOrigins: string[];
     webmcpDialog: string;
+    events: string[];
+    eventBuffer: number;
+    eventHeartbeatMs: number;
+    eventPollMs: number;
+    webhookAllow: string[];
+    webhookTtlMs: number;
   }
 ): number {
   const arg = args[i];
   if (!args[i + 1]) return i;
+  if (parseEventFlag(arg, args[i + 1], opts)) return i + 1;
   switch (arg) {
     case '--proxy':
       opts.proxy = args[++i];
@@ -270,6 +294,32 @@ function parseValueFlag(
   return i;
 }
 
+function parseEventFlag(
+  arg: string,
+  value: string,
+  opts: {
+    events: string[];
+    eventBuffer: number;
+    eventHeartbeatMs: number;
+    eventPollMs: number;
+    webhookAllow: string[];
+    webhookTtlMs: number;
+  }
+): boolean {
+  if (arg === '--event') opts.events.push(value);
+  else if (arg === '--webhook-allow') opts.webhookAllow.push(value);
+  else if (arg === '--event-buffer') opts.eventBuffer = Number(value);
+  else if (arg === '--event-heartbeat') opts.eventHeartbeatMs = Number(value) * 1000;
+  else if (arg === '--event-poll') opts.eventPollMs = Number(value) * 1000;
+  else if (arg === '--webhook-ttl') opts.webhookTtlMs = Number(value) * 1000;
+  else return false;
+  return true;
+}
+
+export function eventFlagsUsed(options: ServeOptions): boolean {
+  return options.events.length > 0 || options.webhookAllow.length > 0;
+}
+
 export function parseServeFlags(args: string[]): ServeOptions {
   const opts = {
     transport: 'stdio' as 'stdio' | 'http',
@@ -299,6 +349,12 @@ export function parseServeFlags(args: string[]): ServeOptions {
     webmcpReload: false,
     webmcpFromOrigins: [] as string[],
     webmcpDialog: 'report',
+    events: [] as string[],
+    eventBuffer: 1000,
+    eventHeartbeatMs: 15_000,
+    eventPollMs: 5000,
+    webhookAllow: [] as string[],
+    webhookTtlMs: 3_600_000,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -940,11 +996,16 @@ export async function runServe(
   }
 
   const executor = createToolExecutor(platform, clis, allTools, childEnv, options, serveCwd);
+  const hub = buildEventHub(platform, options, childEnv, serveCwd);
+  if (typeof hub === 'string') {
+    await platform.write(2, sanitizeTerminal(`mcpcat serve: ${hub}\n`));
+    return 2;
+  }
 
   const serverName = 'mcpcat-serve';
 
   if (options.transport === 'stdio') {
-    return runStdioServer(platform, executor.rpcTools, executor.invoke, serverName, version);
+    return runStdioServer(platform, executor.rpcTools, executor.invoke, serverName, version, hub);
   }
 
   return runHttpServer(
@@ -955,8 +1016,74 @@ export async function runServe(
     serverName,
     version,
     resolvedBearer,
-    generatedBearer
+    generatedBearer,
+    hub
   );
+}
+
+function positive(value: number): boolean {
+  return Number.isFinite(value) && value > 0;
+}
+
+function eventOptionsError(options: ServeOptions): string | undefined {
+  if (options.webhookAllow.length > 0 && options.events.length === 0) {
+    return '--webhook-allow needs at least one --event';
+  }
+  for (const prefix of options.webhookAllow) {
+    const url = URL.canParse(prefix) ? new URL(prefix) : undefined;
+    if (url?.protocol !== 'https:' || !url.href.endsWith('/') || url.search || url.hash) {
+      return `--webhook-allow needs an https URL prefix ending in /: ${prefix}`;
+    }
+  }
+  if (!Number.isInteger(options.eventBuffer) || options.eventBuffer < 1) {
+    return '--event-buffer needs a positive integer';
+  }
+  const times: [string, number][] = [
+    ['--event-heartbeat', options.eventHeartbeatMs],
+    ['--event-poll', options.eventPollMs],
+    ['--webhook-ttl', options.webhookTtlMs],
+  ];
+  for (const [flag, ms] of times) {
+    if (!positive(ms)) return `${flag} needs a positive number of seconds`;
+  }
+  return undefined;
+}
+
+function buildEventHub(
+  platform: Platform,
+  options: ServeOptions,
+  env: Record<string, string>,
+  cwd: string
+): EventHub | string | undefined {
+  const error = eventOptionsError(options);
+  if (error) return error;
+  if (options.events.length === 0) return undefined;
+  const specs: EventSpec[] = [];
+  for (const raw of options.events) {
+    const spec = parseEventSpec(raw);
+    if (!spec) return `invalid --event spec: ${raw}`;
+    if (specs.some((s) => s.name === spec.name)) return `duplicate --event name: ${spec.name}`;
+    specs.push(spec);
+  }
+  return new EventHub({
+    platform,
+    specs,
+    env,
+    cwd,
+    bufferSize: options.eventBuffer,
+    heartbeatMs: options.eventHeartbeatMs,
+    pollMs: options.eventPollMs,
+    webhook:
+      options.webhookAllow.length > 0
+        ? { allow: options.webhookAllow.map((p) => new URL(p).href), ttlMs: options.webhookTtlMs }
+        : undefined,
+    stop: (proc) => terminate(proc, KILL_GRACE_MS),
+    log: logLine(platform),
+  });
+}
+
+function eventsExtensions(hub: EventHub | undefined): Record<string, unknown> | undefined {
+  return hub ? { [EVENTS_EXTENSION]: {} } : undefined;
 }
 
 interface ProxyHandle {
@@ -1977,12 +2104,26 @@ async function runStdioServer(
   tools: RpcTool[],
   call: (name: string, args: unknown) => Promise<ToolRunResult>,
   serverName: string,
-  version: string
+  version: string,
+  hub: EventHub | undefined
 ): Promise<number> {
   const reader = platform.stdin.getReader();
   let buffer = '';
   const dec = new TextDecoder();
   const enc = new TextEncoder();
+  let chain = Promise.resolve();
+  const out = (body: string): Promise<void> => {
+    chain = chain.then(async () => {
+      const writer = platform.stdout.getWriter();
+      try {
+        await writer.write(enc.encode(`${body}\n`));
+      } finally {
+        writer.releaseLock();
+      }
+    });
+    return chain;
+  };
+  const streams = hub ? new StdioStreams(hub, out) : undefined;
 
   try {
     for (;;) {
@@ -1995,19 +2136,60 @@ async function runStdioServer(
         const line = buffer.slice(0, nlIdx).trim();
         buffer = buffer.slice(nlIdx + 1);
         if (!line) continue;
+        if (streams && (await streams.take(line))) continue;
 
-        const outcome = await handleJsonRpc(line, tools, call, serverName, version);
+        const outcome = await handleJsonRpc(
+          line,
+          tools,
+          call,
+          serverName,
+          version,
+          false,
+          eventsExtensions(hub)
+        );
         if (outcome.status === 202) continue;
-        const writer = platform.stdout.getWriter();
-        await writer.write(enc.encode(`${outcome.body}\n`));
-        writer.releaseLock();
+        await out(outcome.body);
       }
     }
   } finally {
     reader.releaseLock();
+    await streams?.close();
   }
 
   return 0;
+}
+
+class StdioStreams {
+  private readonly hub: EventHub;
+  private readonly out: (body: string) => Promise<void>;
+  private readonly open = new Map<string | number, AbortController>();
+
+  constructor(hub: EventHub, out: (body: string) => Promise<void>) {
+    this.hub = hub;
+    this.out = out;
+  }
+
+  async take(line: string): Promise<boolean> {
+    const outcome = await handleEventsMessage(this.hub, line, 'stdio');
+    if (!outcome) return false;
+    if (outcome.kind === 'cancel') {
+      this.open.get(outcome.id)?.abort();
+      return false;
+    }
+    if (outcome.kind === 'reply') {
+      await this.out(outcome.body);
+      return true;
+    }
+    const stop = new AbortController();
+    this.open.set(outcome.id, stop);
+    void outcome.open.run(this.out, stop.signal).finally(() => this.open.delete(outcome.id));
+    return true;
+  }
+
+  async close(): Promise<void> {
+    for (const stop of this.open.values()) stop.abort();
+    await this.hub.close();
+  }
 }
 
 async function runHttpServer(
@@ -2018,7 +2200,8 @@ async function runHttpServer(
   serverName: string,
   version: string,
   resolvedBearer: string | undefined,
-  generatedBearer: boolean
+  generatedBearer: boolean,
+  hub: EventHub | undefined
 ): Promise<number> {
   if (!platform.listen) {
     await platform.write(2, 'mcpcat serve: HTTP transport requires platform.listen\n');
@@ -2052,7 +2235,7 @@ async function runHttpServer(
     shutdownRequested = true;
     listener.close();
     stopCalls.abort();
-    inflightDone = killInflight();
+    inflightDone = Promise.all([killInflight(), hub?.close()]).then(() => {});
     if (tokenFilePath) {
       platform.fs.unlink?.(tokenFilePath).catch(() => {});
     }
@@ -2096,7 +2279,8 @@ async function runHttpServer(
       serverOrigins,
       allowedOrigins,
       allowedHosts,
-      resolvedBearer
+      resolvedBearer,
+      hub
     ).finally(() => {
       signal.removeEventListener('abort', relay);
       stopCalls.signal.removeEventListener('abort', relay);
@@ -2145,7 +2329,8 @@ async function handleMcpRequest(
   serverOrigins: Set<string>,
   allowedOrigins: Set<string>,
   allowedHosts: Set<string>,
-  resolvedBearer: string | undefined
+  resolvedBearer: string | undefined,
+  hub: EventHub | undefined
 ): Promise<HttpResponse> {
   if (request.target !== '/mcp') {
     return {
@@ -2216,11 +2401,47 @@ async function handleMcpRequest(
     }
   }
 
-  const outcome = await handleJsonRpc(request.body, tools, call, serverName, version);
+  const events = hub ? await httpEvents(hub, request, resolvedBearer) : undefined;
+  if (events) return events;
+  const outcome = await handleJsonRpc(
+    request.body,
+    tools,
+    call,
+    serverName,
+    version,
+    false,
+    eventsExtensions(hub)
+  );
   return {
     status: outcome.status,
     reason: outcome.status === 200 ? 'OK' : 'Accepted',
     headers: { 'content-type': outcome.contentType },
     body: outcome.body,
+  };
+}
+
+async function httpEvents(
+  hub: EventHub,
+  request: HttpRequest,
+  resolvedBearer: string | undefined
+): Promise<HttpResponse | undefined> {
+  const principal = resolvedBearer ? 'bearer' : undefined;
+  const outcome = await handleEventsMessage(hub, request.body, principal, request.headers);
+  if (!outcome || outcome.kind === 'cancel') return undefined;
+  if (outcome.kind === 'reply') {
+    const status = outcome.status ?? 200;
+    return {
+      status,
+      reason: status === 200 ? 'OK' : 'Bad Request',
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+      body: outcome.body,
+    };
+  }
+  return {
+    status: 200,
+    reason: 'OK',
+    headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
+    body: '',
+    stream: (send, signal) => outcome.open.run((body) => send(sseEvent(body)), signal),
   };
 }
