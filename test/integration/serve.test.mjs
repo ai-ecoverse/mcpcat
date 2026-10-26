@@ -681,7 +681,7 @@ describe('serve: SIGTERM kills in-flight children (no orphans)', { timeout: 30_0
     });
 
     await callPromise;
-    assert.ok(exitCode === 0 || exitCode === null, `serve exited with ${exitCode}`);
+    assert.equal(exitCode, 143, `serve exited with ${exitCode}`);
 
     await sleep(1000);
 
@@ -765,6 +765,6 @@ describe('serve: SIGINT/SIGTERM clean shutdown (idle)', () => {
     const code = await new Promise((resolve) => {
       server.child.on('exit', resolve);
     });
-    assert.ok(code === 0 || code === null);
+    assert.equal(code, 143);
   });
 });

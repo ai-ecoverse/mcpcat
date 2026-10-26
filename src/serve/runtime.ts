@@ -1,3 +1,4 @@
+import { within } from '../client/events.ts';
 import { EVENTS_EXTENSION } from '../client/modern.ts';
 import {
   containsPlaceholders,
@@ -569,6 +570,7 @@ function concat(chunks: Uint8Array[]): Uint8Array {
 
 const KILL_GRACE_MS = 2000;
 const CALL_KILL_GRACE_MS = 5000;
+const STREAM_GRACE_MS = 1000;
 
 async function terminate(proc: SpawnResult, graceMs: number): Promise<void> {
   try {
@@ -611,6 +613,16 @@ async function killInflight(): Promise<void> {
   if (procs.length === 0) return;
   await Promise.all(procs.map((proc) => terminate(proc, KILL_GRACE_MS)));
   inflightProcs.clear();
+}
+
+async function endStreams(streams: Map<Promise<void>, { close(): void }>): Promise<void> {
+  if (streams.size === 0) return;
+  await within(Promise.all(streams.keys()), STREAM_GRACE_MS);
+  for (const conn of streams.values()) {
+    try {
+      conn.close();
+    } catch {}
+  }
 }
 
 async function runHelpForCli(
@@ -2233,16 +2245,19 @@ async function runHttpServer(
   const listenUrl = address.url;
   let tokenFilePath: string | undefined;
   let shutdownRequested = false;
+  let exitCode = 0;
   let inflightDone: Promise<void> | undefined;
   const stopCalls = new AbortController();
   const activeCalls = new Set<Promise<HttpResponse>>();
+  const streams = new Map<Promise<void>, { close(): void }>();
 
-  const shutdown = () => {
+  const shutdown = (sig: keyof typeof SIGNAL_EXIT) => {
     if (shutdownRequested) return;
     shutdownRequested = true;
+    exitCode = SIGNAL_EXIT[sig];
     listener.close();
     stopCalls.abort();
-    inflightDone = Promise.all([killInflight(), hub?.close()]).then(() => {});
+    inflightDone = Promise.all([killInflight(), hub?.close(), endStreams(streams)]).then(() => {});
     if (tokenFilePath) {
       platform.fs.unlink?.(tokenFilePath).catch(() => {});
     }
@@ -2305,9 +2320,18 @@ async function runHttpServer(
         readonly writable: WritableStream<Uint8Array>;
         close(): void;
       };
-      handleConnection(conn.readable, conn.writable, handler)
+      const served: Promise<void> = handleConnection(
+        conn.readable,
+        conn.writable,
+        async (request, signal) => {
+          const response = await handler(request, signal);
+          if (response.stream) streams.set(served, conn);
+          return response;
+        }
+      )
         .catch(() => {})
         .finally(() => {
+          streams.delete(served);
           try {
             conn.close();
           } catch {}
@@ -2324,7 +2348,7 @@ async function runHttpServer(
   }
   await Promise.allSettled([...activeCalls]);
 
-  return 0;
+  return exitCode;
 }
 
 async function handleMcpRequest(
