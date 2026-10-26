@@ -76,6 +76,8 @@ function checks(run, targets, sink) {
         'broken',
         'hook',
         'tricky',
+        'nocursor',
+        'leaky',
       ]);
     });
 
@@ -370,7 +372,49 @@ function checks(run, targets, sink) {
     it(`${label}: other verbs never declare the events capability`, async () => {
       const r = await run([...X, 'tools', target()]);
       assert.equal(r.status, 0, r.stderr);
-      assert.equal(r.stdout, 'caps-none\n');
+      assert.equal(r.stdout, 'caps-none\necho\n');
+    });
+
+    it(`${label}: an event without a cursor keeps the last one for the reconnect`, async () => {
+      const r = await run([
+        target(),
+        ...X,
+        '--heartbeat-timeout',
+        '0.3',
+        '--count',
+        '2',
+        '--subscribe',
+        'nocursor',
+        '--run',
+        runId(),
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      const events = lines(r.stdout);
+      assert.deepEqual(
+        events.map((e) => [e.eventId, e.data.resumedFrom]),
+        [
+          ['nocursor-1', null],
+          ['nocursor-2', 'c7'],
+        ]
+      );
+    });
+
+    it(`${label}: --experimental after the tool name belongs to the tool`, async () => {
+      const r = await run([target(), 'echo', '--experimental', 'events']);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout, '{"experimental":"events"}\n');
+      const c = await run(['call', target(), 'echo', '--experimental', 'nope']);
+      assert.equal(c.status, 0, c.stderr);
+      assert.equal(c.stdout, '{"experimental":"nope"}\n');
+      const v = await run([
+        target(),
+        ...X,
+        '--cursor',
+        'c0',
+        '--experimental=events',
+        '--list-events',
+      ]);
+      assert.equal(v.status, 0, v.stderr);
     });
   }
 }
@@ -399,12 +443,17 @@ describe('host: events extension', () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  function start(args) {
+  function start(args, extra = {}) {
     const { cmd, args: a } = mcpcatArgs(args);
-    return spawn(cmd, a, { stdio: ['ignore', 'pipe', 'pipe'], env, cwd: home });
+    return spawn(cmd, a, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...env, ...extra },
+      cwd: home,
+    });
   }
 
   const run = (args) => collect(start(args));
+  const runWith = (args, extra) => collect(start(args, extra));
   const stdio = `stdio:node ${hostFixture}`;
   let files = 0;
   const sink = {
@@ -474,7 +523,7 @@ describe('host: events extension', () => {
   it('--experimental=events works too', async () => {
     const r = await run([stdio, '--experimental=events', '--list-events', '--json']);
     assert.equal(r.status, 0, r.stderr);
-    assert.equal(JSON.parse(r.stdout).events.length, 8);
+    assert.equal(JSON.parse(r.stdout).events.length, 10);
   });
 
   it('--version --verbose lists the experimental features and their revision', async () => {
@@ -567,6 +616,25 @@ describe('host: events extension', () => {
       r.stderr,
       /> notifications\/cancelled\n> \{"jsonrpc":"2\.0","method":"notifications\/cancelled","params":\{"requestId":\d+,"reason":"done"\}\}/
     );
+  });
+
+  it('http: a server error notice that echoes a header secret is redacted', async () => {
+    const r = await runWith(
+      [
+        `http://127.0.0.1:${http.port}/mcp`,
+        ...X,
+        '-H',
+        'X-Token: ${EVENTS_TOKEN}',
+        '--count',
+        '1',
+        '--subscribe',
+        'leaky',
+      ],
+      { EVENTS_TOKEN: 'sekrit-505' }
+    );
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /server reported an error for leaky: upstream rejected \[REDACTED\]/);
+    assert.doesNotMatch(r.stderr, /sekrit-505/);
   });
 
   it('http: events requests carry Mcp-Name and the events capability', async () => {

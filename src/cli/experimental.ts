@@ -32,12 +32,12 @@ function addFeatures(value: string, features: Set<string>): string | undefined {
   return undefined;
 }
 
-export function extractExperimental(args: string[]): ExperimentalArgs {
+export function extractExperimental(args: string[], end = args.length): ExperimentalArgs {
   const features = new Set<string>();
   const out: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === '--' || arg === '--subscribe') {
+    if (i >= end || arg === '--' || arg === '--subscribe') {
       out.push(...args.slice(i));
       break;
     }

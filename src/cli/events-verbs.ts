@@ -12,7 +12,7 @@ import { EventsTransportClosedError } from '../client/events.ts';
 import { EVENTS_EXTENSION, META_SUBSCRIPTION_ID } from '../client/modern.ts';
 import { McpAuthError, StatelessRpcError } from '../client/stateless-connection.ts';
 import type { Platform, SpawnResult } from '../platform/types.ts';
-import { renderErrorJson } from '../render/result.ts';
+import { type Redactor, renderErrorJson } from '../render/result.ts';
 import { sanitizeJson, sanitizeTerminal } from '../render/sanitize.ts';
 import {
   EXIT_AUTH,
@@ -60,7 +60,7 @@ export interface EventsArgs {
   noInput: boolean;
 }
 
-const VALUE_FLAGS = new Set([
+export const EVENTS_VALUE_FLAGS = new Set([
   '-H',
   '--header',
   '-d',
@@ -91,7 +91,7 @@ export function isEventsInvocation(args: string[], verbs: readonly string[]): bo
     const arg = args[i];
     if (arg === '--') return false;
     if (arg === '--list-events' || arg === '--subscribe') return true;
-    if (VALUE_FLAGS.has(arg)) {
+    if (EVENTS_VALUE_FLAGS.has(arg)) {
       i++;
       continue;
     }
@@ -103,15 +103,129 @@ export function isEventsInvocation(args: string[], verbs: readonly string[]): bo
   return false;
 }
 
-function seconds(flag: string, raw: string | undefined): number | string {
+function seconds(flag: string, raw: string): number | string {
   const n = Number(raw);
-  if (raw === undefined || !Number.isFinite(n) || n <= 0) {
-    return `${flag} needs a positive number of seconds`;
-  }
+  if (!Number.isFinite(n) || n <= 0) return `${flag} needs a positive number of seconds`;
   return Math.round(n * 1000);
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: flag-dispatching loop is inherently branchy
+type Setter = (out: EventsArgs, value: string, flag: string) => string | undefined;
+
+function millis(key: 'maxAgeMs' | 'heartbeatTimeoutMs' | 'timeoutMs'): Setter {
+  return (out, value, flag) => {
+    const ms = seconds(flag, value);
+    if (typeof ms === 'string') return ms;
+    out[key] = ms;
+    return undefined;
+  };
+}
+
+const header: Setter = (out, value) => {
+  const colon = value.indexOf(':');
+  if (colon > 0) out.headers[value.slice(0, colon).trim()] = value.slice(colon + 1).trim();
+  return undefined;
+};
+
+const VALUE_OPTIONS: Record<string, Setter> = {
+  '--delivery': (out, value) => {
+    if (!DELIVERY_MODES.has(value)) return '--delivery must be push or poll';
+    out.delivery = value as 'push' | 'poll';
+    return undefined;
+  },
+  '--cursor': (out, value) => {
+    out.cursor = value;
+    return undefined;
+  },
+  '--since': (out, value) => {
+    if (value === 'now') out.sinceNow = true;
+    else out.cursor = value;
+    return undefined;
+  },
+  '--cursor-file': (out, value) => {
+    out.cursorFile = value;
+    return undefined;
+  },
+  '--count': (out, value) => {
+    const n = Number(value);
+    if (!Number.isInteger(n) || n < 1) return '--count needs a positive integer';
+    out.count = n;
+    return undefined;
+  },
+  '-d': (out, value) => {
+    out.dataArg = value;
+    return undefined;
+  },
+  '--protocol-version': (out, value) => {
+    out.protocolVersion = value;
+    return undefined;
+  },
+  '--max-age': millis('maxAgeMs'),
+  '--heartbeat-timeout': millis('heartbeatTimeoutMs'),
+  '-m': millis('timeoutMs'),
+  '--timeout': millis('timeoutMs'),
+  '-H': header,
+  '--header': header,
+};
+
+const FLAG_OPTIONS: Record<string, (out: EventsArgs) => void> = {
+  '-v': (out) => {
+    out.verbose = true;
+  },
+  '--verbose': (out) => {
+    out.verbose = true;
+  },
+  '--silent': (out) => {
+    out.silent = true;
+  },
+  '--json': (out) => {
+    out.json = true;
+  },
+  '--no-input': (out) => {
+    out.noInput = true;
+  },
+  '--no-validate': (out) => {
+    out.noValidate = true;
+  },
+};
+
+function flagOrTarget(out: EventsArgs, arg: string): string | undefined {
+  if (Object.hasOwn(FLAG_OPTIONS, arg)) {
+    FLAG_OPTIONS[arg](out);
+    return undefined;
+  }
+  if (arg.startsWith('-')) return `unknown option ${arg} for --list-events or --subscribe`;
+  if (out.target) return `unexpected argument '${arg}'`;
+  out.target = arg;
+  return undefined;
+}
+
+function parseLead(
+  lead: string[],
+  out: EventsArgs
+): { list: boolean; rest: string[] | undefined } | string {
+  let list = false;
+  for (let i = 0; i < lead.length; i++) {
+    const arg = lead[i];
+    const value = lead[i + 1];
+    if (arg === '--list-events') {
+      list = true;
+    } else if (arg === '--subscribe') {
+      if (value === undefined || value.startsWith('-')) return '--subscribe needs an event name';
+      out.event = value;
+      return { list, rest: lead.slice(i + 2) };
+    } else if (Object.hasOwn(VALUE_OPTIONS, arg)) {
+      if (value === undefined) return `${arg} needs a value`;
+      const error = VALUE_OPTIONS[arg](out, value, arg);
+      if (error) return error;
+      i++;
+    } else {
+      const error = flagOrTarget(out, arg);
+      if (error) return error;
+    }
+  }
+  return { list, rest: undefined };
+}
+
 export function parseEventsArgs(args: string[]): EventsArgs | string {
   const out: EventsArgs = {
     target: '',
@@ -126,86 +240,20 @@ export function parseEventsArgs(args: string[]): EventsArgs | string {
     json: false,
     noInput: false,
   };
-  let list = false;
-  let subscribe = false;
-  let rest: string[] = [];
   const sep = args.indexOf('--');
-  const lead = sep < 0 ? args : args.slice(0, sep);
-  const tail = sep < 0 ? undefined : args.slice(sep + 1);
-  for (let i = 0; i < lead.length; i++) {
-    const arg = lead[i];
-    const value = lead[i + 1];
-    const needsValue = VALUE_FLAGS.has(arg);
-    if (needsValue && value === undefined) return `${arg} needs a value`;
-    if (arg === '--list-events') list = true;
-    else if (arg === '--subscribe') {
-      if (value === undefined || value.startsWith('-')) return '--subscribe needs an event name';
-      subscribe = true;
-      out.event = value;
-      rest = lead.slice(i + 2);
-      break;
-    } else if (arg === '--delivery') {
-      if (!DELIVERY_MODES.has(value)) return '--delivery must be push or poll';
-      out.delivery = value as 'push' | 'poll';
-      i++;
-    } else if (arg === '--cursor') {
-      out.cursor = value;
-      i++;
-    } else if (arg === '--since') {
-      if (value === 'now') out.sinceNow = true;
-      else out.cursor = value;
-      i++;
-    } else if (arg === '--cursor-file') {
-      out.cursorFile = value;
-      i++;
-    } else if (arg === '--max-age') {
-      const ms = seconds(arg, value);
-      if (typeof ms === 'string') return ms;
-      out.maxAgeMs = ms;
-      i++;
-    } else if (arg === '--heartbeat-timeout') {
-      const ms = seconds(arg, value);
-      if (typeof ms === 'string') return ms;
-      out.heartbeatTimeoutMs = ms;
-      i++;
-    } else if (arg === '--count') {
-      const n = Number(value);
-      if (!Number.isInteger(n) || n < 1) return '--count needs a positive integer';
-      out.count = n;
-      i++;
-    } else if (arg === '-H' || arg === '--header') {
-      const colon = value.indexOf(':');
-      if (colon > 0) out.headers[value.slice(0, colon).trim()] = value.slice(colon + 1).trim();
-      i++;
-    } else if (arg === '-d') {
-      out.dataArg = value;
-      i++;
-    } else if (arg === '--protocol-version') {
-      out.protocolVersion = value;
-      i++;
-    } else if (arg === '-m' || arg === '--timeout') {
-      const ms = seconds(arg, value);
-      if (typeof ms === 'string') return ms;
-      out.timeoutMs = ms;
-      i++;
-    } else if (arg === '-v' || arg === '--verbose') out.verbose = true;
-    else if (arg === '--silent') out.silent = true;
-    else if (arg === '--json') out.json = true;
-    else if (arg === '--no-input') out.noInput = true;
-    else if (arg === '--no-validate') out.noValidate = true;
-    else if (arg.startsWith('-')) return `unknown option ${arg} for --list-events or --subscribe`;
-    else if (out.target) return `unexpected argument '${arg}'`;
-    else out.target = arg;
-  }
+  const parsed = parseLead(sep < 0 ? args : args.slice(0, sep), out);
+  if (typeof parsed === 'string') return parsed;
+  const subscribe = parsed.rest !== undefined;
   if (!out.target) return 'no target given';
-  if (list && subscribe) return '--list-events and --subscribe do not combine';
-  if (tail !== undefined) {
+  if (parsed.list && subscribe) return '--list-events and --subscribe do not combine';
+  if (sep >= 0) {
+    const tail = args.slice(sep + 1);
     if (!subscribe) return 'a command after -- needs --subscribe';
     if (tail.length === 0) return 'no command after --';
     out.handler = tail;
   }
   out.mode = subscribe ? 'subscribe' : 'list';
-  out.eventArgs = rest;
+  out.eventArgs = parsed.rest ?? [];
   return out;
 }
 
@@ -342,6 +390,7 @@ interface SubscriberOptions {
   args: EventsArgs;
   arguments: Record<string, unknown>;
   signal: AbortSignal;
+  redact: Redactor;
 }
 
 class Subscriber {
@@ -382,7 +431,7 @@ class Subscriber {
 
   private notice(text: string): Promise<void> {
     if (this.o.args.silent) return Promise.resolve();
-    return this.o.platform.write(2, sanitizeTerminal(`mcpcat: ${text}\n`));
+    return this.o.platform.write(2, sanitizeTerminal(`mcpcat: ${this.o.redact(text)}\n`));
   }
 
   private remember(id: string): void {
@@ -419,7 +468,7 @@ class Subscriber {
     await this.persist();
   }
 
-  private async deliver(occurrence: EventOccurrence, cursor: string | null | undefined) {
+  private async deliver(occurrence: EventOccurrence, cursor: string | undefined) {
     const id = typeof occurrence.eventId === 'string' ? occurrence.eventId : undefined;
     if (id !== undefined && this.seenSet.has(id)) {
       if (cursor !== undefined) await this.moveTo(cursor, false);
@@ -555,7 +604,7 @@ class Subscriber {
       return undefined;
     }
     if (method === 'notifications/events/event') {
-      const cursor = typeof params.cursor === 'string' ? params.cursor : null;
+      const cursor = typeof params.cursor === 'string' ? params.cursor : undefined;
       await this.deliver(occurrenceOf(params), cursor);
       return this.done() ? 'stop' : undefined;
     }
@@ -627,11 +676,19 @@ class Subscriber {
 export interface RunEventsOptions {
   base: Record<string, unknown>;
   signal: AbortSignal;
+  redact: Redactor;
 }
 
-async function fail(platform: Platform, json: boolean, code: number, msg: string) {
-  if (json) await renderErrorJson(platform, code === EXIT_USAGE ? 'usage' : 'error', msg);
-  else await platform.write(2, sanitizeTerminal(`mcpcat: ${msg}\n`));
+async function fail(
+  platform: Platform,
+  options: RunEventsOptions,
+  json: boolean,
+  code: number,
+  msg: string
+) {
+  const kind = code === EXIT_USAGE ? 'usage' : 'error';
+  if (json) await renderErrorJson(platform, kind, msg, undefined, undefined, options.redact);
+  else await platform.write(2, sanitizeTerminal(`mcpcat: ${options.redact(msg)}\n`));
   return code;
 }
 
@@ -667,6 +724,7 @@ export async function runEvents(
   if (!conn.events) {
     return fail(
       platform,
+      options,
       args.json,
       EXIT_RPC_ERROR,
       `events need protocol 2026-07-28; this server speaks ${info.protocolVersion}`
@@ -676,6 +734,7 @@ export async function runEvents(
   if (!extensions || typeof extensions !== 'object' || !extensions[EVENTS_EXTENSION]) {
     return fail(
       platform,
+      options,
       args.json,
       EXIT_RPC_ERROR,
       `the server does not offer the events extension (${EVENTS_EXTENSION})`
@@ -688,15 +747,18 @@ export async function runEvents(
     const known = events.map((e) => e.name).join(', ') || 'none';
     return fail(
       platform,
+      options,
       args.json,
       EXIT_USAGE,
       `unknown event '${args.event}' (events: ${known})`
     );
   }
   const mode = pickDelivery(event, args.delivery);
-  if (mode !== 'push' && mode !== 'poll') return fail(platform, args.json, EXIT_USAGE, mode);
+  if (mode !== 'push' && mode !== 'poll')
+    return fail(platform, options, args.json, EXIT_USAGE, mode);
   const eventArgs = eventArguments(event, args, options.base);
-  if (typeof eventArgs === 'string') return fail(platform, args.json, EXIT_USAGE, eventArgs);
+  if (typeof eventArgs === 'string')
+    return fail(platform, options, args.json, EXIT_USAGE, eventArgs);
   const subscriber = new Subscriber({
     platform,
     api: conn.events,
@@ -704,6 +766,7 @@ export async function runEvents(
     args,
     arguments: eventArgs,
     signal: options.signal,
+    redact: options.redact,
   });
   return subscriber.start();
 }

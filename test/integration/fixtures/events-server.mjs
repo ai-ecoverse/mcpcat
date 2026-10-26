@@ -39,6 +39,13 @@ const EVENTS = [
   { name: 'broken', delivery: ['push', 'poll'], inputSchema: obj({}) },
   { name: 'hook', delivery: ['webhook'], inputSchema: obj({}) },
   { name: 'tricky', delivery: ['push'], inputSchema: obj({}) },
+  {
+    name: 'nocursor',
+    description: 'Events without a cursor after an active one',
+    delivery: ['push'],
+    inputSchema: obj({ run: { type: 'string' } }, ['run']),
+  },
+  { name: 'leaky', delivery: ['push'], inputSchema: obj({}) },
 ];
 
 const PAGE = 3;
@@ -119,7 +126,7 @@ export function createEventsServer({ advertise = true } = {}) {
     });
   }
 
-  function stream(id, params, sink) {
+  function stream(id, params, sink, headers) {
     const name = params?.name;
     const tag = (p) => ({ ...p, _meta: { ...p._meta, [SID]: id } });
     const note = (method, p) => sink.send({ jsonrpc: '2.0', method, params: tag(p) });
@@ -209,6 +216,31 @@ export function createEventsServer({ advertise = true } = {}) {
       );
       return;
     }
+    if (name === 'nocursor') {
+      const state = run(`nocursor:${params.arguments?.run}`);
+      state.streams++;
+      const n = state.streams;
+      note('notifications/events/active', { cursor: params.cursor ?? 'c7', truncated: false });
+      later(10, () =>
+        note('notifications/events/event', {
+          eventId: `nocursor-${n}`,
+          name,
+          timestamp: STAMP,
+          data: { stream: n, resumedFrom: params.cursor ?? null },
+        })
+      );
+      return;
+    }
+    if (name === 'leaky') {
+      note('notifications/events/active', { cursor: null, truncated: false });
+      later(10, () => {
+        note('notifications/events/error', {
+          error: { code: -32603, message: `upstream rejected ${headers?.['x-token'] ?? 'none'}` },
+        });
+        note('notifications/events/event', { eventId: 'l1', name, timestamp: STAMP, data: {} });
+      });
+      return;
+    }
     if (name === 'tricky') {
       note('notifications/events/active', { cursor: null, truncated: false });
       const base = { name, timestamp: STAMP };
@@ -251,8 +283,14 @@ export function createEventsServer({ advertise = true } = {}) {
     }
     if (method === 'tools/list') {
       return reply(id, {
-        tools: [{ name: events ? 'caps-events' : 'caps-none', inputSchema: obj({}) }],
+        tools: [
+          { name: events ? 'caps-events' : 'caps-none', inputSchema: obj({}) },
+          { name: 'echo', inputSchema: obj({ experimental: { type: 'string' } }) },
+        ],
       });
+    }
+    if (method === 'tools/call') {
+      return reply(id, { content: [{ type: 'text', text: JSON.stringify(params.arguments) }] });
     }
     if (!method.startsWith('events/') || !advertise) return fail(id, -32601, 'Method not found');
     if (!events) return fail(id, -32021, 'Missing required client capability');
@@ -270,7 +308,7 @@ export function createEventsServer({ advertise = true } = {}) {
     if (method === 'events/poll') return poll(id, params);
     if (method === 'events/stream') {
       if (params.name === 'broken') return fail(id, -32023, 'NotFound', { kind: 'event' });
-      stream(id, params, open(id));
+      stream(id, params, open(id), headers);
       return undefined;
     }
     return fail(id, -32601, 'Method not found');

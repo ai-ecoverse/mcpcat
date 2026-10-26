@@ -63,6 +63,7 @@ import {
 } from './config-verbs.ts';
 import {
   EVENTS_USAGE,
+  EVENTS_VALUE_FLAGS,
   type EventsArgs,
   isEventsInvocation,
   parseEventsArgs,
@@ -339,6 +340,7 @@ interface ParsedArgs {
   outputPath: string | undefined;
   events?: EventsArgs;
   signal?: AbortSignal;
+  redact?: Redactor;
 }
 
 const VERBS_WITH_TOOL = new Set(['call', 'prompt', 'describe', 'read']);
@@ -1158,7 +1160,8 @@ async function runEventsVerb(
     }
   }
   const signal = parsed.signal ?? new AbortController().signal;
-  return runEvents(platform, conn, parsed.events!, { base, signal });
+  const redact = parsed.redact ?? ((text: string) => text);
+  return runEvents(platform, conn, parsed.events!, { base, signal, redact });
 }
 
 async function runVerb(
@@ -1685,6 +1688,22 @@ async function runEventsInvocation(
   return runClientVerb(platform, version, eventsParsedArgs(ev));
 }
 
+function ownArgsEnd(args: string[]): number {
+  const positional: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--') return i;
+    if (arg === '--experimental') i++;
+    else if (arg.startsWith('-')) {
+      if (args[i + 1] !== undefined && (EVENTS_VALUE_FLAGS.has(arg) || takesValue(arg))) i++;
+    } else {
+      positional.push(arg);
+      if (positional.length >= resolveMaxPositional(positional)) return i + 1;
+    }
+  }
+  return args.length;
+}
+
 const VERSION_FLAGS = new Set(['-V', '--version', '-v', '--verbose']);
 
 async function printVersion(platform: Platform, version: string, lead: string[]): Promise<number> {
@@ -1699,7 +1718,7 @@ async function printVersion(platform: Platform, version: string, lead: string[])
 }
 
 async function runInner(platform: Platform, version: string, argv: string[]): Promise<number> {
-  const experimental = extractExperimental(argv);
+  const experimental = extractExperimental(argv, ownArgsEnd(argv));
   if (experimental.error) {
     await platform.write(2, sanitizeTerminal(`mcpcat: ${experimental.error}\n`));
     return EXIT_USAGE;
@@ -2161,7 +2180,7 @@ async function runClientVerb(
   }
 
   try {
-    parsed.signal = sigintController.signal;
+    Object.assign(parsed, { signal: sigintController.signal, redact });
     const code = await runVerb(platform, parsed, conn, onProgress, respondData);
     if (interrupted) {
       await platform.write(2, 'mcpcat: interrupted\n');
