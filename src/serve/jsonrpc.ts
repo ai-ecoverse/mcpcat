@@ -42,7 +42,8 @@ export async function handleJsonRpc(
   call: (name: string, args: unknown) => Promise<ToolRunResult>,
   serverName: string,
   serverVersion: string,
-  listChanged = false
+  listChanged = false,
+  extensions?: Record<string, unknown>
 ): Promise<RpcOutcome> {
   let parsed: unknown;
   try {
@@ -58,7 +59,10 @@ export async function handleJsonRpc(
   const id = readId(parsed);
   const params = Object.getOwnPropertyDescriptor(parsed, 'params')?.value;
   return completeModernOutcome(
-    await dispatch(id, method, params, source, call, serverName, serverVersion, listChanged),
+    await dispatch(id, method, params, source, call, serverName, serverVersion, {
+      listChanged,
+      extensions,
+    }),
     params
   );
 }
@@ -71,12 +75,12 @@ async function dispatch(
   call: (name: string, args: unknown) => Promise<ToolRunResult>,
   serverName: string,
   serverVersion: string,
-  listChanged: boolean
+  caps: { listChanged: boolean; extensions?: Record<string, unknown> }
 ): Promise<RpcOutcome> {
   if (method === 'initialize')
-    return rpcOk(id, initializeResult(params, serverName, serverVersion, listChanged));
+    return rpcOk(id, initializeResult(params, serverName, serverVersion, caps.listChanged));
   if (method === 'server/discover')
-    return rpcOk(id, discoverResult(serverName, serverVersion, listChanged));
+    return rpcOk(id, discoverResult(serverName, serverVersion, caps));
   if (method === 'ping') return rpcOk(id, {});
   if (method === 'tools/list' || method === 'tools/call') {
     const listing = Array.isArray(source) ? { tools: source } : await source();
@@ -161,11 +165,14 @@ function initializeResult(
 function discoverResult(
   serverName: string,
   serverVersion: string,
-  listChanged: boolean
+  caps: { listChanged: boolean; extensions?: Record<string, unknown> }
 ): Record<string, unknown> {
   return modernDiscoverResult(
     PROTOCOL_VERSIONS,
-    { tools: { listChanged } },
+    {
+      tools: { listChanged: caps.listChanged },
+      ...(caps.extensions ? { extensions: caps.extensions } : {}),
+    },
     { name: serverName, version: serverVersion }
   );
 }

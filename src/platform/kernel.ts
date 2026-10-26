@@ -360,6 +360,126 @@ function parseHttpResponse(
   return { status, statusText, headers: respHeaders, body: responseBody };
 }
 
+function isUnsizedEventStream(head: string): boolean {
+  const lines = head.toLowerCase().split('\r\n');
+  return (
+    !lines.some((l) => l.startsWith('content-length:')) &&
+    lines.some((l) => l.startsWith('content-type:') && l.includes('text/event-stream'))
+  );
+}
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a);
+  out.set(b, a.length);
+  return out;
+}
+
+function crlfAt(buf: Uint8Array): number {
+  for (let i = 0; i + 1 < buf.length; i++) {
+    if (buf[i] === 13 && buf[i + 1] === 10) return i;
+  }
+  return -1;
+}
+
+export function createDechunker(): (input: Uint8Array) => { out: Uint8Array[]; done: boolean } {
+  let buf: Uint8Array = new Uint8Array(0);
+  let remaining = 0;
+  let state: 'size' | 'data' | 'crlf' | 'done' = 'size';
+  const step = (out: Uint8Array[]): boolean => {
+    if (state === 'size') {
+      const at = crlfAt(buf);
+      if (at < 0) return false;
+      const size = Number.parseInt(new TextDecoder().decode(buf.slice(0, at)).split(';')[0], 16);
+      buf = buf.slice(at + 2);
+      remaining = size;
+      state = size > 0 ? 'data' : 'done';
+      return state === 'data';
+    }
+    if (state === 'data') {
+      if (buf.length === 0) return false;
+      const take = Math.min(remaining, buf.length);
+      out.push(buf.slice(0, take));
+      buf = buf.slice(take);
+      remaining -= take;
+      if (remaining === 0) state = 'crlf';
+      return true;
+    }
+    if (buf.length < 2) return false;
+    buf = buf.slice(2);
+    state = 'size';
+    return true;
+  };
+  return (input) => {
+    buf = concatBytes(buf, input);
+    const out: Uint8Array[] = [];
+    while (state !== 'done' && step(out)) {}
+    return { out, done: state === 'done' };
+  };
+}
+
+function streamingResponse(
+  head: string,
+  rest: Uint8Array,
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  close: () => void,
+  signal: AbortSignal | null | undefined
+): Response {
+  const parsed = parseHttpResponse(new TextEncoder().encode(`${head}\r\n\r\n`), head.length, 0);
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    signal?.removeEventListener('abort', abort);
+    reader.releaseLock();
+    close();
+  };
+  let fail: (err: unknown) => void = () => {};
+  const abort = () => {
+    if (done) return;
+    fail(new DOMException('The operation was aborted.', 'AbortError'));
+    finish();
+  };
+  const chunked = /^transfer-encoding:.*chunked/im.test(head);
+  const dechunk = chunked
+    ? createDechunker()
+    : (input: Uint8Array) => ({ out: [input], done: false });
+  const feed = (controller: ReadableStreamDefaultController<Uint8Array>, bytes: Uint8Array) => {
+    const { out, done: last } = dechunk(bytes);
+    for (const piece of out) if (piece.length > 0) controller.enqueue(piece);
+    if (!last) return;
+    finish();
+    controller.close();
+  };
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      fail = (err) => controller.error(err);
+      feed(controller, rest);
+      if (done) return;
+      if (signal?.aborted) abort();
+      else signal?.addEventListener('abort', abort, { once: true });
+    },
+    async pull(controller) {
+      const chunk: ReadableStreamReadResult<Uint8Array> = await reader
+        .read()
+        .catch(() => ({ done: true as const, value: undefined }));
+      if (done) return;
+      if (chunk.done) {
+        finish();
+        controller.close();
+        return;
+      }
+      feed(controller, chunk.value);
+    },
+    cancel: finish,
+  });
+  return new Response(body, {
+    status: parsed.status,
+    statusText: parsed.statusText,
+    headers: parsed.headers,
+  });
+}
+
 async function kernelLoopbackFetch(
   ctx: KernelContext,
   url: URL,
@@ -397,14 +517,22 @@ async function kernelLoopbackFetch(
   buf = headerResult.buf;
   bufLen = headerResult.bufLen;
 
-  const contentLength = Number(
-    dec
-      .decode(new Uint8Array(buf.buffer, buf.byteOffset, headerResult.pos))
-      .split('\r\n')
-      .find((l) => l.toLowerCase().startsWith('content-length:'))
-      ?.split(':')[1]
-      ?.trim() ?? 0
-  );
+  const head = dec.decode(new Uint8Array(buf.buffer, buf.byteOffset, headerResult.pos));
+  if (isUnsizedEventStream(head)) {
+    const rest = buf.slice(headerResult.pos + 4, bufLen);
+    return streamingResponse(
+      head,
+      rest,
+      reader,
+      () => {
+        writer.close().catch(() => {});
+        conn.close();
+      },
+      init?.signal
+    );
+  }
+  const lengthLine = head.split('\r\n').find((l) => l.toLowerCase().startsWith('content-length:'));
+  const contentLength = Number(lengthLine?.split(':')[1]?.trim() ?? 0);
   const totalNeeded = headerResult.pos + 4 + contentLength;
   if (bufLen < totalNeeded && contentLength > 0) {
     const bodyResult = await readExact(reader, buf, bufLen, totalNeeded);
