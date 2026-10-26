@@ -149,6 +149,37 @@ const lines = (text) =>
     .filter(Boolean)
     .map((l) => JSON.parse(l));
 
+function exitOf(child) {
+  return new Promise((resolve) => child.once('exit', (code, signal) => resolve(signal ?? code)));
+}
+
+function lastFrame(text) {
+  const blocks = text.split('\n\n').reverse();
+  for (const block of blocks) {
+    try {
+      return JSON.parse(/^data: (.*)$/m.exec(block)?.[1]);
+    } catch {}
+  }
+  return undefined;
+}
+
+async function stalledStream(serve, params) {
+  const socket = connect(serve.port, '127.0.0.1');
+  await new Promise((r) => socket.once('connect', r));
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'events/stream', params });
+  socket.write(
+    `POST /mcp HTTP/1.1\r\nhost: 127.0.0.1:${serve.port}\r\ncontent-type: application/json\r\naccept: text/event-stream\r\nmcp-name: ${params.name}\r\ncontent-length: ${body.length}\r\n\r\n${body}`
+  );
+  socket.pause();
+  let text = '';
+  socket.on('data', (d) => {
+    text = (text + d.toString()).slice(-65536);
+  });
+  socket.on('error', () => {});
+  const closed = new Promise((r) => socket.once('close', r));
+  return { socket, closed, last: () => lastFrame(text) };
+}
+
 function alive(pidFile) {
   if (!existsSync(pidFile)) return false;
   try {
@@ -411,18 +442,58 @@ describe('host: serve --event', () => {
     assert.equal(r.body.error.code, -32601);
   });
 
-  it('shutdown sends the final stream result and stops the sources', async () => {
-    const pid = tmp('pid');
-    const serve = await startServe(['--no-auth', ...ev(tickSpec(50, pid))]);
-    const s = await openSse(serve, { name: 'tick', arguments: { label: 'z' } });
-    await s.next();
-    assert.ok(await until(() => alive(pid)));
-    serve.child.kill('SIGTERM');
-    let frame = await s.next();
-    while (frame?.method) frame = await s.next();
-    assert.deepEqual(frame.result, { resultType: 'complete', _meta: { [SID]: 7 } });
-    assert.ok(await until(() => !alive(pid)), 'source stopped');
-  });
+  for (const [signal, status] of [
+    ['SIGTERM', 143],
+    ['SIGINT', 130],
+    ['SIGHUP', 129],
+  ]) {
+    it(`${signal} sends a reading subscriber the final stream result, stops the sources and exits ${status}`, async () => {
+      const pid = tmp('pid');
+      const serve = await startServe(['--no-auth', ...ev(tickSpec(50, pid))]);
+      const exited = exitOf(serve.child);
+      const s = await openSse(serve, { name: 'tick', arguments: { label: 'z' } });
+      await s.next();
+      assert.ok(await until(() => alive(pid)));
+      serve.child.kill(signal);
+      let frame = await s.next();
+      while (frame?.method) frame = await s.next();
+      assert.deepEqual(frame.result, { resultType: 'complete', _meta: { [SID]: 7 } });
+      assert.equal(await s.next(), undefined);
+      const code = await Promise.race([exited, sleep(5000).then(() => 'running')]);
+      assert.equal(code, status, serve.stderr());
+      assert.ok(await until(() => !alive(pid)), 'source stopped');
+    });
+  }
+
+  for (const [label, wake] of [
+    ['never reads again', undefined],
+    ['reads again 200 ms later, so it gets the final result', 200],
+  ]) {
+    it(`SIGTERM with a push subscriber that stopped reading and ${label}: serve closes it and exits 143 (#513)`, async () => {
+      const pid = tmp('pid');
+      const serve = await startServe(['--no-auth', '--event-buffer', '5', ...ev(tickSpec(1, pid))]);
+      const exited = exitOf(serve.child);
+      const s = await stalledStream(serve, {
+        name: 'tick',
+        arguments: { label: 'x'.repeat(16384) },
+      });
+      assert.ok(await until(() => alive(pid)));
+      await sleep(1500);
+      const started = Date.now();
+      serve.child.kill('SIGTERM');
+      if (wake !== undefined) setTimeout(() => s.socket.resume(), wake);
+      const code = await Promise.race([exited, sleep(5000).then(() => 'running')]);
+      const elapsed = Date.now() - started;
+      assert.equal(code, 143, serve.stderr());
+      assert.ok(elapsed < 4000, `serve took ${elapsed} ms to exit`);
+      assert.ok(await until(() => !alive(pid)), 'source stopped');
+      s.socket.resume();
+      assert.ok(await Promise.race([s.closed.then(() => true), sleep(3000)]), 'socket closed');
+      if (wake !== undefined) {
+        assert.deepEqual(s.last()?.result, { resultType: 'complete', _meta: { [SID]: 9 } });
+      }
+    });
+  }
 
   it('stdio: stdin EOF stops the sources', async () => {
     const pid = tmp('pid');
@@ -937,7 +1008,25 @@ describe('kernel: serve --event', () => {
       'dist/src.mjs',
       readFileSync(join(fixtures, 'kernel-event-source.mjs'))
     );
+    await install(
+      '@ai-ecoverse/mcpcat-test-event-stall',
+      'event-stall',
+      'dist/stall.mjs',
+      readFileSync(join(fixtures, 'kernel-event-stall.mjs'))
+    );
     client = await attachKernel(await kernel.connect());
+    serve = await startKernelServe(ev('tick: event-src tick {label} 50'));
+    address = serve.address;
+  });
+
+  after(async () => {
+    serve?.sp.signal('SIGTERM');
+    await serve?.sp.exited;
+    client?.close();
+    kernel?.terminate();
+  });
+
+  async function startKernelServe(args) {
     const dec = new TextDecoder();
     let out = '';
     let err = '';
@@ -945,39 +1034,26 @@ describe('kernel: serve --event', () => {
     const line = new Promise((r) => {
       ready = r;
     });
-    serve = client.spawn(
-      [
-        'mcpcat',
-        'serve',
-        ...X,
-        '--http',
-        '0',
-        '--no-auth',
-        '--json',
-        ...ev('tick: event-src tick {label} 50'),
-      ],
+    const check = () => {
+      if (out.includes('\n') && err.includes('listening')) ready(out.split('\n')[0]);
+    };
+    const sp = await client.spawn(
+      ['mcpcat', 'serve', ...X, '--http', '0', '--no-auth', '--json', ...args],
       {
         stdin: 'pipe',
         onStdout(c) {
           out += dec.decode(c, { stream: true });
-          if (out.includes('\n') && err.includes('listening')) ready(out.split('\n')[0]);
+          check();
         },
         onStderr(c) {
           err += dec.decode(c, { stream: true });
-          if (out.includes('\n') && err.includes('listening')) ready(out.split('\n')[0]);
+          check();
         },
       }
     );
-    address = JSON.parse(await line);
-  });
-
-  after(async () => {
-    const sp = await serve;
-    sp?.signal('SIGTERM');
-    await sp?.exited;
-    client?.close();
-    kernel?.terminate();
-  });
+    const parsed = JSON.parse(await line);
+    return { sp, address: parsed, port: new URL(parsed.loopbackUrl).port, stderr: () => err };
+  }
 
   const krun = (args) =>
     kernel.run(['mcpcat', ...args], {
@@ -1049,5 +1125,37 @@ describe('kernel: serve --event', () => {
         );
       });
     }
+  }
+
+  for (const [label, wake, final] of [
+    ['reads all along gets the final result', 'read', true],
+    ['stopped reading and reads again 300 ms later gets the final result', '300', true],
+    ['stopped reading and comes back after serve is gone', '4000', false],
+  ]) {
+    it(`http: SIGTERM with a push subscriber that ${label}, and serve exits 143 (#513)`, async () => {
+      const name = `stall-${wake}-${'x'.repeat(4096)}`;
+      const k = await startKernelServe([
+        '--event-buffer',
+        '5',
+        ...ev('tick: event-src tick {label} 1'),
+      ]);
+      const started = Date.now();
+      const subscriber = kernel.run(['event-stall', k.port, String(k.sp.pid), name, wake], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const status = await Promise.race([k.sp.exited, sleep(6000).then(() => 'running')]);
+      const elapsed = Date.now() - started;
+      const r = await subscriber;
+      assert.equal(status, 143, k.stderr());
+      assert.ok(elapsed < 4500, `serve took ${elapsed} ms to exit`);
+      assert.equal(r.status, 0, String(r.stderr));
+      const frame = JSON.parse(String(r.stdout).trim() || 'null');
+      assert.equal(frame?.result?.resultType === 'complete', final, String(r.stdout).slice(0, 300));
+      assert.ok(
+        await until(async () => !(await client.ps()).some((p) => p.argv.includes(name))),
+        'source stopped'
+      );
+    });
   }
 });
