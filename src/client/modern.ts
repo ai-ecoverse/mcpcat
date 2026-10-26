@@ -20,6 +20,8 @@ export function isModernErrorCode(code: number): boolean {
 }
 
 export const TASKS_EXTENSION = 'io.modelcontextprotocol/tasks';
+export const EVENTS_EXTENSION = 'io.modelcontextprotocol/events';
+export const META_SUBSCRIPTION_ID = 'io.modelcontextprotocol/subscriptionId';
 
 export function modernRequestMeta(
   protocolVersion: string,
@@ -38,10 +40,13 @@ export function modernRequestParams(
   protocolVersion: string,
   clientInfo: { name: string; version: string }
 ): Record<string, unknown> {
-  const { _inputResponses, _tasks, ...rest } = params;
+  const { _inputResponses, _tasks, _events, ...rest } = params;
   const out: Record<string, unknown> = { ...rest };
   if (_inputResponses) out.inputResponses = _inputResponses;
-  const capabilities = _tasks ? { extensions: { [TASKS_EXTENSION]: {} } } : {};
+  const extensions: Record<string, unknown> = {};
+  if (_tasks) extensions[TASKS_EXTENSION] = {};
+  if (_events) extensions[EVENTS_EXTENSION] = {};
+  const capabilities = Object.keys(extensions).length > 0 ? { extensions } : {};
   out._meta = modernRequestMeta(protocolVersion, clientInfo, capabilities);
   return out;
 }

@@ -13,9 +13,21 @@ import type {
   CompletionRef,
   GetPromptResult,
   McpConnection,
+  PollEventsResult,
   PromptInfo,
   ServerInfo,
+  StreamEnd,
+  StreamMessageHandler,
+  StreamOptions,
 } from './connection.ts';
+import {
+  dispatchStreamData,
+  EventsTransportClosedError,
+  listAllEvents,
+  STALE,
+  subscriptionParams,
+  within,
+} from './events.ts';
 import { MODERN_PROTOCOL_VERSION, modernRequestParams } from './modern.ts';
 import {
   discoverServerInfo,
@@ -52,8 +64,20 @@ interface StdioStatelessOptions {
 
 interface StdioJsonRpc {
   request(method: string, params: Record<string, unknown>): Promise<unknown>;
+  stream(
+    method: string,
+    params: Record<string, unknown>,
+    onMessage: StreamMessageHandler,
+    options: StreamOptions
+  ): Promise<StreamEnd>;
   close(): void;
   pendingBuffer(): string;
+}
+
+const ABORTED = Symbol('aborted');
+
+function rpcError(code: number, message: string, data?: unknown): Error {
+  return new StatelessRpcError(code, message, data);
 }
 
 function createStdioJsonRpc(
@@ -65,6 +89,7 @@ function createStdioJsonRpc(
   const decoder = new TextDecoder();
   let nextId = 1;
   let readBuffer = '';
+  let pendingLine: Promise<string> | undefined;
   const reader = proc.stdout.getReader();
   const { version = '0.0.0', timeoutMs = 60_000, signal: externalSignal, verbose } = options;
 
@@ -78,8 +103,34 @@ function createStdioJsonRpc(
         continue;
       }
       const { done, value } = await reader.read();
-      if (done) throw new Error('stdio server closed unexpectedly');
+      if (done) throw new EventsTransportClosedError('stdio server closed unexpectedly');
       readBuffer += decoder.decode(value, { stream: true });
+    }
+  }
+
+  async function nextLine(
+    ms: number,
+    signals: (AbortSignal | undefined)[]
+  ): Promise<string | typeof STALE | typeof ABORTED> {
+    pendingLine ??= readLine();
+    const line = pendingLine;
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<typeof ABORTED>((resolve) => {
+      onAbort = () => resolve(ABORTED);
+      for (const s of signals) {
+        if (s?.aborted) onAbort();
+        else s?.addEventListener('abort', onAbort, { once: true });
+      }
+    });
+    try {
+      const got = await Promise.race([within(line, ms), aborted]);
+      if (typeof got === 'string') pendingLine = undefined;
+      return got;
+    } catch (err) {
+      pendingLine = undefined;
+      throw err;
+    } finally {
+      for (const s of signals) if (onAbort) s?.removeEventListener('abort', onAbort);
     }
   }
 
@@ -92,44 +143,29 @@ function createStdioJsonRpc(
     }
   }
 
-  function raceDeadline(
-    linePromise: Promise<string>,
-    method: string,
-    remaining: number
-  ): Promise<string> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let onAbort: (() => void) | undefined;
-    const stop = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new McpTimeoutError(method, timeoutMs)), remaining);
-      onAbort = () => reject(new McpTimeoutError(method, timeoutMs));
-      externalSignal?.addEventListener('abort', onAbort, { once: true });
-    });
-    return Promise.race([linePromise, stop]).finally(() => {
-      clearTimeout(timer);
-      if (onAbort) externalSignal?.removeEventListener('abort', onAbort);
-    });
-  }
-
-  async function request(method: string, params: Record<string, unknown>): Promise<unknown> {
-    const id = nextId++;
-    const body = JSON.stringify({
+  function wireBody(id: number, method: string, params: Record<string, unknown>): string {
+    return JSON.stringify({
       jsonrpc: '2.0',
       id,
       method,
       params: modernRequestParams(params, PROTOCOL_VERSION, { name: 'mcpcat', version }),
     });
+  }
+
+  async function request(method: string, params: Record<string, unknown>): Promise<unknown> {
+    const id = nextId++;
+    const body = wireBody(id, method, params);
 
     if (verbose?.enabled) verbose.request(method, body);
     await send(body);
 
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const remaining = deadline - Date.now();
-      if (externalSignal?.aborted) throw new McpTimeoutError(method, timeoutMs);
-      const line = await raceDeadline(readLine(), method, remaining);
+      const line = await nextLine(deadline - Date.now(), [externalSignal]);
+      if (typeof line !== 'string') throw new McpTimeoutError(method, timeoutMs);
       const parsed = JSON.parse(line) as JsonRpcMessage;
       if (verbose?.enabled) verbose.response(line);
-      if (parsed.id === id) {
+      if (parsed.id === id && parsed.method === undefined) {
         if (parsed.error) {
           throw new StatelessRpcError(parsed.error.code, parsed.error.message, parsed.error.data);
         }
@@ -139,8 +175,49 @@ function createStdioJsonRpc(
     throw new McpTimeoutError(method, timeoutMs);
   }
 
+  async function cancel(id: number, reason: string): Promise<void> {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'notifications/cancelled',
+      params: { requestId: id, reason },
+    });
+    if (verbose?.enabled) verbose.request('notifications/cancelled', body);
+    try {
+      await send(body);
+    } catch {}
+  }
+
+  async function stream(
+    method: string,
+    params: Record<string, unknown>,
+    onMessage: StreamMessageHandler,
+    streamOptions: StreamOptions
+  ): Promise<StreamEnd> {
+    const signals = [externalSignal, streamOptions.signal];
+    if (signals.some((s) => s?.aborted)) return 'aborted';
+    const id = nextId++;
+    const body = wireBody(id, method, params);
+    if (verbose?.enabled) verbose.request(method, body);
+    await send(body);
+    for (;;) {
+      const line = await nextLine(streamOptions.idleMs, signals);
+      if (line === ABORTED) {
+        await cancel(id, 'interrupted');
+        return 'aborted';
+      }
+      if (line === STALE) {
+        await cancel(id, 'no heartbeat');
+        return 'stale';
+      }
+      const end = await dispatchStreamData(line, id, onMessage, verbose, rpcError);
+      if (end === 'stopped') await cancel(id, 'done');
+      if (end) return end;
+    }
+  }
+
   return {
     request,
+    stream,
     close() {
       try {
         reader.releaseLock();
@@ -246,6 +323,14 @@ function buildConnectionMethods(
         string,
         unknown
       >;
+    },
+    events: {
+      list: () => listAllEvents(rpc.request),
+      poll: async (subscription) =>
+        ((await rpc.request('events/poll', subscriptionParams(subscription))) ??
+          {}) as PollEventsResult,
+      stream: (subscription, onMessage, options) =>
+        rpc.stream('events/stream', subscriptionParams(subscription), onMessage, options),
     },
     async close(): Promise<void> {
       rpc.close();
