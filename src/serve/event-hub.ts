@@ -3,7 +3,6 @@ import type { Platform, SpawnResult } from '../platform/types.ts';
 import {
   canonicalArgs,
   descriptor,
-  type Entry,
   type EventSpec,
   EventsRpcError,
   notification,
@@ -175,34 +174,67 @@ export class EventHub {
   ): Promise<void> {
     const source = this.acquire(spec, sub.arguments);
     const pos = source.position(sub.cursor, sub.maxAgeMs);
-    let last = pos.seq;
+    const state = { last: pos.seq, beat: false, closing: false, ended: false, writing: false };
     let finish: () => void = () => {};
     const ended = new Promise<void>((resolve) => {
-      finish = resolve;
+      finish = () => {
+        state.ended = true;
+        resolve();
+      };
     });
-    let chain = Promise.resolve();
-    const push = (message: string) => {
-      chain = chain.then(() => send(message)).catch(() => finish());
+    const next = (): string | undefined => {
+      if (state.last < source.oldest - 1) {
+        state.last = source.oldest - 1;
+        return notification(id, 'active', { cursor: source.cursor(state.last), truncated: true });
+      }
+      const [entry] = source.after(state.last, 1);
+      if (entry) {
+        state.last = entry.seq;
+        return notification(id, 'event', { ...entry.occurrence, cursor: source.cursor(entry.seq) });
+      }
+      if (state.beat) {
+        state.beat = false;
+        return notification(id, 'heartbeat', { cursor: source.cursor(state.last) });
+      }
+      return undefined;
     };
-    const event = (entry: Entry) => {
-      if (entry.seq <= last) return;
-      last = entry.seq;
-      push(notification(id, 'event', { ...entry.occurrence, cursor: source.cursor(entry.seq) }));
+    const pump = async () => {
+      if (state.writing) return;
+      state.writing = true;
+      try {
+        for (let message = next(); message && !state.ended; message = next()) await send(message);
+        if (state.closing && !state.ended) {
+          await send(streamResult(id));
+          finish();
+        }
+      } catch {
+        finish();
+      }
+      state.writing = false;
     };
-    push(notification(id, 'active', { cursor: source.cursor(pos.seq), truncated: pos.truncated }));
-    for (const entry of source.after(pos.seq)) event(entry);
-    const off = source.on(event);
-    const beat = setInterval(
-      () => push(notification(id, 'heartbeat', { cursor: source.cursor(last) })),
-      this.o.heartbeatMs
-    );
+    const first = notification(id, 'active', {
+      cursor: source.cursor(pos.seq),
+      truncated: pos.truncated,
+    });
+    const off = source.on(() => void pump());
+    const beat = setInterval(() => {
+      state.beat = true;
+      void pump();
+    }, this.o.heartbeatMs);
     const closer = () => {
-      push(streamResult(id));
-      void chain.then(finish);
+      state.closing = true;
+      void pump();
     };
     this.closers.add(closer);
     signal.addEventListener('abort', finish, { once: true });
     if (signal.aborted) finish();
+    state.writing = true;
+    void send(first)
+      .then(() => {
+        state.writing = false;
+        return pump();
+      })
+      .catch(finish);
     await ended;
     off();
     clearInterval(beat);

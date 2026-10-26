@@ -4,6 +4,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:https';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -457,6 +458,94 @@ describe('host: serve --event', () => {
     assert.equal(lines(r.stdout).at(-1).error.code, -32023);
   });
 
+  for (const [signal, status] of [
+    ['SIGTERM', 143],
+    ['SIGINT', 130],
+  ]) {
+    it(`stdio: ${signal} with stdin open stops serve and its sources (exit ${status})`, async () => {
+      const pid = tmp('pid');
+      const { cmd, args } = mcpcatArgs(['serve', ...X, ...ev(tickSpec(50, pid))]);
+      const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], env });
+      children.push(child);
+      const done = collect(child);
+      child.stdin.write(
+        `${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'events/stream', params: { name: 'tick', arguments: { label: 's' } } })}\n`
+      );
+      assert.ok(await until(() => alive(pid)));
+      child.kill(signal);
+      const exited = await Promise.race([done, sleep(5000).then(() => undefined)]);
+      assert.ok(exited, `serve still running after ${signal}`);
+      assert.equal(exited.status, status);
+      assert.ok(await until(() => !alive(pid)), 'source stopped');
+    });
+  }
+
+  it('stdio: SIGTERM with stdin open stops a serve without events too', async () => {
+    const { cmd, args } = mcpcatArgs(['serve', '--tool', 'echo: echo {msg}']);
+    const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], env });
+    children.push(child);
+    const done = collect(child);
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' })}\n`);
+    await new Promise((r) => child.stdout.once('data', r));
+    child.kill('SIGTERM');
+    const exited = await Promise.race([done, sleep(5000).then(() => undefined)]);
+    assert.ok(exited, 'serve still running after SIGTERM');
+    assert.equal(exited.status, 143);
+  });
+
+  it('a stalled push subscriber gets a truncated gap, not an unbounded backlog', async () => {
+    const count = 4000;
+    const serve = await startServe([
+      '--no-auth',
+      '--event-buffer',
+      '5',
+      ...ev(`flood: node ${source} flood ${count} 4096`),
+    ]);
+    const socket = connect(serve.port, '127.0.0.1');
+    await new Promise((r) => socket.once('connect', r));
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 9,
+      method: 'events/stream',
+      params: { name: 'flood' },
+    });
+    socket.write(
+      `POST /mcp HTTP/1.1\r\nhost: 127.0.0.1:${serve.port}\r\ncontent-type: application/json\r\naccept: text/event-stream\r\nmcp-name: flood\r\ncontent-length: ${body.length}\r\n\r\n${body}`
+    );
+    socket.pause();
+    await sleep(2500);
+    let text = '';
+    const frames = [];
+    await new Promise((resolve) => {
+      socket.on('data', (d) => {
+        text += d.toString();
+        let end = text.indexOf('\n\n');
+        while (end >= 0) {
+          const block = text.slice(0, end);
+          text = text.slice(end + 2);
+          const data = /^data: (.*)$/m.exec(block)?.[1];
+          if (data) {
+            const frame = JSON.parse(data);
+            frames.push(frame);
+            if (frame.params?.data?.n === count) resolve();
+          }
+          end = text.indexOf('\n\n');
+        }
+      });
+      socket.resume();
+    });
+    socket.destroy();
+    serve.child.kill('SIGTERM');
+    const actives = frames.filter((f) => f.method === 'notifications/events/active');
+    const events = frames.filter((f) => f.method === 'notifications/events/event');
+    assert.ok(actives.length >= 2, 'a truncated active marks the gap');
+    assert.equal(actives[1].params.truncated, true);
+    assert.ok(
+      events.length < count,
+      `${events.length} of ${count} events were held for the subscriber`
+    );
+  });
+
   for (const [args, message] of [
     [['serve', ...ev('tick: x')], /--event and --webhook-allow need --experimental events/],
     [['serve', '--webhook-allow', 'https://a/'], /need --experimental events/],
@@ -534,8 +623,12 @@ function receiver(tls) {
       const raw = Buffer.concat(chunks).toString();
       deliveries.push({ path: req.url, headers: req.headers, raw, body: JSON.parse(raw) });
       const queue = plan.get(req.url) ?? [];
-      res.writeHead(queue.shift() ?? 200);
-      res.end();
+      const step = queue.shift() ?? 200;
+      const { status, delayMs } = typeof step === 'number' ? { status: step, delayMs: 0 } : step;
+      setTimeout(() => {
+        res.writeHead(status);
+        res.end();
+      }, delayMs);
     });
   });
   return new Promise((resolve) => {
@@ -669,6 +762,39 @@ describe('host: serve --event --webhook-allow', { skip: !hasOpenssl && 'needs op
     await call('events/unsubscribe', gone);
   });
 
+  it('an endpoint that falls behind gets a gap notice, not an unbounded queue', async () => {
+    const slow = await startServe(
+      [
+        '--bearer',
+        '${SERVE_TOKEN}',
+        '--event-buffer',
+        '5',
+        ...ev(`burst: node ${source} burst 50`),
+        '--webhook-allow',
+        hook.url('/ok/'),
+      ],
+      { SERVE_TOKEN: bearer, NODE_EXTRA_CA_CERTS: tls.path }
+    );
+    hook.plan('/ok/slow', [{ status: 200, delayMs: 1500 }]);
+    const secret = newSecret();
+    const params = {
+      name: 'burst',
+      arguments: {},
+      delivery: { url: hook.url('/ok/slow'), secret },
+    };
+    const r = await rpc(slow, 'events/subscribe', params, { bearer });
+    assert.match(r.body.result.id, /^sub_/);
+    assert.ok(await until(() => hook.at('/ok/slow').some((d) => d.body.data?.n === 50), 10_000));
+    const bodies = hook.at('/ok/slow').map((d) => d.body);
+    const gap = hook.at('/ok/slow').find((d) => d.body.type === 'gap');
+    assert.ok(gap, 'a gap envelope was posted');
+    assert.match(gap.headers['webhook-id'], /^msg_gap_[0-9a-f]{16}$/);
+    assert.ok(verifies(gap, secret));
+    assert.match(gap.body.cursor, /\.\d+$/);
+    assert.ok(bodies.length < 50, `${bodies.length} deliveries`);
+    slow.child.kill('SIGTERM');
+  });
+
   it('a subscription that is not refreshed expires, and its source stops', async () => {
     const params = sub('ttl', { ttlMs: 1000 });
     const r = await call('events/subscribe', params);
@@ -800,6 +926,12 @@ describe('kernel: serve --event', () => {
       readFileSync(join(root, 'dist/quickjs.wasm'))
     );
     await install(
+      '@ai-ecoverse/mcpcat-test-chunked-events',
+      'chunked-events',
+      'dist/server.mjs',
+      readFileSync(join(fixtures, 'kernel-chunked-events.mjs'))
+    );
+    await install(
       '@ai-ecoverse/mcpcat-test-event-source',
       'event-src',
       'dist/src.mjs',
@@ -853,6 +985,41 @@ describe('kernel: serve --event', () => {
       stderr: 'pipe',
       env: { PI_CODING_AGENT_DIR: '/etc/mcpcat-serve-events' },
     });
+
+  it('a kernel client reads a chunked event stream from a kernel server', async () => {
+    const dec = new TextDecoder();
+    let out = '';
+    let ready;
+    const line = new Promise((r) => {
+      ready = r;
+    });
+    const server = client.spawn(['chunked-events'], {
+      stdin: 'pipe',
+      onStdout(c) {
+        out += dec.decode(c, { stream: true });
+        if (out.includes('\n')) ready(JSON.parse(out.split('\n')[0]));
+      },
+    });
+    const { port } = await line;
+    const r = await krun([
+      `http://${port}.kernel.localhost/mcp`,
+      ...X,
+      '--heartbeat-timeout',
+      '2',
+      '--count',
+      '3',
+      '--subscribe',
+      'tick',
+    ]);
+    const sp = await server;
+    sp.signal('SIGTERM');
+    await sp.exited;
+    assert.equal(r.status, 0, String(r.stderr));
+    assert.deepEqual(
+      lines(String(r.stdout)).map((e) => e.data.n),
+      [1, 2, 3]
+    );
+  });
 
   for (const [label, target] of [
     ['stdio', () => `stdio:mcpcat serve ${X.join(' ')} --event 'tick: event-src tick {label} 50'`],

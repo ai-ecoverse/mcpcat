@@ -15,6 +15,19 @@ if (mode === 'shape') {
   out(JSON.stringify({ pid: process.pid }));
   process.stderr.write('source crashed\n');
   setTimeout(() => process.exit(3), 20);
+} else if (mode === 'flood' || mode === 'burst') {
+  const count = Number(label);
+  const pad = 'x'.repeat(mode === 'flood' ? Number(ms) : 0);
+  let n = 0;
+  const write = () => {
+    while (n < count) {
+      n++;
+      if (!process.stdout.write(`${JSON.stringify({ n, pad })}\n`))
+        return process.stdout.once('drain', write);
+    }
+  };
+  write();
+  setInterval(() => {}, 1000);
 } else if (mode === 'quiet') {
   setInterval(() => {}, 1000);
 } else {

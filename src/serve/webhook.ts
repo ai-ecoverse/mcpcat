@@ -1,13 +1,12 @@
-import type { EventOccurrence } from '../client/connection.ts';
 import {
   canonicalArgs,
-  type Entry,
   type EventSpec,
   EventsRpcError,
   FORBIDDEN,
   INVALID_PARAMS,
   NOT_FOUND,
   RESOURCE_EXHAUSTED,
+  randomId,
   readSubscription,
   type Source,
 } from './events.ts';
@@ -56,8 +55,6 @@ interface Hook {
   source: Source;
   secrets: Secret[];
   expires?: ReturnType<typeof setTimeout>;
-  queue: Entry[];
-  last: number;
   acked: number;
   pumping: boolean;
   abort: AbortController;
@@ -222,22 +219,14 @@ export class WebhookRegistry {
       url,
       source,
       secrets: [{ key: secretKeyed, raw }],
-      queue: [],
-      last: pos.seq,
       acked: pos.seq,
       pumping: false,
       abort: new AbortController(),
       status: { active: true, lastError: null },
     };
     hook.expires = setTimeout(() => this.remove(hook), ttl);
-    const enqueue = (entry: Entry) => {
-      if (entry.seq <= hook.last) return;
-      hook.last = entry.seq;
-      hook.queue.push(entry);
-      void this.pump(hook);
-    };
-    for (const entry of source.after(pos.seq)) enqueue(entry);
-    hook.off = source.on(enqueue);
+    hook.off = source.on(() => void this.pump(hook));
+    void this.pump(hook);
     this.hooks.set(id, hook);
     return { id, refreshBefore, cursor: source.cursor(pos.seq), truncated: pos.truncated };
   }
@@ -270,21 +259,30 @@ export class WebhookRegistry {
   private async pump(hook: Hook): Promise<void> {
     if (hook.pumping) return;
     hook.pumping = true;
-    while (hook.queue.length > 0 && !hook.abort.signal.aborted) {
-      const entry = hook.queue[0];
-      await this.deliver(hook, entry);
-      hook.queue.shift();
+    const { source } = hook;
+    while (!hook.abort.signal.aborted) {
+      if (hook.acked < source.oldest - 1) {
+        hook.acked = source.oldest - 1;
+        const body = JSON.stringify({ type: 'gap', cursor: source.cursor(hook.acked) });
+        await this.deliver(hook, `msg_gap_${randomId(8)}`, body, 'a gap notice');
+        continue;
+      }
+      const [entry] = source.after(hook.acked, 1);
+      if (!entry) break;
+      const { eventId } = entry.occurrence;
+      const body = JSON.stringify({ ...entry.occurrence, cursor: source.cursor(entry.seq) });
+      await this.deliver(hook, eventId, body, `event ${eventId}`);
       hook.acked = entry.seq;
     }
     hook.pumping = false;
   }
 
-  private async deliver(hook: Hook, entry: Entry): Promise<void> {
+  private async deliver(hook: Hook, webhookId: string, body: string, what: string): Promise<void> {
     const delays = this.o.retryDelaysMs ?? RETRY_DELAYS_MS;
     for (const delay of delays) {
       if (delay > 0) await sleep(delay, hook.abort.signal);
       if (hook.abort.signal.aborted) return;
-      const outcome = await this.post(hook, entry);
+      const outcome = await this.post(hook, webhookId, body);
       const now = new Date(this.host.now()).toISOString();
       if (outcome === 'ok') {
         hook.status = { active: true, lastDeliveryAt: now, lastError: null };
@@ -297,9 +295,7 @@ export class WebhookRegistry {
         failedSince: hook.status.failedSince ?? now,
       };
     }
-    await this.host.log(
-      `webhook ${hook.id} gave up on event ${entry.occurrence.eventId} (${hook.status.lastError})`
-    );
+    await this.host.log(`webhook ${hook.id} gave up on ${what} (${hook.status.lastError})`);
   }
 
   private async sign(hook: Hook, message: string): Promise<string> {
@@ -312,13 +308,7 @@ export class WebhookRegistry {
     return sigs.join(' ');
   }
 
-  private async post(hook: Hook, entry: Entry): Promise<string> {
-    const occurrence: EventOccurrence = {
-      ...entry.occurrence,
-      cursor: hook.source.cursor(entry.seq),
-    };
-    const body = JSON.stringify(occurrence);
-    const webhookId = occurrence.eventId;
+  private async post(hook: Hook, webhookId: string, body: string): Promise<string> {
     const timestamp = String(Math.floor(this.host.now() / 1000));
     const signature = await this.sign(hook, `${webhookId}.${timestamp}.${body}`);
     const timeout = new AbortController();

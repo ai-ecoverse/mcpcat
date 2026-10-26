@@ -368,6 +368,56 @@ function isUnsizedEventStream(head: string): boolean {
   );
 }
 
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a);
+  out.set(b, a.length);
+  return out;
+}
+
+function crlfAt(buf: Uint8Array): number {
+  for (let i = 0; i + 1 < buf.length; i++) {
+    if (buf[i] === 13 && buf[i + 1] === 10) return i;
+  }
+  return -1;
+}
+
+export function createDechunker(): (input: Uint8Array) => { out: Uint8Array[]; done: boolean } {
+  let buf: Uint8Array = new Uint8Array(0);
+  let remaining = 0;
+  let state: 'size' | 'data' | 'crlf' | 'done' = 'size';
+  const step = (out: Uint8Array[]): boolean => {
+    if (state === 'size') {
+      const at = crlfAt(buf);
+      if (at < 0) return false;
+      const size = Number.parseInt(new TextDecoder().decode(buf.slice(0, at)).split(';')[0], 16);
+      buf = buf.slice(at + 2);
+      remaining = size;
+      state = size > 0 ? 'data' : 'done';
+      return state === 'data';
+    }
+    if (state === 'data') {
+      if (buf.length === 0) return false;
+      const take = Math.min(remaining, buf.length);
+      out.push(buf.slice(0, take));
+      buf = buf.slice(take);
+      remaining -= take;
+      if (remaining === 0) state = 'crlf';
+      return true;
+    }
+    if (buf.length < 2) return false;
+    buf = buf.slice(2);
+    state = 'size';
+    return true;
+  };
+  return (input) => {
+    buf = concatBytes(buf, input);
+    const out: Uint8Array[] = [];
+    while (state !== 'done' && step(out)) {}
+    return { out, done: state === 'done' };
+  };
+}
+
 function streamingResponse(
   head: string,
   rest: Uint8Array,
@@ -386,13 +436,26 @@ function streamingResponse(
   };
   let fail: (err: unknown) => void = () => {};
   const abort = () => {
+    if (done) return;
     fail(new DOMException('The operation was aborted.', 'AbortError'));
     finish();
+  };
+  const chunked = /^transfer-encoding:.*chunked/im.test(head);
+  const dechunk = chunked
+    ? createDechunker()
+    : (input: Uint8Array) => ({ out: [input], done: false });
+  const feed = (controller: ReadableStreamDefaultController<Uint8Array>, bytes: Uint8Array) => {
+    const { out, done: last } = dechunk(bytes);
+    for (const piece of out) if (piece.length > 0) controller.enqueue(piece);
+    if (!last) return;
+    finish();
+    controller.close();
   };
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
       fail = (err) => controller.error(err);
-      if (rest.length > 0) controller.enqueue(rest);
+      feed(controller, rest);
+      if (done) return;
       if (signal?.aborted) abort();
       else signal?.addEventListener('abort', abort, { once: true });
     },
@@ -406,7 +469,7 @@ function streamingResponse(
         controller.close();
         return;
       }
-      controller.enqueue(chunk.value);
+      feed(controller, chunk.value);
     },
     cancel: finish,
   });

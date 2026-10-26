@@ -132,7 +132,7 @@ export class Source {
     return this.seq;
   }
 
-  private first(): number {
+  get oldest(): number {
     return this.buffer[0]?.seq ?? this.seq + 1;
   }
 
@@ -144,8 +144,8 @@ export class Source {
       cursor.slice(0, dot) === this.epoch &&
       Number.isInteger(n) &&
       n <= this.seq &&
-      n >= this.first() - 1;
-    let pos = valid ? { seq: n, truncated: false } : { seq: this.first() - 1, truncated: true };
+      n >= this.oldest - 1;
+    let pos = valid ? { seq: n, truncated: false } : { seq: this.oldest - 1, truncated: true };
     if (maxAgeMs === undefined) return pos;
     const floor = this.ctx.now() - maxAgeMs;
     for (const entry of this.after(pos.seq)) {

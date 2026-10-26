@@ -2124,11 +2124,16 @@ async function runStdioServer(
     return chain;
   };
   const streams = hub ? new StdioStreams(hub, out) : undefined;
+  let stop: (code: number) => void = () => {};
+  const stopped = new Promise<number>((resolve) => {
+    stop = resolve;
+  });
+  await trapShutdown(platform, (sig) => stop(SIGNAL_EXIT[sig]));
 
-  try {
+  const serve = async (): Promise<number> => {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) return 0;
       buffer += dec.decode(value, { stream: true });
 
       let nlIdx: number;
@@ -2151,12 +2156,14 @@ async function runStdioServer(
         await out(outcome.body);
       }
     }
-  } finally {
-    reader.releaseLock();
-    await streams?.close();
-  }
+  };
 
-  return 0;
+  try {
+    return await Promise.race([serve(), stopped]);
+  } finally {
+    await reader.cancel().catch(() => {});
+    await Promise.all([streams?.close(), killInflight()]);
+  }
 }
 
 class StdioStreams {
