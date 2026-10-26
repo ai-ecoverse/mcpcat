@@ -272,6 +272,8 @@ export function createEventsServer({ advertise = true } = {}) {
           method: 'notifications/events/heartbeat',
           params: { cursor: 'c99', _meta: { [SID]: `other-${id}` } },
         });
+        note('notifications/events/error', { error: { code: -32603, message: 'still here' } });
+        note('notifications/events/unknown', {});
       });
       later(2000, () => {
         stop();
