@@ -27,6 +27,7 @@ import {
   createSseParser,
   dispatchStreamData,
   EVENTS_METHODS,
+  idleClock,
   listAllEvents,
   STALE,
   subscriptionParams,
@@ -450,18 +451,19 @@ async function readEventStream(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   const parse = createSseParser();
+  const clock = idleClock(onMessage, idleMs);
   try {
     for (;;) {
       let chunk: ReadableStreamReadResult<Uint8Array> | typeof STALE;
       try {
-        chunk = await within(reader.read(), idleMs);
+        chunk = await within(reader.read(), clock.left());
       } catch {
         return t.externalSignal?.aborted ? 'aborted' : 'dropped';
       }
       if (chunk === STALE) return 'stale';
       if (chunk.done) return 'dropped';
       for (const data of parse(decoder.decode(chunk.value, { stream: true }))) {
-        const end = await dispatchStreamData(data, id, onMessage, t.verbose, rpcError);
+        const end = await dispatchStreamData(data, id, clock.onMessage, t.verbose, rpcError);
         if (end) return end;
       }
     }

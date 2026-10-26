@@ -7,7 +7,8 @@ import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { mcpcatArgs } from './helpers/bin.mjs';
-import { createNodeKernel, hostUrl, nodeTransport } from './helpers/kernel.mjs';
+import { attachKernel, createNodeKernel, hostUrl, nodeTransport } from './helpers/kernel.mjs';
+import { waitUntil } from './helpers/wait.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '../..');
@@ -78,6 +79,7 @@ function checks(run, targets, sink) {
         'tricky',
         'nocursor',
         'leaky',
+        'chatty',
       ]);
     });
 
@@ -416,6 +418,71 @@ function checks(run, targets, sink) {
       ]);
       assert.equal(v.status, 0, v.stderr);
     });
+
+    for (const delivery of ['push', 'poll']) {
+      it(`${label}: an event whose ${delivery} command SIGINT stops is delivered again`, async () => {
+        const file = sink.path('sigint.json');
+        const subscribe = [target(), ...X, '--delivery', delivery, '--cursor-file', file];
+        const a = await sink.interrupt([
+          ...subscribe,
+          '--subscribe',
+          'tick',
+          '--every',
+          '200',
+          '--',
+          ...sink.hang,
+        ]);
+        assert.equal(a.status, 130, a.stderr);
+        assert.match(a.stdout, /^hang tick-1 \d+$/m);
+        const b = await run([...subscribe, '--count', '1', '--subscribe', 'tick']);
+        assert.equal(b.status, 0, b.stderr);
+        assert.deepEqual(
+          lines(b.stdout).map((e) => e.eventId),
+          ['tick-1']
+        );
+      });
+    }
+
+    it(`${label}: SIGINT kills a command that ignores SIGTERM and exits 130`, async () => {
+      const r = await sink.interrupt([
+        target(),
+        ...X,
+        '--subscribe',
+        'tick',
+        '--every',
+        '200',
+        '--',
+        ...sink.hang,
+        'trap',
+      ]);
+      const pid = Number(/^hang tick-1 (\d+)$/m.exec(r.stdout)?.[1]);
+      assert.ok(pid > 0, r.stdout);
+      assert.equal(await sink.kill(pid), false, 'the command outlived mcpcat');
+      assert.equal(r.status, 130, r.stderr);
+      assert.match(r.stderr, /interrupted/);
+    });
+
+    it(`${label}: other notifications do not keep a stream without heartbeats alive`, async () => {
+      const r = await run([
+        target(),
+        ...X,
+        '--heartbeat-timeout',
+        '0.3',
+        '--count',
+        '2',
+        '--subscribe',
+        'chatty',
+        '--run',
+        runId(),
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(
+        lines(r.stdout).map((e) => e.eventId),
+        ['chatty-1', 'chatty-2']
+      );
+      assert.match(r.stderr, /no event or heartbeat for 0\.3s; reconnecting/);
+      assert.doesNotMatch(r.stderr, /the server closed the stream/);
+    });
   }
 }
 
@@ -454,12 +521,43 @@ describe('host: events extension', () => {
 
   const run = (args) => collect(start(args));
   const runWith = (args, extra) => collect(start(args, extra));
+
+  async function interrupt(args) {
+    const child = start(args);
+    const done = collect(child);
+    let seen = '';
+    child.stdout.on('data', (d) => {
+      seen += d;
+    });
+    const guard = setTimeout(() => child.kill('SIGKILL'), 15_000);
+    try {
+      await waitUntil(() => /^hang /m.test(seen), 'the command', 10_000).catch(() => {});
+      child.kill('SIGINT');
+      return await done;
+    } finally {
+      clearTimeout(guard);
+    }
+  }
+
+  function kill(pid) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return false;
+    }
+    process.kill(pid, 'SIGKILL');
+    return true;
+  }
+
   const stdio = `stdio:node ${hostFixture}`;
   let files = 0;
   const sink = {
     cmd: ['node', join(fixtures, 'event-sink.mjs')],
+    hang: ['node', join(fixtures, 'event-hang.mjs')],
     path: (name) => join(home, `${++files}-${name}`),
     read: async (path) => readFileSync(path, 'utf8'),
+    interrupt,
+    kill: async (pid) => kill(pid),
   };
 
   checks(
@@ -523,7 +621,7 @@ describe('host: events extension', () => {
   it('--experimental=events works too', async () => {
     const r = await run([stdio, '--experimental=events', '--list-events', '--json']);
     assert.equal(r.status, 0, r.stderr);
-    assert.equal(JSON.parse(r.stdout).events.length, 10);
+    assert.equal(JSON.parse(r.stdout).events.length, 11);
   });
 
   it('--version --verbose lists the experimental features and their revision', async () => {
@@ -677,8 +775,10 @@ describe('host: events extension', () => {
 
 describe('kernel: events extension', () => {
   let kernel;
+  let client;
   let http;
   let bareHttp;
+  const env = { PI_CODING_AGENT_DIR: '/etc/mcpcat-events' };
 
   before(async () => {
     http = await startHttp();
@@ -720,20 +820,55 @@ describe('kernel: events extension', () => {
       'dist/sink.mjs',
       readFileSync(join(fixtures, 'kernel-event-sink.mjs'))
     );
+    await install(
+      'mcpcat-test-event-hang',
+      'event-hang',
+      'dist/hang.mjs',
+      readFileSync(join(fixtures, 'kernel-event-hang.mjs'))
+    );
+    client = await attachKernel(await kernel.connect());
   });
 
   after(() => {
     http?.child.kill('SIGTERM');
     bareHttp?.child.kill('SIGTERM');
+    client?.close();
     kernel?.terminate();
   });
 
   function run(args) {
-    return kernel.run(['mcpcat', ...args], {
-      stdout: 'pipe',
-      stderr: 'pipe',
-      env: { PI_CODING_AGENT_DIR: '/etc/mcpcat-events' },
+    return kernel.run(['mcpcat', ...args], { stdout: 'pipe', stderr: 'pipe', env });
+  }
+
+  async function interrupt(args) {
+    const out = new TextDecoder();
+    const err = new TextDecoder();
+    let stdout = '';
+    let stderr = '';
+    const proc = await client.spawn(['mcpcat', ...args], {
+      env,
+      onStdout: (b) => {
+        stdout += out.decode(b, { stream: true });
+      },
+      onStderr: (b) => {
+        stderr += err.decode(b, { stream: true });
+      },
     });
+    const guard = setTimeout(() => client.kill(proc.pid, 'SIGKILL').catch(() => {}), 15_000);
+    try {
+      await waitUntil(() => /^hang /m.test(stdout), 'the command', 10_000).catch(() => {});
+      await client.kill(proc.pid, 'SIGINT');
+      const status = await proc.exited;
+      return { stdout, stderr, status };
+    } finally {
+      clearTimeout(guard);
+    }
+  }
+
+  async function kill(pid) {
+    if (!(await client.ps()).some((p) => p.pid === pid)) return false;
+    await client.kill(pid, 'SIGKILL');
+    return true;
   }
 
   let files = 0;
@@ -745,8 +880,11 @@ describe('kernel: events extension', () => {
     ],
     {
       cmd: ['event-sink'],
+      hang: ['event-hang'],
       path: (name) => `/tmp/${++files}-${name}`,
       read: async (path) => new TextDecoder().decode(await kernel.readFile(path)),
+      interrupt,
+      kill,
     }
   );
 });
