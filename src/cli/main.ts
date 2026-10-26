@@ -677,7 +677,7 @@ function formatToolSchema(tool: Tool): string {
 }
 
 const NETWORK_HINT =
-  'connection failed (use slicc-node, slicc-swift, or the browser extension for servers without CORS)';
+  'connection failed (for servers without CORS, link the slicc CLI with npx sliccy@next, or use the browser extension)';
 
 function transportHint(err: unknown): string | undefined {
   if (err instanceof TypeError) {

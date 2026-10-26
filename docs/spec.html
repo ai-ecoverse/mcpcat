@@ -125,7 +125,7 @@ mcpcat code -e 'return (await tools.mcp__docs__search({q:"cimd"})).length'</code
   <li>Config: pi's <code>~/.pi/agent/mcp.json</code> (<code>mcpServers</code>), watched and reconciled. <strong>Refused there</strong>: stdio, SSE, <code>!command</code> values, literal secrets in headers or URL, and OAuth fields <code>clientSecret</code>, <code>callbackPort</code>, <code>callbackUrl</code>, <code>clientRegistration</code>.</li>
   <li><code>${NAME}</code> placeholders are filled from the encrypted credential store, keyed <code>mcp:&lt;server&gt;|&lt;sha256(url)&gt;</code>.</li>
   <li>Exposure modes <code>codemode</code> (default), <code>direct</code>, <code>deferred</code>, <code>hidden</code>; tool names <code>mcp__&lt;server&gt;__&lt;tool&gt;</code>; pi-codemode for scripts.</li>
-  <li>Known runtime constraints: pi-mcp's index pulls in <code>node:child_process</code>/<code>cross-spawn</code> (stubbed); its SSE parser uses <code>Buffer.byteLength</code> (monkeypatched); on the local-proxy route a silent SSE body dies after 30 s (<code>bodyIdleMs</code>); a server without CORS needs slicc-node, slicc-swift or the extension.</li>
+  <li>Known runtime constraints: pi-mcp's index pulls in <code>node:child_process</code>/<code>cross-spawn</code> (stubbed); its SSE parser uses <code>Buffer.byteLength</code> (monkeypatched); on the local-proxy route a silent SSE body dies after 30 s (<code>bodyIdleMs</code>); a server without CORS needs a linked slicc CLI (<code>npx sliccy@next</code>) or the extension.</li>
 </ul>
 
 <h3>2.3 pi: <code>pi-mcp</code>, <code>pi-codemode</code>, <code>pi mcp</code></h3>
@@ -605,7 +605,7 @@ mcpcat code ./triage.js              # all enabled servers whose names the scrip
 <h3>17.2 What the kernel gives a JS program, and how mcpcat uses it</h3>
 <table>
   <tr><th>Need</th><th>Kernel facility</th><th>Caveat</th></tr>
-  <tr><td>HTTPS to servers</td><td><code>ctx.fetch</code> over the kernel transport</td><td>On the page transport, servers without CORS fail; with slicc-node/slicc-swift/extension they work. mcpcat maps the transport's 502 hint to exit 3 with that advice. Silent SSE bodies die after <code>bodyIdleMs</code> (30 s on the local-proxy route).</td></tr>
+  <tr><td>HTTPS to servers</td><td><code>ctx.fetch</code> over the kernel transport</td><td>On the page transport, servers without CORS fail; with a linked slicc CLI (<code>npx sliccy@next</code>) or the extension they work. mcpcat maps the transport's 502 hint to exit 3 with that advice. Silent SSE bodies die after <code>bodyIdleMs</code> (30 s on the local-proxy route).</td></tr>
   <tr><td>stdio servers</td><td><code>ctx.spawn</code> with piped stdio, <code>ctx.kill</code>, <code>ctx.wait</code></td><td>Only kernel programs can be spawned (<code>npx</code> needs the optional Node package; <code>uvx</code> needs uv + Python). <code>add</code> checks <code>command</code> resolves.</td></tr>
   <tr><td>Serving</td><td><code>ctx.net.listen</code> on the kernel loopback</td><td>Reachable by kernel processes, by the page as <code>&lt;port&gt;.kernel.localhost</code>, and from the host through slicc-cli's kernel services. slicc-agent reaches it through the kernel client's <code>loopbackFetch</code>, with no <code>Origin</code> and no CORS, on every transport (<a href="#q-agent">Q1</a>).</td></tr>
   <tr><td>Files</td><td><code>ctx.fs</code>, <code>ctx.open</code></td><td><code>HOME</code> follows kernel users; <code>~/.pi/agent/mcp.json</code> is the agent's file for that user.</td></tr>
