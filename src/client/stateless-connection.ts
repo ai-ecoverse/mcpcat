@@ -13,11 +13,25 @@ import type {
   CallToolOptions,
   CompleteResult,
   CompletionRef,
+  EventsApi,
   GetPromptResult,
   McpConnection,
+  PollEventsResult,
   PromptInfo,
   ServerInfo,
+  StreamEnd,
+  StreamMessageHandler,
+  StreamOptions,
 } from './connection.ts';
+import {
+  createSseParser,
+  dispatchStreamData,
+  EVENTS_METHODS,
+  listAllEvents,
+  STALE,
+  subscriptionParams,
+  within,
+} from './events.ts';
 import {
   encodeHeaderValue,
   isModernErrorCode,
@@ -173,12 +187,14 @@ function mcpNameForMethod(method: string, params: Record<string, unknown>): stri
   if (method === 'prompts/get') return params.name as string | undefined;
   if (method === 'resources/read') return params.uri as string | undefined;
   if (method.startsWith('tasks/')) return params.taskId as string | undefined;
+  if (EVENTS_METHODS.has(method)) return params.name as string | undefined;
   return undefined;
 }
 
 function makeAbort(
   timeoutMs: number,
-  externalSignal?: AbortSignal
+  externalSignal?: AbortSignal,
+  streamSignal?: AbortSignal
 ): {
   controller: AbortController;
   stopTimer: () => void;
@@ -190,14 +206,17 @@ function makeAbort(
     clearTimeout(timer);
     controller.abort();
   };
-  if (externalSignal?.aborted) onAbort();
-  else externalSignal?.addEventListener('abort', onAbort, { once: true });
+  for (const s of [externalSignal, streamSignal]) {
+    if (s?.aborted) onAbort();
+    else s?.addEventListener('abort', onAbort, { once: true });
+  }
   return {
     controller,
     stopTimer: () => clearTimeout(timer),
     detach: () => {
       clearTimeout(timer);
       externalSignal?.removeEventListener('abort', onAbort);
+      streamSignal?.removeEventListener('abort', onAbort);
     },
   };
 }
@@ -371,6 +390,147 @@ function buildStatelessMethods(
   };
 }
 
+async function recoverAuth(
+  authProvider: AuthProvider | undefined,
+  url: string,
+  fetchImpl: typeof globalThis.fetch,
+  err: AuthRetryableError,
+  token: string | undefined
+): Promise<void> {
+  if (!authProvider?.onUnauthorized) throw new McpAuthError(err.response.status, url, err.reason);
+  try {
+    await authProvider.onUnauthorized({
+      response: err.response,
+      serverUrl: new URL(url),
+      fetch: fetchImpl,
+      token,
+    });
+  } catch (authErr) {
+    if (
+      authErr instanceof AuthStepUpError ||
+      authErr instanceof JerkTimeoutError ||
+      authErr instanceof JerkInvalidUrlError
+    )
+      throw authErr;
+    throw new McpAuthError(err.response.status, url, err.reason);
+  }
+}
+
+interface HttpStreamTransport {
+  nextId(): number;
+  wireParams(params: Record<string, unknown>): Record<string, unknown>;
+  doFetch(
+    method: string,
+    params: Record<string, unknown>,
+    body: string,
+    streamSignal?: AbortSignal
+  ): Promise<{ res: Response; token: string | undefined; detach: () => void }>;
+  handleErrorStatus(res: Response, method: string): Promise<never>;
+  handleAuthError(err: AuthRetryableError, token: string | undefined): Promise<void>;
+  externalSignal?: AbortSignal;
+  verbose?: VerboseLogger;
+}
+
+function rpcError(code: number, message: string, data?: unknown): Error {
+  return new StatelessRpcError(code, message, data);
+}
+
+async function readEventStream(
+  res: Response,
+  id: number,
+  onMessage: StreamMessageHandler,
+  idleMs: number,
+  t: HttpStreamTransport
+): Promise<StreamEnd> {
+  const ct = res.headers.get('content-type') ?? '';
+  if (!ct.toLowerCase().includes('text/event-stream') || !res.body) {
+    const end = await dispatchStreamData(await res.text(), id, onMessage, t.verbose, rpcError);
+    return end ?? 'dropped';
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const parse = createSseParser();
+  try {
+    for (;;) {
+      let chunk: ReadableStreamReadResult<Uint8Array> | typeof STALE;
+      try {
+        chunk = await within(reader.read(), idleMs);
+      } catch {
+        return t.externalSignal?.aborted ? 'aborted' : 'dropped';
+      }
+      if (chunk === STALE) return 'stale';
+      if (chunk.done) return 'dropped';
+      for (const data of parse(decoder.decode(chunk.value, { stream: true }))) {
+        const end = await dispatchStreamData(data, id, onMessage, t.verbose, rpcError);
+        if (end) return end;
+      }
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+}
+
+async function streamAttempt(
+  t: HttpStreamTransport,
+  params: Record<string, unknown>,
+  body: string,
+  id: number,
+  onMessage: StreamMessageHandler,
+  options: StreamOptions,
+  lastAttempt: boolean
+): Promise<StreamEnd | { retry: AuthRetryableError; token: string | undefined }> {
+  const local = new AbortController();
+  const onStop = () => local.abort();
+  options.signal?.addEventListener('abort', onStop, { once: true });
+  const stopped = () => !!(options.signal?.aborted || t.externalSignal?.aborted);
+  try {
+    let fetched: Awaited<ReturnType<HttpStreamTransport['doFetch']>>;
+    try {
+      fetched = await t.doFetch('events/stream', params, body, local.signal);
+    } catch (err) {
+      if (stopped()) return 'aborted';
+      throw err;
+    }
+    try {
+      if (fetched.res.status >= 400) {
+        try {
+          await t.handleErrorStatus(fetched.res, 'events/stream');
+        } catch (err) {
+          if (!(err instanceof AuthRetryableError) || lastAttempt) throw err;
+          return { retry: err, token: fetched.token };
+        }
+      }
+      const end = await readEventStream(fetched.res, id, onMessage, options.idleMs, t);
+      return stopped() ? 'aborted' : end;
+    } finally {
+      local.abort();
+      fetched.detach();
+    }
+  } finally {
+    options.signal?.removeEventListener('abort', onStop);
+  }
+}
+
+function createHttpEventsApi(request: RequestFn, t: HttpStreamTransport): EventsApi {
+  return {
+    list: () => listAllEvents(request),
+    poll: async (subscription) =>
+      ((await request('events/poll', subscriptionParams(subscription))) ?? {}) as PollEventsResult,
+    async stream(subscription, onMessage, options) {
+      const params = subscriptionParams(subscription);
+      const wire = t.wireParams(params);
+      for (let attempt = 0; ; attempt++) {
+        if (options.signal?.aborted || t.externalSignal?.aborted) return 'aborted';
+        const id = t.nextId();
+        const body = JSON.stringify({ jsonrpc: '2.0', id, method: 'events/stream', params: wire });
+        const out = await streamAttempt(t, params, body, id, onMessage, options, attempt > 0);
+        if (typeof out === 'string') return out;
+        await t.handleAuthError(out.retry, out.token);
+      }
+    },
+  };
+}
+
 export async function createStatelessConnection(
   options: StatelessConnectionOptions
 ): Promise<McpConnection> {
@@ -435,7 +595,8 @@ export async function createStatelessConnection(
   async function doFetch(
     method: string,
     params: Record<string, unknown>,
-    body: string
+    body: string,
+    streamSignal?: AbortSignal
   ): Promise<{ res: Response; token: string | undefined; detach: () => void }> {
     const token = await authProvider?.token();
     const headers = buildHeaders(method, params, token);
@@ -443,7 +604,7 @@ export async function createStatelessConnection(
       verbose.request(method, body);
       logHeaders(verbose, '>', Object.entries(headers));
     }
-    const { controller, stopTimer, detach } = makeAbort(timeoutMs, externalSignal);
+    const { controller, stopTimer, detach } = makeAbort(timeoutMs, externalSignal, streamSignal);
     try {
       const res = await fetchImpl(url, {
         method: 'POST',
@@ -458,7 +619,7 @@ export async function createStatelessConnection(
       return { res, token, detach };
     } catch (err) {
       detach();
-      if (controller.signal.aborted && !externalSignal?.aborted) {
+      if (controller.signal.aborted && !externalSignal?.aborted && !streamSignal?.aborted) {
         throw new McpTimeoutError(method, timeoutMs);
       }
       throw err;
@@ -487,28 +648,8 @@ export async function createStatelessConnection(
     return frame.result;
   }
 
-  async function handleAuthError(
-    err: AuthRetryableError,
-    token: string | undefined
-  ): Promise<void> {
-    if (!authProvider?.onUnauthorized) throw new McpAuthError(err.response.status, url, err.reason);
-    try {
-      await authProvider.onUnauthorized({
-        response: err.response,
-        serverUrl: new URL(url),
-        fetch: fetchImpl,
-        token,
-      });
-    } catch (authErr) {
-      if (
-        authErr instanceof AuthStepUpError ||
-        authErr instanceof JerkTimeoutError ||
-        authErr instanceof JerkInvalidUrlError
-      )
-        throw authErr;
-      throw new McpAuthError(err.response.status, url, err.reason);
-    }
-  }
+  const handleAuthError = (err: AuthRetryableError, token: string | undefined) =>
+    recoverAuth(authProvider, url, fetchImpl, err, token);
 
   async function request(method: string, params: Record<string, unknown>): Promise<unknown> {
     const wireParams = modernRequestParams(params, protocolVersion, clientInfo);
@@ -546,8 +687,19 @@ export async function createStatelessConnection(
 
   const extra = buildStatelessMethods(request, discoverResult as Record<string, unknown> | null);
 
+  const events = createHttpEventsApi(request, {
+    nextId: () => nextId++,
+    wireParams: (params) => modernRequestParams(params, protocolVersion, clientInfo),
+    doFetch,
+    handleErrorStatus,
+    handleAuthError,
+    externalSignal,
+    verbose,
+  });
+
   return {
     ...extra,
+    events,
     async close(): Promise<void> {},
   };
 }

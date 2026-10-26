@@ -62,6 +62,14 @@ import {
   runRm,
 } from './config-verbs.ts';
 import {
+  EVENTS_USAGE,
+  EVENTS_VALUE_FLAGS,
+  type EventsArgs,
+  isEventsInvocation,
+  parseEventsArgs,
+  runEvents,
+} from './events-verbs.ts';
+import {
   EXIT_AUTH,
   EXIT_CONNECTION,
   EXIT_INPUT_REQUIRED,
@@ -73,6 +81,7 @@ import {
   EXIT_USAGE,
   McpcatError,
 } from './exit-codes.ts';
+import { EXPERIMENTAL_FEATURES, experimentalHelp, extractExperimental } from './experimental.ts';
 import { createVerboseLogger } from './verbose.ts';
 
 const VERBS = [
@@ -204,8 +213,23 @@ Options:
   --respond <json>           Answers to a server's input request (or @file, @-)
   --root <dir>               Root offered to the server (repeatable; stdio
                              default: cwd)
-  -V, --version              Print version
+  -V, --version              Print version (-V -v: and the experimental features)
   -h, --help                 Show this help
+
+Experimental (--experimental <feature>[,<feature>…]; a feature can change or
+disappear in any minor release):
+${experimentalHelp()}  <target> --experimental events --list-events
+                             List the server's event types (--json: events/list)
+  <target> --experimental events [options] --subscribe <event> [--<arg> v…] [-- cmd…]
+                             Follow an event over push (events/stream), else poll
+                             (events/poll): one JSON event per line on stdout, or
+                             run cmd per event with it on stdin and MCPCAT_EVENT_ID,
+                             MCPCAT_EVENT_NAME, MCPCAT_EVENT_CURSOR set. Options go
+                             before --subscribe: --delivery push|poll, --cursor <c>,
+                             --since now|<c>, --cursor-file <path>, --max-age <s>,
+                             --count <n>, --heartbeat-timeout <s> (default 60), -d
+                             <json>. After --subscribe <event> come its arguments;
+                             after -- the command (a stdio server is a stdio: target)
 
 WebMCP (serve --webmcp, see serve --help):
   --webmcp                   Serve the tab's WebMCP tools
@@ -314,6 +338,9 @@ interface ParsedArgs {
   noInput: boolean;
   roots: string[];
   outputPath: string | undefined;
+  events?: EventsArgs;
+  signal?: AbortSignal;
+  redact?: Redactor;
 }
 
 const VERBS_WITH_TOOL = new Set(['call', 'prompt', 'describe', 'read']);
@@ -1113,6 +1140,30 @@ async function runComplete(
   return EXIT_OK;
 }
 
+async function runEventsVerb(
+  platform: Platform,
+  parsed: ParsedArgs,
+  conn: McpConnection
+): Promise<number> {
+  let base: Record<string, unknown> = {};
+  if (parsed.dataArg !== undefined) {
+    try {
+      base = await readDataArg(platform, parsed.dataArg);
+    } catch (err) {
+      await writeErr(
+        platform,
+        parsed.jsonOutput,
+        'usage',
+        `invalid -d argument: ${(err as Error).message}`
+      );
+      return EXIT_USAGE;
+    }
+  }
+  const signal = parsed.signal ?? new AbortController().signal;
+  const redact = parsed.redact ?? ((text: string) => text);
+  return runEvents(platform, conn, parsed.events!, { base, signal, redact });
+}
+
 async function runVerb(
   platform: Platform,
   parsed: ParsedArgs,
@@ -1121,6 +1172,8 @@ async function runVerb(
   respondData?: Record<string, unknown>
 ): Promise<number> {
   switch (parsed.verb) {
+    case 'events':
+      return runEventsVerb(platform, parsed, conn);
     case 'info':
       return runInfo(platform, conn, parsed.jsonOutput);
     case 'tools':
@@ -1584,11 +1637,96 @@ function beforeSeparator(args: string[]): string[] {
   return end < 0 ? args : args.slice(0, end);
 }
 
-async function runInner(platform: Platform, version: string, args: string[]): Promise<number> {
+function eventsParsedArgs(ev: EventsArgs): ParsedArgs {
+  return {
+    verb: 'events',
+    target: ev.target,
+    toolName: undefined,
+    toolArgs: [],
+    dataArg: ev.dataArg,
+    headers: ev.headers,
+    protocolVersion: ev.protocolVersion,
+    showSchema: false,
+    showTs: false,
+    tsBudget: undefined,
+    jsonOutput: ev.json,
+    rank: false,
+    extendedRegex: false,
+    inlineSource: undefined,
+    serverTargets: [],
+    allowShell: false,
+    timeoutMs: ev.timeoutMs,
+    memoryLimitMiB: undefined,
+    verbose: ev.verbose,
+    silent: ev.silent,
+    noValidate: ev.noValidate,
+    async: false,
+    trailingCommand: undefined,
+    respondArg: undefined,
+    noInput: ev.noInput,
+    roots: [],
+    outputPath: undefined,
+    events: ev,
+  };
+}
+
+async function runEventsInvocation(
+  platform: Platform,
+  version: string,
+  args: string[],
+  features: Set<string>
+): Promise<number> {
+  if (!features.has('events')) {
+    await platform.write(2, 'mcpcat: --list-events and --subscribe need --experimental events\n');
+    return EXIT_USAGE;
+  }
+  const ev = parseEventsArgs(args);
+  if (typeof ev === 'string') {
+    await platform.write(2, sanitizeTerminal(`mcpcat: ${ev}\n${EVENTS_USAGE}\n`));
+    return EXIT_USAGE;
+  }
+  return runClientVerb(platform, version, eventsParsedArgs(ev));
+}
+
+function ownArgsEnd(args: string[]): number {
+  const positional: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--') return i;
+    if (arg === '--experimental') i++;
+    else if (arg.startsWith('-')) {
+      if (args[i + 1] !== undefined && (EVENTS_VALUE_FLAGS.has(arg) || takesValue(arg))) i++;
+    } else {
+      positional.push(arg);
+      if (positional.length >= resolveMaxPositional(positional)) return i + 1;
+    }
+  }
+  return args.length;
+}
+
+const VERSION_FLAGS = new Set(['-V', '--version', '-v', '--verbose']);
+
+async function printVersion(platform: Platform, version: string, lead: string[]): Promise<number> {
+  await platform.write(1, `${version}\n`);
+  const alone = lead.every((a) => VERSION_FLAGS.has(a));
+  if (alone && (lead.includes('-v') || lead.includes('--verbose'))) {
+    const names = Object.keys(EXPERIMENTAL_FEATURES);
+    await platform.write(1, `experimental features (--experimental ${names.join(',')}):\n`);
+    await platform.write(1, experimentalHelp(true));
+  }
+  return 0;
+}
+
+async function runInner(platform: Platform, version: string, argv: string[]): Promise<number> {
+  const experimental = extractExperimental(argv, ownArgsEnd(argv));
+  if (experimental.error) {
+    await platform.write(2, sanitizeTerminal(`mcpcat: ${experimental.error}\n`));
+    return EXIT_USAGE;
+  }
+  const args = experimental.args;
   const lead = beforeSeparator(args);
   if (lead.includes('--version') || lead.includes('-V')) {
-    await platform.write(1, `${version}\n`);
-    return 0;
+    return printVersion(platform, version, lead);
   }
 
   if (lead.includes('--help') || lead.includes('-h') || args[0] === 'help') {
@@ -1598,6 +1736,10 @@ async function runInner(platform: Platform, version: string, args: string[]): Pr
   if (args.length === 0) {
     await platform.write(1, helpText(version));
     return 0;
+  }
+
+  if (isEventsInvocation(args, VERBS)) {
+    return runEventsInvocation(platform, version, args, experimental.features);
   }
 
   const parsed = parseArgs(args);
@@ -2038,6 +2180,7 @@ async function runClientVerb(
   }
 
   try {
+    Object.assign(parsed, { signal: sigintController.signal, redact });
     const code = await runVerb(platform, parsed, conn, onProgress, respondData);
     if (interrupted) {
       await platform.write(2, 'mcpcat: interrupted\n');
