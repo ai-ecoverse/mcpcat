@@ -46,6 +46,12 @@ const EVENTS = [
     inputSchema: obj({ run: { type: 'string' } }, ['run']),
   },
   { name: 'leaky', delivery: ['push'], inputSchema: obj({}) },
+  {
+    name: 'chatty',
+    description: 'Stops heartbeating but keeps sending other notifications',
+    delivery: ['push'],
+    inputSchema: obj({ run: { type: 'string' } }, ['run']),
+  },
 ];
 
 const PAGE = 3;
@@ -238,6 +244,38 @@ export function createEventsServer({ advertise = true } = {}) {
           error: { code: -32603, message: `upstream rejected ${headers?.['x-token'] ?? 'none'}` },
         });
         note('notifications/events/event', { eventId: 'l1', name, timestamp: STAMP, data: {} });
+      });
+      return;
+    }
+    if (name === 'chatty') {
+      const state = run(`chatty:${params.arguments?.run}`);
+      state.streams++;
+      const n = state.streams;
+      note('notifications/events/active', { cursor: params.cursor ?? 'c0', truncated: false });
+      later(10, () =>
+        note('notifications/events/event', {
+          eventId: `chatty-${n}`,
+          name,
+          timestamp: STAMP,
+          data: { stream: n },
+          cursor: `c${n}`,
+        })
+      );
+      every(50, () => {
+        sink.send({
+          jsonrpc: '2.0',
+          method: 'notifications/message',
+          params: { level: 'info', data: 'noise' },
+        });
+        sink.send({
+          jsonrpc: '2.0',
+          method: 'notifications/events/heartbeat',
+          params: { cursor: 'c99', _meta: { [SID]: `other-${id}` } },
+        });
+      });
+      later(2000, () => {
+        stop();
+        sink.end({ jsonrpc: '2.0', id, result: { resultType: 'complete', _meta: { [SID]: id } } });
       });
       return;
     }

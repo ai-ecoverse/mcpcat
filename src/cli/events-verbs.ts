@@ -10,6 +10,7 @@ import type {
 } from '../client/connection.ts';
 import { EventsTransportClosedError } from '../client/events.ts';
 import { EVENTS_EXTENSION, META_SUBSCRIPTION_ID } from '../client/modern.ts';
+import { reap } from '../client/reap.ts';
 import { McpAuthError, StatelessRpcError } from '../client/stateless-connection.ts';
 import type { Platform, SpawnResult } from '../platform/types.ts';
 import { type Redactor, renderErrorJson } from '../render/result.ts';
@@ -34,6 +35,7 @@ const POLL_FLOOR_MS = 1000;
 const BACKOFF_START_MS = 500;
 const BACKOFF_MAX_MS = 30_000;
 const SEEN_LIMIT = 256;
+const HANDLER_GRACE_MS = 2000;
 const FORBIDDEN = -32024;
 
 export interface EventsArgs {
@@ -399,7 +401,6 @@ class Subscriber {
   private seen: string[] = [];
   private seenSet = new Set<string>();
   private delivered = 0;
-  private handlerProc: SpawnResult | undefined;
   private readonly o: SubscriberOptions;
 
   constructor(options: SubscriberOptions) {
@@ -407,7 +408,7 @@ class Subscriber {
   }
 
   async start(): Promise<number> {
-    const { args, platform, signal } = this.o;
+    const { args, platform } = this.o;
     if (args.cursorFile) {
       const state = await loadCursorFile(platform, args.cursorFile);
       this.cursor = state.cursor;
@@ -416,17 +417,8 @@ class Subscriber {
     }
     if (args.sinceNow) this.cursor = null;
     if (args.cursor !== undefined) this.cursor = args.cursor;
-    const onAbort = () => {
-      const proc = this.handlerProc;
-      if (proc) void Promise.resolve(proc.kill('SIGTERM')).catch(() => {});
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-    try {
-      const mode = pickDelivery(this.o.event, args.delivery);
-      return mode === 'push' ? await this.push() : await this.poll();
-    } finally {
-      signal.removeEventListener('abort', onAbort);
-    }
+    const mode = pickDelivery(this.o.event, args.delivery);
+    return mode === 'push' ? await this.push() : await this.poll();
   }
 
   private notice(text: string): Promise<void> {
@@ -447,7 +439,7 @@ class Subscriber {
 
   private async persist(force = false): Promise<void> {
     const path = this.o.args.cursorFile;
-    if (!path || (!force && this.persisted === this.cursor)) return;
+    if (!path || this.o.signal.aborted || (!force && this.persisted === this.cursor)) return;
     const body = JSON.stringify({
       event: this.o.event.name,
       cursor: this.cursor,
@@ -469,6 +461,7 @@ class Subscriber {
   }
 
   private async deliver(occurrence: EventOccurrence, cursor: string | undefined) {
+    if (this.o.signal.aborted) return;
     const id = typeof occurrence.eventId === 'string' ? occurrence.eventId : undefined;
     if (id !== undefined && this.seenSet.has(id)) {
       if (cursor !== undefined) await this.moveTo(cursor, false);
@@ -482,7 +475,7 @@ class Subscriber {
   }
 
   private async handle(occurrence: EventOccurrence): Promise<void> {
-    const { platform, args } = this.o;
+    const { platform, args, signal } = this.o;
     const line = `${sanitizeJson(JSON.stringify(occurrence))}\n`;
     if (!args.handler) {
       await platform.write(1, line);
@@ -501,7 +494,9 @@ class Subscriber {
     } catch (err) {
       throw new McpcatError(EXIT_USAGE, `cannot run ${args.handler[0]}: ${(err as Error).message}`);
     }
-    this.handlerProc = proc;
+    const stop = () => void reap(proc, HANDLER_GRACE_MS);
+    if (signal.aborted) stop();
+    else signal.addEventListener('abort', stop, { once: true });
     const feed = async () => {
       const writer = proc.stdin.getWriter();
       try {
@@ -529,12 +524,12 @@ class Subscriber {
         pipe(proc.stderr, 2),
         proc.wait(),
       ]);
-      if (status.status !== 0 && !this.o.signal.aborted) {
+      if (status.status !== 0 && !signal.aborted) {
         const how = status.signal ? `was killed by ${status.signal}` : `exited ${status.status}`;
         await this.notice(`${args.handler[0]} ${how} for event ${String(occurrence.eventId)}`);
       }
     } finally {
-      this.handlerProc = undefined;
+      signal.removeEventListener('abort', stop);
     }
   }
 

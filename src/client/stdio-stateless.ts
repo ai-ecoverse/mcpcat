@@ -23,6 +23,7 @@ import type {
 import {
   dispatchStreamData,
   EventsTransportClosedError,
+  idleClock,
   listAllEvents,
   STALE,
   subscriptionParams,
@@ -199,8 +200,9 @@ function createStdioJsonRpc(
     const body = wireBody(id, method, params);
     if (verbose?.enabled) verbose.request(method, body);
     await send(body);
+    const clock = idleClock(onMessage, streamOptions.idleMs);
     for (;;) {
-      const line = await nextLine(streamOptions.idleMs, signals);
+      const line = await nextLine(clock.left(), signals);
       if (line === ABORTED) {
         await cancel(id, 'interrupted');
         return 'aborted';
@@ -209,7 +211,7 @@ function createStdioJsonRpc(
         await cancel(id, 'no heartbeat');
         return 'stale';
       }
-      const end = await dispatchStreamData(line, id, onMessage, verbose, rpcError);
+      const end = await dispatchStreamData(line, id, clock.onMessage, verbose, rpcError);
       if (end === 'stopped') await cancel(id, 'done');
       if (end) return end;
     }
