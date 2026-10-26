@@ -19,7 +19,7 @@ const kernelNodeMod = overrideDir
   : await import('@ai-ecoverse/slicc-kernel/node');
 
 export const { attachKernel } = kernelMod;
-export const { createNodeKernel, nodeTransport } = kernelNodeMod;
+export const { createNodeKernel, fetchTransport, nodeTransport } = kernelNodeMod;
 
 const kernelPkgVersion = JSON.parse(
   readFileSync(
