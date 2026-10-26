@@ -105,13 +105,19 @@ export function within<T>(promise: Promise<T>, ms: number): Promise<T | typeof S
   return Promise.race([promise, stale]).finally(() => clearTimeout(timer));
 }
 
+const LIVENESS = new Set([
+  'notifications/events/active',
+  'notifications/events/event',
+  'notifications/events/heartbeat',
+]);
+
 export function idleClock(onMessage: StreamMessageHandler, idleMs: number) {
   let deadline = Date.now() + idleMs;
   return {
     left: () => Math.max(0, deadline - Date.now()),
     onMessage: async (method: string, params: Record<string, unknown>) => {
       const out = await onMessage(method, params);
-      deadline = Date.now() + idleMs;
+      if (LIVENESS.has(method)) deadline = Date.now() + idleMs;
       return out;
     },
   };

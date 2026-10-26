@@ -481,6 +481,7 @@ function checks(run, targets, sink) {
         ['chatty-1', 'chatty-2']
       );
       assert.match(r.stderr, /no event or heartbeat for 0\.3s; reconnecting/);
+      assert.match(r.stderr, /server reported an error for chatty: still here/);
       assert.doesNotMatch(r.stderr, /the server closed the stream/);
     });
   }
