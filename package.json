@@ -70,7 +70,7 @@
     "lefthook": "2.2.2",
     "monocart-coverage-reports": "2.13.2",
     "proper-lockfile": "4.1.2",
-    "quickjs-wasi": "3.6.2",
+    "quickjs-wasi": "3.6.3",
     "semantic-release": "25.0.9",
     "typescript": "7.0.2"
   },
