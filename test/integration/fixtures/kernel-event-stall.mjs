@@ -1,7 +1,7 @@
 const enc = new TextEncoder();
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function drain(conn) {
+async function drain(conn, pace = 0) {
   const reader = conn.readable.getReader();
   const dec = new TextDecoder();
   let text = '';
@@ -9,6 +9,7 @@ async function drain(conn) {
     const { done, value } = await reader.read();
     if (done) return text;
     text = (text + dec.decode(value, { stream: true })).slice(-65536);
+    if (pace) await pause(pace);
   }
 }
 
@@ -41,7 +42,8 @@ export default async function main(ctx) {
     '',
   ].join('\r\n');
   await conn.writable.getWriter().write(enc.encode(head + body));
-  const reading = wake === 'read' ? drain(conn) : undefined;
+  const [mode, ms] = wake.split(':');
+  const reading = mode === 'read' ? drain(conn, Number(ms ?? 0)) : undefined;
   await pause(1500);
   await ctx.kill(Number(servePid), 'SIGTERM');
   const text = await (reading ?? pause(Number(wake)).then(() => drain(conn)));
