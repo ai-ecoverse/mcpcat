@@ -695,10 +695,25 @@ function remoteHttps(url: string | undefined): boolean {
   );
 }
 
-function transportHint(err: unknown, kernelUrl: string | undefined): string | undefined {
+interface KernelFetch {
+  url: string | undefined;
+  marksTransport: boolean;
+}
+
+interface FetchCause {
+  code?: string;
+  detail?: string;
+}
+
+function corsBlocked(cause: FetchCause | undefined, kernel: KernelFetch): boolean {
+  if (cause?.detail === 'transport') return true;
+  return !kernel.marksTransport && cause?.code === 'ECONNREFUSED' && remoteHttps(kernel.url);
+}
+
+function transportHint(err: unknown, kernel: KernelFetch | undefined): string | undefined {
   if (err instanceof TypeError) {
-    const cause = (err as { cause?: { code?: string } }).cause;
-    if (cause?.code === 'ECONNREFUSED' && remoteHttps(kernelUrl)) {
+    const cause = (err as { cause?: FetchCause }).cause;
+    if (kernel && corsBlocked(cause, kernel)) {
       return `${NETWORK_HINT}: ${err.message}`;
     }
     if (cause?.code === 'ECONNREFUSED' || cause?.code === 'ENETUNREACH') {
@@ -1976,7 +1991,7 @@ function classifyConnectionError(
   err: unknown,
   target: string,
   interrupted: boolean,
-  platformKind: Platform['kind'],
+  platform: Pick<Platform, 'kind' | 'fetchMarksTransport'>,
   url: string | undefined
 ): { code: number; kind: string; msg: string } {
   if (err instanceof TransportRefusalError) {
@@ -2006,8 +2021,11 @@ function classifyConnectionError(
   if (interrupted) {
     return { code: EXIT_INTERRUPTED, kind: 'interrupted', msg: 'interrupted' };
   }
-  const kernelUrl = platformKind === 'kernel' ? url : undefined;
-  const msg = transportHint(err, kernelUrl) ?? `connection failed: ${(err as Error).message}`;
+  const kernel =
+    platform.kind === 'kernel'
+      ? { url, marksTransport: platform.fetchMarksTransport === true }
+      : undefined;
+  const msg = transportHint(err, kernel) ?? `connection failed: ${(err as Error).message}`;
   return { code: EXIT_CONNECTION, kind: 'connection', msg };
 }
 
@@ -2222,7 +2240,7 @@ async function runClientVerb(
       );
       return EXIT_CONNECTION;
     }
-    const e = classifyConnectionError(err, target, interrupted, platform.kind, resolved.url);
+    const e = classifyConnectionError(err, target, interrupted, platform, resolved.url);
     if (e.code === EXIT_INTERRUPTED) {
       await platform.write(2, 'mcpcat: interrupted\n');
       return termExitCode;
