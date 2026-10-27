@@ -101,10 +101,14 @@ jobs:
         run: |
           mkdir assets
           part="assets/mcpcat-$VERSION.tgz.part"
+          start="$(date +%s)"
+          deadline=$((start + 900))
+          tries=0
           url=
           sri=
           fetched=
-          for _ in $(seq 1 90); do
+          while :; do
+            tries=$((tries + 1))
             if [ -z "$url" ] || [ -z "$sri" ]; then
               dist="$(npm view "@ai-ecoverse/mcpcat@$VERSION" dist.tarball dist.integrity --json)" || dist=
               url="$(jq -r '."dist.tarball" // empty' <<<"$dist" 2>/dev/null)" || url=
@@ -115,13 +119,15 @@ jobs:
               break
             fi
             rm -f "$part"
+            [ $(($(date +%s) + 10)) -lt "$deadline" ] || break
             sleep 10
           done
           if [ -z "$fetched" ]; then
+            spent="$tries attempts in $(($(date +%s) - start)) s"
             if [ -z "$url" ] || [ -z "$sri" ]; then
-              echo "npm view: @ai-ecoverse/mcpcat@$VERSION has no dist.tarball and dist.integrity after 90 attempts"
+              echo "npm view: @ai-ecoverse/mcpcat@$VERSION has no dist.tarball and dist.integrity after $spent"
             else
-              echo "curl: $url not downloadable after 90 attempts"
+              echo "curl: $url not downloadable after $spent"
             fi
             exit 1
           fi

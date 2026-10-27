@@ -36,9 +36,13 @@ const tarball = Buffer.from([0x1f, 0x8b, 0x08, 0x00, ...Buffer.from('mcpcat tarb
 const sri = (bytes) => `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
 const sha256 = createHash('sha256').update(tarball).digest('hex');
 
+const tick = `tick() { echo $(($(cat "$STATE/clock") + $1)) > "$STATE/clock"; }`;
+
 const npmStub = `#!/bin/sh
+${tick}
 case "$1" in
   view)
+    tick "$VIEW_SECONDS"
     n=$(($(cat "$STATE/views" 2>/dev/null || echo 0) + 1))
     echo "$n" > "$STATE/views"
     echo "$*" >> "$STATE/view-args"
@@ -57,6 +61,8 @@ exit 2
 `;
 
 const curlStub = `#!/bin/sh
+${tick}
+tick "$CURL_SECONDS"
 n=$(($(cat "$STATE/curls" 2>/dev/null || echo 0) + 1))
 echo "$n" > "$STATE/curls"
 out=
@@ -74,20 +80,37 @@ cat "$STATE/tarball" > "$out"
 `;
 
 const sleepStub = `#!/bin/sh
+${tick}
+tick "$1"
 echo "$1" >> "$STATE/sleeps"
 `;
 
-function run({ viewFails = 0, curlFails = 0, integrity = sri(tarball) } = {}) {
+const dateStub = `#!/bin/sh
+[ "$*" = "+%s" ] || exit 2
+cat "$STATE/clock"
+`;
+
+const start = 1800000000;
+
+function run({
+  viewFails = 0,
+  curlFails = 0,
+  viewSeconds = 0,
+  curlSeconds = 0,
+  integrity = sri(tarball),
+} = {}) {
   const dir = mkdtempSync(join(base, 'run-'));
   const bin = join(dir, 'bin');
   const work = join(dir, 'work');
   mkdirSync(bin);
   mkdirSync(work);
   writeFileSync(join(dir, 'tarball'), tarball);
+  writeFileSync(join(dir, 'clock'), `${start}\n`);
   for (const [name, body] of [
     ['npm', npmStub],
     ['curl', curlStub],
     ['sleep', sleepStub],
+    ['date', dateStub],
   ]) {
     writeFileSync(join(bin, name), body);
     chmodSync(join(bin, name), 0o755);
@@ -101,6 +124,8 @@ function run({ viewFails = 0, curlFails = 0, integrity = sri(tarball) } = {}) {
       VERSION: version,
       VIEW_FAILS: String(viewFails),
       CURL_FAILS: String(curlFails),
+      VIEW_SECONDS: String(viewSeconds),
+      CURL_SECONDS: String(curlSeconds),
       TARBALL_URL: url,
       INTEGRITY: integrity,
       STATE: dir,
@@ -119,6 +144,7 @@ function run({ viewFails = 0, curlFails = 0, integrity = sri(tarball) } = {}) {
     curls: Number(read('curls')),
     urls: lines('urls'),
     sleeps: lines('sleeps'),
+    elapsed: Number(read('clock')) - start,
   };
 }
 
@@ -165,12 +191,13 @@ test('a tarball URL that 404s is retried without asking npm again, then fetched 
   assert.equal(result.sleeps.length, 3);
 });
 
-test('npm view and the download share one budget of 90 attempts', () => {
+test('npm view and the download share one budget of about 15 minutes', () => {
   const result = run({ viewFails: 40, curlFails: 49 });
   assertPublished(result);
   assert.equal(result.views, 41);
   assert.equal(result.curls, 50);
   assert.equal(result.sleeps.length, 89);
+  assert.equal(result.elapsed, 890);
 });
 
 test('a download that does not match dist.integrity fails at once without SHA256SUMS', () => {
@@ -186,15 +213,16 @@ test('a download that does not match dist.integrity fails at once without SHA256
   assert.deepEqual(result.files, []);
 });
 
-test('a version npm never shows fails the step clearly after 90 attempts', () => {
+test('a version npm never shows fails the step clearly once 15 minutes are up', () => {
   const result = run({ viewFails: 1000 });
   assert.equal(result.status, 1);
   assert.match(
     result.stdout,
-    /npm view: @ai-ecoverse\/mcpcat@0\.24\.0 has no dist\.tarball and dist\.integrity after 90 attempts/
+    /npm view: @ai-ecoverse\/mcpcat@0\.24\.0 has no dist\.tarball and dist\.integrity after 90 attempts in 890 s/
   );
   assert.equal(result.views, 90);
   assert.equal(result.curls, 0);
+  assert.equal(result.elapsed, 890);
   assert.deepEqual(result.files, []);
 });
 
@@ -203,9 +231,29 @@ test('a tarball that keeps 404ing until the shared budget runs out fails the ste
   assert.equal(result.status, 1);
   assert.match(
     result.stdout,
-    /curl: https:\/\/registry\.npmjs\.org\/@ai-ecoverse\/mcpcat\/-\/mcpcat-0\.24\.0\.tgz not downloadable after 90 attempts/
+    /curl: https:\/\/registry\.npmjs\.org\/@ai-ecoverse\/mcpcat\/-\/mcpcat-0\.24\.0\.tgz not downloadable after 90 attempts in 890 s/
   );
   assert.equal(result.views, 41);
   assert.equal(result.curls, 50);
+  assert.deepEqual(result.files, []);
+});
+
+test('downloads that run into curl --max-time stop at the 15-minute deadline, not after 90 tries', () => {
+  const result = run({ curlFails: 1000, curlSeconds: 60 });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /not downloadable after 13 attempts in 900 s/);
+  assert.equal(result.views, 1);
+  assert.equal(result.curls, 13);
+  assert.equal(result.elapsed, 900);
+  assert.deepEqual(result.files, []);
+});
+
+test('a slow npm view stops at the 15-minute deadline, not after 90 tries', () => {
+  const result = run({ viewFails: 1000, viewSeconds: 50 });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /dist\.integrity after 15 attempts in 890 s/);
+  assert.equal(result.views, 15);
+  assert.equal(result.curls, 0);
+  assert.equal(result.elapsed, 890);
   assert.deepEqual(result.files, []);
 });
