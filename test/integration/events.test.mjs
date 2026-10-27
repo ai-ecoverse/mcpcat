@@ -852,6 +852,25 @@ describe('host: events extension', () => {
     assert.match(r.stderr, /unsubscribed hook from https:\/\/hooks\.example\/off/);
     assert.equal(readFileSync(file, 'utf8'), 'garbage\n');
   });
+
+  it('--webhook-unsubscribe does not read the cursor file', async () => {
+    const file = join(home, 'broken-cursor.json');
+    writeFileSync(file, '{not json\n');
+    const r = await run([
+      stdio,
+      ...X,
+      '--webhook-url',
+      'https://hooks.example/off-cursor',
+      '--cursor-file',
+      file,
+      '--webhook-unsubscribe',
+      '--subscribe',
+      'hook',
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /unsubscribed hook from https:\/\/hooks\.example\/off-cursor/);
+    assert.equal(readFileSync(file, 'utf8'), '{not json\n');
+  });
 });
 
 describe('kernel: events extension', () => {

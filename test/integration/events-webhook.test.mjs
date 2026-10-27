@@ -276,6 +276,35 @@ describe('host: --webhook-url registers a webhook subscription', {
     assert.match(gone.stderr, /-32023/);
   });
 
+  it('refreshes a 1-second lease before it expires', async () => {
+    const child = start([
+      ...target(),
+      '--webhook-url',
+      hook.url('/ok/short'),
+      '--webhook-ttl',
+      '1',
+      '--subscribe',
+      'tick',
+      '--label',
+      's',
+    ]);
+    const done = collect(child);
+    let out = '';
+    child.stdout.on('data', (d) => {
+      out += d.toString();
+    });
+    assert.ok(await until(() => out.split('\n').filter(Boolean).length >= 4), 'refreshes');
+    child.kill('SIGINT');
+    const r = await done;
+    assert.equal(r.status, 130, r.stderr);
+    const status = lines(r.stdout);
+    assert.ok(Date.parse(status[0].refreshBefore) - Date.now() < 1000);
+    for (const s of status.slice(1)) {
+      assert.equal(s.id, status[0].id);
+      assert.ok(s.deliveryStatus, `a refresh, not a new subscription: ${JSON.stringify(s)}`);
+    }
+  });
+
   it('--webhook-keep leaves the subscription registered on SIGINT', async () => {
     const child = start([
       ...target(),

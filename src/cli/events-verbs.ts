@@ -753,7 +753,7 @@ class Subscriber {
   }
 }
 
-const REFRESH_MIN_MS = 1000;
+const REFRESH_MIN_MS = 100;
 const UNSUBSCRIBE_CAP_MS = 3000;
 const NOT_FOUND = -32023;
 const REFRESH_MAX_MS = 3_600_000;
@@ -790,6 +790,11 @@ class WebhookClient {
 
   async start(): Promise<number> {
     const { args, platform } = this.o;
+    if (args.webhookUnsubscribe) {
+      await this.o.api.unsubscribe({ ...this.key(), delivery: { url: args.webhookUrl } });
+      await this.notice(`unsubscribed ${this.o.event.name} from ${args.webhookUrl}`);
+      return EXIT_OK;
+    }
     if (args.cursorFile) {
       const state = await loadCursorFile(platform, args.cursorFile);
       this.cursor = state.cursor;
@@ -797,11 +802,6 @@ class WebhookClient {
     }
     if (args.sinceNow) this.cursor = null;
     if (args.cursor !== undefined) this.cursor = args.cursor;
-    if (args.webhookUnsubscribe) {
-      await this.o.api.unsubscribe({ ...this.key(), delivery: { url: args.webhookUrl } });
-      await this.notice(`unsubscribed ${this.o.event.name} from ${args.webhookUrl}`);
-      return EXIT_OK;
-    }
     return this.loop();
   }
 
