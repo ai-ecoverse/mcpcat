@@ -20,4 +20,11 @@ describe('kernel bundle', () => {
     const matches = kernelBundle.match(dynamicRe);
     assert.equal(matches, null, `found dynamic imports in kernel bundle: ${matches}`);
   });
+
+  it('bundles one quickjs-wasi, so the code deadline hooks the QuickJS that runs scripts', () => {
+    const copies = kernelBundle.match(
+      /^\/\/ node_modules\/(?:\S+\/)?quickjs-wasi\/dist\/index\.js$/gm
+    );
+    assert.equal(copies?.length, 1, `found quickjs-wasi copies: ${copies}`);
+  });
 });
