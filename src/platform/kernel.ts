@@ -20,6 +20,7 @@ interface KernelFile {
 }
 
 interface KernelContext {
+  kernel?: { version?: string };
   argv: string[];
   env: Record<string, string | undefined>;
   cwd: string;
@@ -597,6 +598,11 @@ async function kernelSeal(ctx: KernelContext, request: string): Promise<string> 
   }
 }
 
+function marksTransport(version: string | undefined): boolean {
+  const [major, minor] = (version ?? '').split('.').map(Number);
+  return major > 1 || (major === 1 && minor >= 170);
+}
+
 export function createKernelPlatform(
   ctx: KernelContext,
   options?: { packageDir?: string }
@@ -628,5 +634,6 @@ export function createKernelPlatform(
       return kernelSeal(ctx, request);
     },
     packageDir: options?.packageDir,
+    fetchMarksTransport: marksTransport(ctx.kernel?.version),
   };
 }

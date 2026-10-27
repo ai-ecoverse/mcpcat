@@ -4,11 +4,16 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { createNodeKernel, fetchTransport } from './helpers/kernel.mjs';
+import { createNodeKernel, fetchMarksTransport, fetchTransport } from './helpers/kernel.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 const TARGET = 'https://mcp.example.test/mcp';
+const LOOPBACK_PORT = '45991';
+const HOST_LOOPBACK = `http://host.slicc.internal:${LOOPBACK_PORT}/mcp`;
+const HINT =
+  'mcpcat: connection failed (for servers without CORS, link the slicc CLI with npx sliccy@next, or use the browser extension): fetch failed\n';
+const PLAIN = 'mcpcat: connection failed: fetch failed\n';
 
 async function installMcpcat(kernel) {
   await kernel.writeFile(
@@ -119,18 +124,75 @@ describe('kernel: a page transport whose fetch fails the way a CORS block does',
     assert.ok(error.message.includes('npx sliccy@next'), stderr);
   });
 
-  for (const url of [
-    'http://host.slicc.internal:45991/mcp',
-    'https://127.0.0.1:45991/mcp',
-    'https://localhost:45991/mcp',
-  ]) {
-    it(`keeps the plain message for the loopback server ${url}`, async () => {
+  for (const url of [HOST_LOOPBACK, 'https://127.0.0.1:45991/mcp', 'https://localhost:45991/mcp']) {
+    const marked = url === HOST_LOOPBACK && fetchMarksTransport;
+    it(`keeps the plain message for the loopback server ${url}`, {
+      skip: marked && "slicc-kernel >= 1.170.0 marks this failure with cause.detail 'transport'",
+    }, async () => {
       const { status, stderr } = await kernel.run(['mcpcat', 'info', url], {
         stdout: 'pipe',
         stderr: 'pipe',
       });
       assert.equal(status, 3, `stderr: ${stderr}`);
-      assert.equal(stderr, 'mcpcat: connection failed: fetch failed\n');
+      assert.equal(stderr, PLAIN);
     });
   }
+});
+
+describe("kernel: cause.detail 'transport' tells a page transport failure from a refused connection", {
+  skip: !fetchMarksTransport && "cause.detail 'transport' needs slicc-kernel >= 1.170.0",
+}, () => {
+  let kernel;
+  const asked = [];
+
+  before(async () => {
+    const fetch = async (url) => {
+      asked.push(String(url));
+      if (new URL(url).port === LOOPBACK_PORT) throw new TypeError('Failed to fetch');
+      const refused = Object.assign(new Error(`connect ECONNREFUSED ${url}`), {
+        code: 'ECONNREFUSED',
+      });
+      throw new TypeError('fetch failed', { cause: refused });
+    };
+    kernel = await createNodeKernel({ network: { transport: fetchTransport({ fetch }) } });
+    await installMcpcat(kernel);
+  });
+
+  after(() => {
+    kernel?.terminate();
+  });
+
+  it('shows the CORS hint for a loopback server the page transport could not reach', async () => {
+    const { status, stderr } = await kernel.run(['mcpcat', 'info', HOST_LOOPBACK], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.ok(
+      asked.some((url) => new URL(url).port === LOOPBACK_PORT),
+      `asked: ${asked.join(' ')}`
+    );
+    assert.equal(status, 3, `stderr: ${stderr}`);
+    assert.equal(stderr, HINT);
+  });
+
+  it('--json carries the hint for that loopback server', async () => {
+    const { status, stderr } = await kernel.run(['mcpcat', 'info', '--json', HOST_LOOPBACK], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.equal(status, 3, `stderr: ${stderr}`);
+    const { error } = JSON.parse(stderr);
+    assert.equal(error.kind, 'connection', stderr);
+    assert.ok(error.message.includes('for servers without CORS'), stderr);
+  });
+
+  it('keeps the plain message for a remote https server that refused the connection', async () => {
+    const { status, stderr } = await kernel.run(['mcpcat', 'info', TARGET], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.ok(asked.includes(TARGET), `asked: ${asked.join(' ')}`);
+    assert.equal(status, 3, `stderr: ${stderr}`);
+    assert.equal(stderr, PLAIN);
+  });
 });

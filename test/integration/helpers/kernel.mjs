@@ -41,6 +41,7 @@ export const hasPgid = kernelAtLeast(74);
 export const hasDeathSignal = kernelAtLeast(88);
 export const hasSealed = kernelAtLeast(85);
 export const syncSignals = kernelAtLeast(69);
+export const fetchMarksTransport = kernelAtLeast(170);
 
 export function hostUrl(port) {
   return fetchReachesKernelLoopback

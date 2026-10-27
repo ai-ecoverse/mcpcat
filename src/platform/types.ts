@@ -75,5 +75,6 @@ export interface Platform {
   onSignal?(signal: 'SIGINT' | 'SIGTERM' | 'SIGHUP', handler: () => void): void | Promise<void>;
   seal?(request: string): Promise<string>;
   packageDir?: string;
+  readonly fetchMarksTransport?: boolean;
   upgrade?(request: UpgradeRequest): Promise<number>;
 }
