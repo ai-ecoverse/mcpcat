@@ -28,7 +28,7 @@ export const EVENTS_USAGE =
   'usage: mcpcat <target> --experimental events --list-events\n' +
   '       mcpcat <target> --experimental events [options] --subscribe <event> [--<arg> value…] [-- cmd…]';
 
-const DELIVERY_MODES = new Set(['push', 'poll']);
+const DELIVERY_MODES = new Set(['push', 'poll', 'webhook']);
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 60_000;
 const DEFAULT_POLL_MS = 30_000;
 const POLL_FLOOR_MS = 1000;
@@ -45,7 +45,14 @@ export interface EventsArgs {
   eventArgs: string[];
   handler?: string[];
   dataArg?: string;
-  delivery?: 'push' | 'poll';
+  delivery?: 'push' | 'poll' | 'webhook';
+  webhookUrl?: string;
+  webhookSecretFile?: string;
+  webhookSecret?: string;
+  webhookTtlMs?: number;
+  webhookKeep: boolean;
+  webhookOnce: boolean;
+  webhookUnsubscribe: boolean;
   cursor?: string;
   sinceNow: boolean;
   cursorFile?: string;
@@ -85,6 +92,9 @@ export const EVENTS_VALUE_FLAGS = new Set([
   '--max-age',
   '--count',
   '--heartbeat-timeout',
+  '--webhook-url',
+  '--webhook-secret-file',
+  '--webhook-ttl',
 ]);
 
 export function isEventsInvocation(args: string[], verbs: readonly string[]): boolean {
@@ -113,7 +123,7 @@ function seconds(flag: string, raw: string): number | string {
 
 type Setter = (out: EventsArgs, value: string, flag: string) => string | undefined;
 
-function millis(key: 'maxAgeMs' | 'heartbeatTimeoutMs' | 'timeoutMs'): Setter {
+function millis(key: 'maxAgeMs' | 'heartbeatTimeoutMs' | 'timeoutMs' | 'webhookTtlMs'): Setter {
   return (out, value, flag) => {
     const ms = seconds(flag, value);
     if (typeof ms === 'string') return ms;
@@ -130,10 +140,22 @@ const header: Setter = (out, value) => {
 
 const VALUE_OPTIONS: Record<string, Setter> = {
   '--delivery': (out, value) => {
-    if (!DELIVERY_MODES.has(value)) return '--delivery must be push or poll';
-    out.delivery = value as 'push' | 'poll';
+    if (!DELIVERY_MODES.has(value)) return '--delivery must be push, poll or webhook';
+    out.delivery = value as 'push' | 'poll' | 'webhook';
     return undefined;
   },
+  '--webhook-url': (out, value) => {
+    if (!URL.canParse(value) || new URL(value).protocol !== 'https:') {
+      return '--webhook-url needs an https URL';
+    }
+    out.webhookUrl = value;
+    return undefined;
+  },
+  '--webhook-secret-file': (out, value) => {
+    out.webhookSecretFile = value;
+    return undefined;
+  },
+  '--webhook-ttl': millis('webhookTtlMs'),
   '--cursor': (out, value) => {
     out.cursor = value;
     return undefined;
@@ -188,6 +210,15 @@ const FLAG_OPTIONS: Record<string, (out: EventsArgs) => void> = {
   '--no-validate': (out) => {
     out.noValidate = true;
   },
+  '--webhook-keep': (out) => {
+    out.webhookKeep = true;
+  },
+  '--webhook-once': (out) => {
+    out.webhookOnce = true;
+  },
+  '--webhook-unsubscribe': (out) => {
+    out.webhookUnsubscribe = true;
+  },
 };
 
 function flagOrTarget(out: EventsArgs, arg: string): string | undefined {
@@ -241,6 +272,9 @@ export function parseEventsArgs(args: string[]): EventsArgs | string {
     silent: false,
     json: false,
     noInput: false,
+    webhookKeep: false,
+    webhookOnce: false,
+    webhookUnsubscribe: false,
   };
   const sep = args.indexOf('--');
   const parsed = parseLead(sep < 0 ? args : args.slice(0, sep), out);
@@ -256,7 +290,54 @@ export function parseEventsArgs(args: string[]): EventsArgs | string {
   }
   out.mode = subscribe ? 'subscribe' : 'list';
   out.eventArgs = parsed.rest ?? [];
-  return out;
+  return webhookArgsError(out) ?? out;
+}
+
+function webhookArgsError(out: EventsArgs): string | undefined {
+  const flags = out.webhookKeep || out.webhookOnce || out.webhookUnsubscribe;
+  const anything = flags || out.webhookSecretFile !== undefined || out.webhookTtlMs !== undefined;
+  if (!out.webhookUrl) {
+    if (out.delivery === 'webhook') return '--delivery webhook needs --webhook-url';
+    return anything ? 'the --webhook-… options need --webhook-url' : undefined;
+  }
+  if (out.delivery !== undefined && out.delivery !== 'webhook') {
+    return `--webhook-url does not combine with --delivery ${out.delivery}`;
+  }
+  if (out.mode !== 'subscribe') return '--webhook-url needs --subscribe';
+  if (out.handler) {
+    return 'with --webhook-url the server delivers to that URL, not to mcpcat; run the command from the receiver (for example ntfy subscribe <topic> <cmd>)';
+  }
+  if (out.count !== undefined) return '--count does not apply to --webhook-url';
+  out.delivery = 'webhook';
+  return undefined;
+}
+
+const SECRET = /^whsec_[A-Za-z0-9+/]+={0,2}$/;
+
+function validSecret(secret: string): boolean {
+  if (!SECRET.test(secret)) return false;
+  try {
+    const n = atob(secret.slice(6)).length;
+    return n >= 24 && n <= 64;
+  } catch {
+    return false;
+  }
+}
+
+export async function webhookSecret(platform: Platform, file: string | undefined): Promise<string> {
+  if (file && (await platform.fs.exists(file))) {
+    const secret = new TextDecoder().decode(await platform.fs.readFile(file)).trim();
+    if (validSecret(secret)) return secret;
+    throw new McpcatError(
+      EXIT_USAGE,
+      `--webhook-secret-file ${file} does not hold a whsec_ secret of 24 to 64 bytes`
+    );
+  }
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const secret = `whsec_${btoa(String.fromCharCode(...bytes))}`;
+  if (file) await platform.fs.writeFile(file, `${secret}\n`, { mode: 0o600 });
+  return secret;
 }
 
 function formatDescriptor(event: EventDescriptor): string {
@@ -315,8 +396,8 @@ async function loadCursorFile(platform: Platform, path: string): Promise<CursorS
 
 function pickDelivery(
   event: EventDescriptor,
-  forced: 'push' | 'poll' | undefined
-): 'push' | 'poll' | string {
+  forced: 'push' | 'poll' | 'webhook' | undefined
+): 'push' | 'poll' | 'webhook' | string {
   const offered = Array.isArray(event.delivery) ? event.delivery : [];
   const list = offered.join(', ') || 'none';
   if (forced) {
@@ -326,7 +407,8 @@ function pickDelivery(
   }
   if (offered.includes('push')) return 'push';
   if (offered.includes('poll')) return 'poll';
-  return `event '${event.name}' offers no delivery mode mcpcat can use (offers: ${list}; mcpcat does poll and push)`;
+  const hint = offered.includes('webhook') ? '; for webhook, give --webhook-url' : '';
+  return `event '${event.name}' offers no delivery mode mcpcat can use (offers: ${list}; mcpcat does poll and push${hint})`;
 }
 
 function occurrenceOf(params: Record<string, unknown>): EventOccurrence {
@@ -668,6 +750,123 @@ class Subscriber {
   }
 }
 
+const REFRESH_MIN_MS = 1000;
+const REFRESH_MAX_MS = 3_600_000;
+
+class WebhookClient {
+  private readonly o: SubscriberOptions;
+  private cursor: string | null = null;
+  private eventIds: string[] = [];
+  private lastError: unknown = null;
+
+  constructor(options: SubscriberOptions) {
+    this.o = options;
+  }
+
+  private notice(text: string): Promise<void> {
+    if (this.o.args.silent) return Promise.resolve();
+    return this.o.platform.write(2, sanitizeTerminal(`mcpcat: ${this.o.redact(text)}\n`));
+  }
+
+  private key(): Record<string, unknown> {
+    return { name: this.o.event.name, arguments: this.o.arguments };
+  }
+
+  private params(first: boolean): Record<string, unknown> {
+    const { args } = this.o;
+    return {
+      ...this.key(),
+      delivery: { mode: 'webhook', url: args.webhookUrl, secret: args.webhookSecret },
+      cursor: this.cursor,
+      ...(first && args.maxAgeMs !== undefined ? { maxAgeMs: args.maxAgeMs } : {}),
+      ...(args.webhookTtlMs !== undefined ? { ttlMs: args.webhookTtlMs } : {}),
+    };
+  }
+
+  async start(): Promise<number> {
+    const { args, platform } = this.o;
+    if (args.cursorFile) {
+      const state = await loadCursorFile(platform, args.cursorFile);
+      this.cursor = state.cursor;
+      this.eventIds = state.eventIds;
+    }
+    if (args.sinceNow) this.cursor = null;
+    if (args.cursor !== undefined) this.cursor = args.cursor;
+    if (args.webhookUnsubscribe) {
+      await this.o.api.unsubscribe({ ...this.key(), delivery: { url: args.webhookUrl } });
+      await this.notice(`unsubscribed ${this.o.event.name} from ${args.webhookUrl}`);
+      return EXIT_OK;
+    }
+    return this.loop();
+  }
+
+  private async loop(): Promise<number> {
+    const { signal, args } = this.o;
+    let ok = false;
+    let delay = BACKOFF_START_MS;
+    while (!signal.aborted) {
+      let result: Record<string, unknown>;
+      try {
+        result = await this.o.api.subscribe(this.params(!ok));
+      } catch (err) {
+        if (signal.aborted) break;
+        if (!ok || !isRetryable(err)) throw fatal(err);
+        await this.notice(
+          `refresh failed (${(err as Error).message}); retrying in ${delay / 1000}s`
+        );
+        await sleep(delay, signal);
+        delay = Math.min(delay * 2, BACKOFF_MAX_MS);
+        continue;
+      }
+      ok = true;
+      delay = BACKOFF_START_MS;
+      await this.record(result);
+      if (args.webhookOnce) return EXIT_OK;
+      await sleep(this.refreshIn(result.refreshBefore), signal);
+    }
+    if (ok && !args.webhookKeep) await this.unsubscribe();
+    return EXIT_OK;
+  }
+
+  private refreshIn(refreshBefore: unknown): number {
+    const at = typeof refreshBefore === 'string' ? Date.parse(refreshBefore) : Number.NaN;
+    if (Number.isNaN(at)) return REFRESH_MAX_MS;
+    return Math.min(Math.max((at - Date.now()) / 2, REFRESH_MIN_MS), REFRESH_MAX_MS);
+  }
+
+  private async record(result: Record<string, unknown>): Promise<void> {
+    const { resultType: _r, ...status } = result;
+    await this.o.platform.write(1, `${sanitizeJson(JSON.stringify(status))}\n`);
+    if (status.truncated === true && typeof status.cursor === 'string') {
+      await this.notice(`events for ${this.o.event.name} were skipped (truncated)`);
+    }
+    const lastError =
+      (status.deliveryStatus as { lastError?: unknown } | undefined)?.lastError ?? null;
+    if (lastError !== this.lastError && lastError !== null) {
+      await this.notice(`the server reports webhook delivery failing (${String(lastError)})`);
+    }
+    this.lastError = lastError;
+    this.cursor = typeof status.cursor === 'string' ? status.cursor : null;
+    const path = this.o.args.cursorFile;
+    if (!path) return;
+    const body = JSON.stringify({
+      event: this.o.event.name,
+      cursor: this.cursor,
+      eventIds: this.eventIds,
+    });
+    await this.o.platform.fs.writeFile(`${path}.tmp`, `${body}\n`);
+    await this.o.platform.fs.rename(`${path}.tmp`, path);
+  }
+
+  private async unsubscribe(): Promise<void> {
+    try {
+      await this.o.api.unsubscribe({ ...this.key(), delivery: { url: this.o.args.webhookUrl } });
+    } catch (err) {
+      await this.notice(`could not unsubscribe (${(err as Error).message}); it expires on its own`);
+    }
+  }
+}
+
 export interface RunEventsOptions {
   base: Record<string, unknown>;
   signal: AbortSignal;
@@ -749,11 +948,22 @@ export async function runEvents(
     );
   }
   const mode = pickDelivery(event, args.delivery);
-  if (mode !== 'push' && mode !== 'poll')
+  if (mode !== 'push' && mode !== 'poll' && mode !== 'webhook')
     return fail(platform, options, args.json, EXIT_USAGE, mode);
   const eventArgs = eventArguments(event, args, options.base);
   if (typeof eventArgs === 'string')
     return fail(platform, options, args.json, EXIT_USAGE, eventArgs);
+  if (mode === 'webhook') {
+    return new WebhookClient({
+      platform,
+      api: conn.events,
+      event,
+      args,
+      arguments: eventArgs,
+      signal: options.signal,
+      redact: options.redact,
+    }).start();
+  }
   const subscriber = new Subscriber({
     platform,
     api: conn.events,

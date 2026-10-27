@@ -101,6 +101,8 @@ export interface StreamOptions {
 
 export interface EventsApi {
   list(): Promise<EventDescriptor[]>;
+  subscribe(params: Record<string, unknown>): Promise<Record<string, unknown>>;
+  unsubscribe(params: Record<string, unknown>): Promise<Record<string, unknown>>;
   poll(subscription: EventSubscription): Promise<PollEventsResult>;
   stream(
     subscription: EventSubscription,

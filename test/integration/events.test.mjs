@@ -349,7 +349,10 @@ function checks(run, targets, sink) {
     }
 
     for (const [args, message] of [
-      [['--subscribe', 'hook'], /event 'hook' offers no delivery mode mcpcat can use/],
+      [
+        ['--subscribe', 'hook'],
+        /event 'hook' offers no delivery mode mcpcat can use .*for webhook, give --webhook-url/,
+      ],
       [['--delivery', 'push', '--subscribe', 'mail.received'], /does not offer push delivery/],
       [['--subscribe', 'nope'], /unknown event 'nope' \(events: tick, mail\.received/],
       [['--subscribe', 'mail.received'], /missing required flag --from/],
@@ -606,8 +609,8 @@ describe('host: events extension', () => {
     [['x', ...X, '--subscribe'], /--subscribe needs an event name/],
     [['x', ...X, '--count', '0', '--subscribe', 'tick'], /--count needs a positive integer/],
     [
-      ['x', ...X, '--delivery', 'webhook', '--subscribe', 'tick'],
-      /--delivery must be push or poll/,
+      ['x', ...X, '--delivery', 'smtp', '--subscribe', 'tick'],
+      /--delivery must be push, poll or webhook/,
     ],
     [['x', ...X, '--list-events', 'y'], /unexpected argument 'y'/],
     [[...X, '--list-events'], /no target given/],

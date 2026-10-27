@@ -40,7 +40,7 @@ export function modernRequestParams(
   protocolVersion: string,
   clientInfo: { name: string; version: string }
 ): Record<string, unknown> {
-  const { _inputResponses, _tasks, _events, ...rest } = params;
+  const { _inputResponses, _tasks, _events, _detached, ...rest } = params;
   const out: Record<string, unknown> = { ...rest };
   if (_inputResponses) out.inputResponses = _inputResponses;
   const extensions: Record<string, unknown> = {};
