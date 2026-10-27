@@ -336,7 +336,10 @@ export async function webhookSecret(platform: Platform, file: string | undefined
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   const secret = `whsec_${btoa(String.fromCharCode(...bytes))}`;
-  if (file) await platform.fs.writeFile(file, `${secret}\n`, { mode: 0o600 });
+  if (file) {
+    await platform.fs.writeFile(file, `${secret}\n`, { mode: 0o600 });
+    await platform.fs.chmod?.(file, 0o600);
+  }
   return secret;
 }
 
@@ -751,6 +754,8 @@ class Subscriber {
 }
 
 const REFRESH_MIN_MS = 1000;
+const UNSUBSCRIBE_CAP_MS = 3000;
+const NOT_FOUND = -32023;
 const REFRESH_MAX_MS = 3_600_000;
 
 class WebhookClient {
@@ -803,10 +808,12 @@ class WebhookClient {
   private async loop(): Promise<number> {
     const { signal, args } = this.o;
     let ok = false;
+    let attempted = false;
     let delay = BACKOFF_START_MS;
     while (!signal.aborted) {
       let result: Record<string, unknown>;
       try {
+        attempted = true;
         result = await this.o.api.subscribe(this.params(!ok));
       } catch (err) {
         if (signal.aborted) break;
@@ -824,7 +831,7 @@ class WebhookClient {
       if (args.webhookOnce) return EXIT_OK;
       await sleep(this.refreshIn(result.refreshBefore), signal);
     }
-    if (ok && !args.webhookKeep) await this.unsubscribe();
+    if (attempted && !args.webhookKeep && !args.webhookOnce) await this.unsubscribe(ok);
     return EXIT_OK;
   }
 
@@ -858,11 +865,22 @@ class WebhookClient {
     await this.o.platform.fs.rename(`${path}.tmp`, path);
   }
 
-  private async unsubscribe(): Promise<void> {
+  private async unsubscribe(confirmed: boolean): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cap = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`no answer in ${UNSUBSCRIBE_CAP_MS / 1000}s`)),
+        UNSUBSCRIBE_CAP_MS
+      );
+    });
     try {
-      await this.o.api.unsubscribe({ ...this.key(), delivery: { url: this.o.args.webhookUrl } });
+      const params = { ...this.key(), delivery: { url: this.o.args.webhookUrl } };
+      await Promise.race([this.o.api.unsubscribe(params), cap]);
     } catch (err) {
+      if (!confirmed && err instanceof StatelessRpcError && err.code === NOT_FOUND) return;
       await this.notice(`could not unsubscribe (${(err as Error).message}); it expires on its own`);
+    } finally {
+      clearTimeout(timer);
     }
   }
 }

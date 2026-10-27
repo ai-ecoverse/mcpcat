@@ -1757,7 +1757,7 @@ async function runEventsInvocation(
     await platform.write(2, sanitizeTerminal(`mcpcat: ${ev}\n${EVENTS_USAGE}\n`));
     return EXIT_USAGE;
   }
-  if (ev.delivery === 'webhook') {
+  if (ev.delivery === 'webhook' && !ev.webhookUnsubscribe) {
     try {
       ev.webhookSecret = await webhookSecret(platform, ev.webhookSecretFile);
     } catch (err) {

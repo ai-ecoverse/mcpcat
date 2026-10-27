@@ -775,6 +775,83 @@ describe('host: events extension', () => {
     assert.equal(r.status, 5, r.stderr);
     assert.match(r.stderr, /events need protocol 2026-07-28; this server speaks 20\d\d-\d\d-\d\d/);
   });
+
+  async function unsubscribedUrls() {
+    const res = await fetch(`http://127.0.0.1:${http.port}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'events/test-unsubscribed',
+        params: {
+          _meta: {
+            'io.modelcontextprotocol/clientCapabilities': {
+              extensions: { 'io.modelcontextprotocol/events': {} },
+            },
+          },
+        },
+      }),
+    });
+    return (await res.json()).result.urls;
+  }
+
+  it('SIGINT during the first events/subscribe still unsubscribes', async () => {
+    const url = `https://hooks.example/slow-sub-${process.pid}`;
+    const child = start([
+      `http://127.0.0.1:${http.port}/mcp`,
+      ...X,
+      '--webhook-url',
+      url,
+      '--subscribe',
+      'hook',
+    ]);
+    const done = collect(child);
+    await new Promise((r) => setTimeout(r, 500));
+    child.kill('SIGINT');
+    const r = await done;
+    assert.equal(r.status, 130, r.stderr);
+    assert.ok((await unsubscribedUrls()).includes(url), 'events/unsubscribe was sent');
+    assert.doesNotMatch(r.stderr, /could not unsubscribe/);
+  });
+
+  for (const [label, target] of [
+    ['stdio', () => stdio],
+    ['http', () => `http://127.0.0.1:${http.port}/mcp`],
+  ]) {
+    it(`${label}: an unsubscribe the server never answers gives up after 3s`, async () => {
+      const url = `https://hooks.example/hang-unsub-${label}`;
+      const child = start([target(), ...X, '--webhook-url', url, '--subscribe', 'hook']);
+      const done = collect(child);
+      await new Promise((r) => child.stdout.once('data', r));
+      const t = Date.now();
+      child.kill('SIGINT');
+      const r = await Promise.race([done, new Promise((r) => setTimeout(r, 8000))]);
+      assert.ok(r, 'mcpcat still waiting for events/unsubscribe');
+      assert.equal(r.status, 130, r.stderr);
+      assert.ok(Date.now() - t < 6000);
+      assert.match(r.stderr, /could not unsubscribe \(no answer in 3s\); it expires on its own/);
+    });
+  }
+
+  it('--webhook-unsubscribe does not need a readable secret file', async () => {
+    const file = join(home, 'broken-secret');
+    writeFileSync(file, 'garbage\n');
+    const r = await run([
+      stdio,
+      ...X,
+      '--webhook-url',
+      'https://hooks.example/off',
+      '--webhook-secret-file',
+      file,
+      '--webhook-unsubscribe',
+      '--subscribe',
+      'hook',
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /unsubscribed hook from https:\/\/hooks\.example\/off/);
+    assert.equal(readFileSync(file, 'utf8'), 'garbage\n');
+  });
 });
 
 describe('kernel: events extension', () => {
@@ -823,6 +900,18 @@ describe('kernel: events extension', () => {
       'event-sink',
       'dist/sink.mjs',
       readFileSync(join(fixtures, 'kernel-event-sink.mjs'))
+    );
+    await install(
+      'mcpcat-test-probe-put',
+      'kernel-probe-put',
+      'dist/put.mjs',
+      readFileSync(join(fixtures, 'kernel-probe-put.mjs'))
+    );
+    await install(
+      'mcpcat-test-probe-stat',
+      'kernel-probe-stat',
+      'dist/stat.mjs',
+      readFileSync(join(fixtures, 'kernel-probe-stat.mjs'))
     );
     await install(
       'mcpcat-test-event-hang',
@@ -874,6 +963,33 @@ describe('kernel: events extension', () => {
     await client.kill(pid, 'SIGKILL');
     return true;
   }
+
+  it('--webhook-secret-file is created 0600 in the kernel too', async (t) => {
+    const probe = await kernel.run(['kernel-probe-put', '/tmp/probe/x', '0o600', '0o700'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      stdin: 'x',
+    });
+    if (String(probe.stdout).trim() === 'no-chmod')
+      return t.skip('this kernel has no ctx.fs.chmod');
+    const r = await run([
+      'stdio:events-srv',
+      ...X,
+      '--webhook-url',
+      'https://hooks.example/k',
+      '--webhook-secret-file',
+      '/tmp/kernel-secret',
+      '--webhook-once',
+      '--subscribe',
+      'hook',
+    ]);
+    assert.equal(r.status, 0, String(r.stderr));
+    const stat = await kernel.run(['kernel-probe-stat', '/tmp/kernel-secret'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.equal(String(stat.stdout).trim().split('\t')[1], '600');
+  });
 
   let files = 0;
   checks(

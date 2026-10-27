@@ -305,6 +305,26 @@ export function createEventsServer({ advertise = true } = {}) {
     }
   }
 
+  const unsubscribed = [];
+
+  function webhook(id, method, params, open) {
+    const url = String(params?.delivery?.url ?? '');
+    if (method === 'events/unsubscribe') {
+      unsubscribed.push(url);
+      return url.includes('hang-unsub') ? undefined : reply(id, {});
+    }
+    const result = {
+      id: `sub_${url.length.toString(16).padStart(16, '0')}`,
+      refreshBefore: new Date(Date.now() + 60_000).toISOString(),
+      cursor: 'c0',
+      truncated: false,
+    };
+    if (!url.includes('slow-sub')) return reply(id, result);
+    const sink = open(id);
+    setTimeout(() => sink.end(reply(id, result)), 1500);
+    return undefined;
+  }
+
   function handle(msg, headers, open) {
     const { id, method, params } = msg;
     if (method === 'notifications/cancelled') {
@@ -334,6 +354,7 @@ export function createEventsServer({ advertise = true } = {}) {
     }
     if (!method.startsWith('events/') || !advertise) return fail(id, -32601, 'Method not found');
     if (!events) return fail(id, -32021, 'Missing required client capability');
+    if (method === 'events/test-unsubscribed') return reply(id, { urls: unsubscribed });
     if (method === 'events/list') {
       const from = params?.cursor === 'p2' ? PAGE : 0;
       const page = EVENTS.slice(from, from === 0 ? PAGE : undefined);
@@ -344,6 +365,9 @@ export function createEventsServer({ advertise = true } = {}) {
     }
     if (!EVENTS.some((e) => e.name === params?.name)) {
       return fail(id, -32023, 'NotFound', { kind: 'event' });
+    }
+    if (method === 'events/subscribe' || method === 'events/unsubscribe') {
+      return webhook(id, method, params, open);
     }
     if (method === 'events/poll') return poll(id, params);
     if (method === 'events/stream') {
