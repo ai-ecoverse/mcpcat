@@ -74,3 +74,63 @@ describe('kernel: a transport that answers 502 for a server without CORS', () =>
     assert.ok(!error.message.includes('slicc-node'), stderr);
   });
 });
+
+describe('kernel: a page transport whose fetch fails the way a CORS block does', () => {
+  let kernel;
+  const asked = [];
+
+  before(async () => {
+    const blocked = async (url) => {
+      asked.push(String(url));
+      throw new TypeError('Failed to fetch');
+    };
+    kernel = await createNodeKernel({
+      network: { transport: fetchTransport({ fetch: blocked }) },
+    });
+    await installMcpcat(kernel);
+  });
+
+  after(() => {
+    kernel?.terminate();
+  });
+
+  it('exits 3 and points at a linked slicc CLI for a remote https server', async () => {
+    const { status, stderr } = await kernel.run(['mcpcat', 'info', TARGET], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.ok(asked.includes(TARGET), `asked: ${asked.join(' ')}`);
+    assert.equal(status, 3, `stderr: ${stderr}`);
+    assert.ok(stderr.includes('for servers without CORS'), `stderr: ${stderr}`);
+    assert.ok(stderr.includes('npx sliccy@next'), `stderr: ${stderr}`);
+    assert.ok(stderr.includes('browser extension'), `stderr: ${stderr}`);
+    assert.ok(stderr.includes('fetch failed'), `stderr: ${stderr}`);
+  });
+
+  it('--json carries the same hint in the connection error', async () => {
+    const { status, stderr } = await kernel.run(['mcpcat', 'info', '--json', TARGET], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    assert.equal(status, 3, `stderr: ${stderr}`);
+    const { error } = JSON.parse(stderr);
+    assert.equal(error.kind, 'connection', stderr);
+    assert.ok(error.message.includes('for servers without CORS'), stderr);
+    assert.ok(error.message.includes('npx sliccy@next'), stderr);
+  });
+
+  for (const url of [
+    'http://host.slicc.internal:45991/mcp',
+    'https://127.0.0.1:45991/mcp',
+    'https://localhost:45991/mcp',
+  ]) {
+    it(`keeps the plain message for the loopback server ${url}`, async () => {
+      const { status, stderr } = await kernel.run(['mcpcat', 'info', url], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      assert.equal(status, 3, `stderr: ${stderr}`);
+      assert.equal(stderr, 'mcpcat: connection failed: fetch failed\n');
+    });
+  }
+});

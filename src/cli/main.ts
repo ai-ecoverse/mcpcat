@@ -679,9 +679,28 @@ function formatToolSchema(tool: Tool): string {
 const NETWORK_HINT =
   'connection failed (for servers without CORS, link the slicc CLI with npx sliccy@next, or use the browser extension)';
 
-function transportHint(err: unknown): string | undefined {
+const LOOPBACK_V4 = /^127\.\d+\.\d+\.\d+$/;
+
+function remoteHttps(url: string | undefined): boolean {
+  if (!url) return false;
+  const { protocol, hostname } = new URL(url);
+  const host = hostname.toLowerCase().replace(/\.$/, '');
+  if (protocol !== 'https:') return false;
+  return !(
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host === 'host.slicc.internal' ||
+    host === '[::1]' ||
+    LOOPBACK_V4.test(host)
+  );
+}
+
+function transportHint(err: unknown, kernelUrl: string | undefined): string | undefined {
   if (err instanceof TypeError) {
     const cause = (err as { cause?: { code?: string } }).cause;
+    if (cause?.code === 'ECONNREFUSED' && remoteHttps(kernelUrl)) {
+      return `${NETWORK_HINT}: ${err.message}`;
+    }
     if (cause?.code === 'ECONNREFUSED' || cause?.code === 'ENETUNREACH') {
       return `connection failed: ${err.message}`;
     }
@@ -1956,7 +1975,9 @@ async function resolveAuthProvider(
 function classifyConnectionError(
   err: unknown,
   target: string,
-  interrupted: boolean
+  interrupted: boolean,
+  platformKind: Platform['kind'],
+  url: string | undefined
 ): { code: number; kind: string; msg: string } {
   if (err instanceof TransportRefusalError) {
     const hint =
@@ -1985,7 +2006,8 @@ function classifyConnectionError(
   if (interrupted) {
     return { code: EXIT_INTERRUPTED, kind: 'interrupted', msg: 'interrupted' };
   }
-  const msg = transportHint(err) ?? `connection failed: ${(err as Error).message}`;
+  const kernelUrl = platformKind === 'kernel' ? url : undefined;
+  const msg = transportHint(err, kernelUrl) ?? `connection failed: ${(err as Error).message}`;
   return { code: EXIT_CONNECTION, kind: 'connection', msg };
 }
 
@@ -2200,7 +2222,7 @@ async function runClientVerb(
       );
       return EXIT_CONNECTION;
     }
-    const e = classifyConnectionError(err, target, interrupted);
+    const e = classifyConnectionError(err, target, interrupted, platform.kind, resolved.url);
     if (e.code === EXIT_INTERRUPTED) {
       await platform.write(2, 'mcpcat: interrupted\n');
       return termExitCode;
