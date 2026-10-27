@@ -183,6 +183,7 @@ export class EventHub {
       };
     });
     const next = (): string | undefined => {
+      if (state.closing) return undefined;
       if (state.last < source.oldest - 1) {
         state.last = source.oldest - 1;
         return notification(id, 'active', { cursor: source.cursor(state.last), truncated: true });

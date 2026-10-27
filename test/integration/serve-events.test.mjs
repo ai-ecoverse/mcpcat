@@ -1129,16 +1129,22 @@ describe('kernel: serve --event', () => {
     }
   }
 
-  for (const [label, wake, final] of [
-    ['reads all along gets the final result', 'read', true],
-    ['stopped reading and reads again 300 ms later gets the final result', '300', true],
-    ['stopped reading and comes back after serve is gone', '4000', false],
+  for (const [label, wake, final, buffer] of [
+    ['reads all along gets the final result', 'read', true, '5'],
+    [
+      'reads all along, 100 ms between reads, behind a backlog gets the final result',
+      'read:100',
+      true,
+      '1000',
+    ],
+    ['stopped reading and reads again 300 ms later gets the final result', '300', true, '5'],
+    ['stopped reading and comes back after serve is gone', '4000', false, '5'],
   ]) {
     it(`http: SIGTERM with a push subscriber that ${label}, and serve exits 143 (#513)`, async () => {
-      const name = `stall-${wake}-${'x'.repeat(4096)}`;
+      const name = `stall-${wake.replace(':', '-')}-${'x'.repeat(4096)}`;
       const k = await startKernelServe([
         '--event-buffer',
-        '5',
+        buffer,
         ...ev('tick: event-src tick {label} 1'),
       ]);
       const started = Date.now();
