@@ -68,6 +68,7 @@ import {
   isEventsInvocation,
   parseEventsArgs,
   runEvents,
+  webhookSecret,
 } from './events-verbs.ts';
 import {
   EXIT_AUTH,
@@ -230,6 +231,12 @@ ${experimentalHelp()}  <target> --experimental events --list-events
                              --count <n>, --heartbeat-timeout <s> (default 60), -d
                              <json>. After --subscribe <event> come its arguments;
                              after -- the command (a stdio server is a stdio: target)
+                             --webhook-url <https> registers a webhook subscription
+                             (events/subscribe) to that URL and keeps refreshing it
+                             until interrupted, then unsubscribes; one status JSON
+                             line per refresh. With it: --webhook-secret-file <path>
+                             (kept or created 0600), --webhook-ttl <s>, --webhook-keep,
+                             --webhook-once, --webhook-unsubscribe
 
 WebMCP (serve --webmcp, see serve --help):
   --webmcp                   Serve the tab's WebMCP tools
@@ -354,6 +361,7 @@ interface ParsedArgs {
   roots: string[];
   outputPath: string | undefined;
   events?: EventsArgs;
+  extra?: string[];
   signal?: AbortSignal;
   redact?: Redactor;
 }
@@ -1730,6 +1738,7 @@ function eventsParsedArgs(ev: EventsArgs): ParsedArgs {
     roots: [],
     outputPath: undefined,
     events: ev,
+    extra: ev.webhookSecret ? [ev.webhookSecret] : [],
   };
 }
 
@@ -1747,6 +1756,14 @@ async function runEventsInvocation(
   if (typeof ev === 'string') {
     await platform.write(2, sanitizeTerminal(`mcpcat: ${ev}\n${EVENTS_USAGE}\n`));
     return EXIT_USAGE;
+  }
+  if (ev.delivery === 'webhook' && !ev.webhookUnsubscribe) {
+    try {
+      ev.webhookSecret = await webhookSecret(platform, ev.webhookSecretFile);
+    } catch (err) {
+      await platform.write(2, sanitizeTerminal(`mcpcat: ${(err as Error).message}\n`));
+      return EXIT_USAGE;
+    }
   }
   return runClientVerb(platform, version, eventsParsedArgs(ev));
 }
@@ -1878,9 +1895,10 @@ async function runTaskVerb(
 
 function expandAndCollect(
   headers: Record<string, string>,
-  env: Record<string, string | undefined>
+  env: Record<string, string | undefined>,
+  extra: string[] = []
 ): { expanded: Record<string, string>; secrets: string[]; unset: string[] } {
-  const secrets: string[] = [];
+  const secrets: string[] = [...extra];
   const result: Record<string, string> = {};
   const unset: string[] = [];
   for (const [k, v] of Object.entries(headers)) {
@@ -2109,7 +2127,7 @@ async function runClientVerb(
   version: string,
   parsed: ParsedArgs
 ): Promise<number> {
-  const { expanded, secrets, unset } = expandAndCollect(parsed.headers, platform.env);
+  const { expanded, secrets, unset } = expandAndCollect(parsed.headers, platform.env, parsed.extra);
   if (unset.length > 0) {
     await platform.write(
       2,

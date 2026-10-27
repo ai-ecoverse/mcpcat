@@ -31,6 +31,7 @@ import {
   listAllEvents,
   STALE,
   subscriptionParams,
+  webhookMethods,
   within,
 } from './events.ts';
 import {
@@ -516,6 +517,7 @@ async function streamAttempt(
 function createHttpEventsApi(request: RequestFn, t: HttpStreamTransport): EventsApi {
   return {
     list: () => listAllEvents(request),
+    ...webhookMethods(request),
     poll: async (subscription) =>
       ((await request('events/poll', subscriptionParams(subscription))) ?? {}) as PollEventsResult,
     async stream(subscription, onMessage, options) {
@@ -600,13 +602,14 @@ export async function createStatelessConnection(
     body: string,
     streamSignal?: AbortSignal
   ): Promise<{ res: Response; token: string | undefined; detach: () => void }> {
+    const external = params._detached === true ? undefined : externalSignal;
     const token = await authProvider?.token();
     const headers = buildHeaders(method, params, token);
     if (verbose?.enabled) {
       verbose.request(method, body);
       logHeaders(verbose, '>', Object.entries(headers));
     }
-    const { controller, stopTimer, detach } = makeAbort(timeoutMs, externalSignal, streamSignal);
+    const { controller, stopTimer, detach } = makeAbort(timeoutMs, external, streamSignal);
     try {
       const res = await fetchImpl(url, {
         method: 'POST',
@@ -621,7 +624,7 @@ export async function createStatelessConnection(
       return { res, token, detach };
     } catch (err) {
       detach();
-      if (controller.signal.aborted && !externalSignal?.aborted && !streamSignal?.aborted) {
+      if (controller.signal.aborted && !external?.aborted && !streamSignal?.aborted) {
         throw new McpTimeoutError(method, timeoutMs);
       }
       throw err;

@@ -59,6 +59,18 @@ export async function listAllEvents(
   return out;
 }
 
+export function webhookMethods(
+  request: (method: string, params: Record<string, unknown>) => Promise<unknown>
+) {
+  const call = async (method: string, params: Record<string, unknown>) =>
+    ((await request(method, { ...params, _events: true })) ?? {}) as Record<string, unknown>;
+  return {
+    subscribe: (params: Record<string, unknown>) => call('events/subscribe', params),
+    unsubscribe: (params: Record<string, unknown>) =>
+      call('events/unsubscribe', { ...params, _detached: true }),
+  };
+}
+
 export function isStreamMessage(message: unknown, id: number): boolean {
   if (!message || typeof message !== 'object') return false;
   const { method, params } = message as { method?: unknown; params?: unknown };

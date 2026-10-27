@@ -27,6 +27,7 @@ import {
   listAllEvents,
   STALE,
   subscriptionParams,
+  webhookMethods,
   within,
 } from './events.ts';
 import { MODERN_PROTOCOL_VERSION, modernRequestParams } from './modern.ts';
@@ -162,7 +163,8 @@ function createStdioJsonRpc(
 
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const line = await nextLine(deadline - Date.now(), [externalSignal]);
+      const signal = params._detached === true ? undefined : externalSignal;
+      const line = await nextLine(deadline - Date.now(), [signal]);
       if (typeof line !== 'string') throw new McpTimeoutError(method, timeoutMs);
       const parsed = JSON.parse(line) as JsonRpcMessage;
       if (verbose?.enabled) verbose.response(line);
@@ -328,6 +330,7 @@ function buildConnectionMethods(
     },
     events: {
       list: () => listAllEvents(rpc.request),
+      ...webhookMethods(rpc.request),
       poll: async (subscription) =>
         ((await rpc.request('events/poll', subscriptionParams(subscription))) ??
           {}) as PollEventsResult,
