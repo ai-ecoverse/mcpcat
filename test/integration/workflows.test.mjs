@@ -93,7 +93,14 @@ test('the installer assets follow only a release: a new v* tag at the pushed com
     /\n {4}needs: released\n {4}if: needs\.released\.outputs\.version != ''\n/
   );
   assert.match(binaries, /\n {4}runs-on: ubuntu-latest\n/);
-  assert.match(binaries, /npm pack "@ai-ecoverse\/mcpcat@\$VERSION"/);
+  assert.match(
+    binaries,
+    /npm view "@ai-ecoverse\/mcpcat@\$VERSION" dist\.tarball dist\.integrity --json/
+  );
+  assert.match(binaries, /curl -fsSL --max-time 60 "\$url" -o "\$part"/);
+  assert.match(binaries, /openssl dgst -sha512 -binary "\$part"/);
+  assert.match(binaries, /\[ "\$actual" != "\$sri" \]/);
+  assert.doesNotMatch(binaries, /npm pack/);
   for (const step of [
     'Installer test, alpine with nodejs',
     'Installer test, alpine without node (musl rejection)',
