@@ -100,12 +100,38 @@ jobs:
       - name: Fetch the published npm tarball
         run: |
           mkdir assets
+          part="assets/mcpcat-$VERSION.tgz.part"
+          url=
+          sri=
+          fetched=
           for _ in $(seq 1 90); do
-            npm pack "@ai-ecoverse/mcpcat@$VERSION" --pack-destination assets && break
+            if [ -z "$url" ] || [ -z "$sri" ]; then
+              dist="$(npm view "@ai-ecoverse/mcpcat@$VERSION" dist.tarball dist.integrity --json)" || dist=
+              url="$(jq -r '."dist.tarball" // empty' <<<"$dist" 2>/dev/null)" || url=
+              sri="$(jq -r '."dist.integrity" // empty' <<<"$dist" 2>/dev/null)" || sri=
+            fi
+            if [ -n "$url" ] && [ -n "$sri" ] && curl -fsSL --max-time 60 "$url" -o "$part"; then
+              fetched=1
+              break
+            fi
+            rm -f "$part"
             sleep 10
           done
-          [ -f "assets/ai-ecoverse-mcpcat-$VERSION.tgz" ] || { echo "npm pack: @ai-ecoverse/mcpcat@$VERSION not fetchable after 90 attempts"; exit 1; }
-          mv "assets/ai-ecoverse-mcpcat-$VERSION.tgz" "assets/mcpcat-$VERSION.tgz"
+          if [ -z "$fetched" ]; then
+            if [ -z "$url" ] || [ -z "$sri" ]; then
+              echo "npm view: @ai-ecoverse/mcpcat@$VERSION has no dist.tarball and dist.integrity after 90 attempts"
+            else
+              echo "curl: $url not downloadable after 90 attempts"
+            fi
+            exit 1
+          fi
+          actual="sha512-$(openssl dgst -sha512 -binary "$part" | openssl base64 -A)"
+          if [ "$actual" != "$sri" ]; then
+            rm -f "$part"
+            echo "integrity mismatch: npm says $url is $sri, the download is $actual"
+            exit 1
+          fi
+          mv "$part" "assets/mcpcat-$VERSION.tgz"
           cd assets && sha256sum "mcpcat-$VERSION.tgz" | tee SHA256SUMS
 
       - name: Installer test, alpine with nodejs

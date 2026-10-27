@@ -1,11 +1,13 @@
 import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -28,87 +30,182 @@ const script = step
 const base = mkdtempSync(join(tmpdir(), 'mcpcat-pack-retry-'));
 after(() => rmSync(base, { recursive: true, force: true }));
 
+const version = '0.24.0';
+const url = `https://registry.npmjs.org/@ai-ecoverse/mcpcat/-/mcpcat-${version}.tgz`;
+const tarball = Buffer.from([0x1f, 0x8b, 0x08, 0x00, ...Buffer.from('mcpcat tarball\n')]);
+const sri = (bytes) => `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
+const sha256 = createHash('sha256').update(tarball).digest('hex');
+
 const npmStub = `#!/bin/sh
 case "$1" in
-  view) echo "$VERSION"; exit 0 ;;
-  pack)
-    n=$(($(cat "$STATE/packs" 2>/dev/null || echo 0) + 1))
-    echo "$n" > "$STATE/packs"
-    if [ "$n" -le "$FAILS" ]; then echo "npm error code ETARGET" >&2; exit 1; fi
-    echo tarball > "$4/ai-ecoverse-mcpcat-$VERSION.tgz"
+  view)
+    n=$(($(cat "$STATE/views" 2>/dev/null || echo 0) + 1))
+    echo "$n" > "$STATE/views"
+    echo "$*" >> "$STATE/view-args"
+    if [ "$n" -le "$VIEW_FAILS" ]; then
+      echo '{"error":{"code":"E404","summary":"No match found for version '"$VERSION"'"}}'
+      echo "npm error code E404" >&2
+      exit 1
+    fi
+    printf '{"dist.tarball":"%s","dist.integrity":"%s"}\\n' "$TARBALL_URL" "$INTEGRITY"
     exit 0 ;;
+  pack)
+    echo "npm error code ETARGET" >&2
+    exit 1 ;;
 esac
 exit 2
+`;
+
+const curlStub = `#!/bin/sh
+n=$(($(cat "$STATE/curls" 2>/dev/null || echo 0) + 1))
+echo "$n" > "$STATE/curls"
+out=
+prev=
+for arg in "$@"; do
+  [ "$prev" = "-o" ] && out="$arg"
+  case "$arg" in https://*) echo "$arg" >> "$STATE/urls" ;; esac
+  prev="$arg"
+done
+if [ "$n" -le "$CURL_FAILS" ]; then
+  echo "curl: (22) The requested URL returned error: 404" >&2
+  exit 22
+fi
+cat "$STATE/tarball" > "$out"
 `;
 
 const sleepStub = `#!/bin/sh
 echo "$1" >> "$STATE/sleeps"
 `;
 
-function run(fails) {
+function run({ viewFails = 0, curlFails = 0, integrity = sri(tarball) } = {}) {
   const dir = mkdtempSync(join(base, 'run-'));
   const bin = join(dir, 'bin');
   const work = join(dir, 'work');
   mkdirSync(bin);
   mkdirSync(work);
-  writeFileSync(join(bin, 'npm'), npmStub);
-  writeFileSync(join(bin, 'sleep'), sleepStub);
-  chmodSync(join(bin, 'npm'), 0o755);
-  chmodSync(join(bin, 'sleep'), 0o755);
-  const result = spawnSync('bash', ['-e', '-c', script], {
+  writeFileSync(join(dir, 'tarball'), tarball);
+  for (const [name, body] of [
+    ['npm', npmStub],
+    ['curl', curlStub],
+    ['sleep', sleepStub],
+  ]) {
+    writeFileSync(join(bin, name), body);
+    chmodSync(join(bin, name), 0o755);
+  }
+  const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', script], {
     cwd: work,
     encoding: 'utf8',
     env: {
       ...process.env,
       PATH: [bin, process.env.PATH].join(delimiter),
-      VERSION: '0.24.0',
-      FAILS: String(fails),
+      VERSION: version,
+      VIEW_FAILS: String(viewFails),
+      CURL_FAILS: String(curlFails),
+      TARBALL_URL: url,
+      INTEGRITY: integrity,
       STATE: dir,
     },
   });
   const read = (name) =>
     existsSync(join(dir, name)) ? readFileSync(join(dir, name), 'utf8').trim() : '';
+  const lines = (name) => read(name).split('\n').filter(Boolean);
+  const assets = join(work, 'assets');
   return {
     ...result,
-    work,
-    packs: Number(read('packs')),
-    sleeps: read('sleeps').split('\n').filter(Boolean).length,
+    assets,
+    files: existsSync(assets) ? readdirSync(assets).sort() : [],
+    views: Number(read('views')),
+    viewArgs: lines('view-args'),
+    curls: Number(read('curls')),
+    urls: lines('urls'),
+    sleeps: lines('sleeps'),
   };
+}
+
+function assertPublished(result) {
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.files, ['SHA256SUMS', `mcpcat-${version}.tgz`]);
+  assert.deepEqual(readFileSync(join(result.assets, `mcpcat-${version}.tgz`)), tarball);
+  assert.equal(
+    readFileSync(join(result.assets, 'SHA256SUMS'), 'utf8'),
+    `${sha256}  mcpcat-${version}.tgz\n`
+  );
+  assert.ok(result.sleeps.every((seconds) => seconds === '10'));
 }
 
 test('the binaries job extracts a Fetch the published npm tarball script', () => {
   assert.ok(script);
-  assert.match(script, /npm pack "@ai-ecoverse\/mcpcat@\$VERSION" --pack-destination assets/);
-});
-
-test('npm pack is retried until the published version is fetchable, then the tarball is renamed and checksummed', () => {
-  const result = run(3);
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.packs, 4);
-  assert.equal(result.sleeps, 3);
-  const assets = join(result.work, 'assets');
-  assert.equal(readFileSync(join(assets, 'mcpcat-0.24.0.tgz'), 'utf8'), 'tarball\n');
-  assert.equal(existsSync(join(assets, 'ai-ecoverse-mcpcat-0.24.0.tgz')), false);
   assert.match(
-    readFileSync(join(assets, 'SHA256SUMS'), 'utf8'),
-    /^[0-9a-f]{64} {2}mcpcat-0\.24\.0\.tgz\n$/
+    script,
+    /npm view "@ai-ecoverse\/mcpcat@\$VERSION" dist\.tarball dist\.integrity --json/
   );
+  assert.match(script, /curl -fsSL /);
+  assert.doesNotMatch(script, /npm pack/);
 });
 
-test('npm pack keeps retrying for about 15 minutes before giving up', () => {
-  const result = run(89);
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.packs, 90);
-  assert.equal(result.sleeps, 89);
+test('npm view is retried until the full packument has the version, then its tarball is fetched and checksummed', () => {
+  const result = run({ viewFails: 3 });
+  assertPublished(result);
+  assert.equal(result.views, 4);
+  assert.deepEqual(
+    result.viewArgs,
+    Array(4).fill(`view @ai-ecoverse/mcpcat@${version} dist.tarball dist.integrity --json`)
+  );
+  assert.equal(result.curls, 1);
+  assert.deepEqual(result.urls, [url]);
+  assert.equal(result.sleeps.length, 3);
 });
 
-test('npm pack that never succeeds fails the step clearly after 90 attempts', () => {
-  const result = run(1000);
+test('a tarball URL that 404s is retried without asking npm again, then fetched and checksummed', () => {
+  const result = run({ curlFails: 3 });
+  assertPublished(result);
+  assert.equal(result.views, 1);
+  assert.equal(result.curls, 4);
+  assert.deepEqual(result.urls, Array(4).fill(url));
+  assert.equal(result.sleeps.length, 3);
+});
+
+test('npm view and the download share one budget of 90 attempts', () => {
+  const result = run({ viewFails: 40, curlFails: 49 });
+  assertPublished(result);
+  assert.equal(result.views, 41);
+  assert.equal(result.curls, 50);
+  assert.equal(result.sleeps.length, 89);
+});
+
+test('a download that does not match dist.integrity fails at once without SHA256SUMS', () => {
+  const result = run({ integrity: sri(Buffer.from('another tarball\n')) });
   assert.equal(result.status, 1);
-  assert.equal(result.packs, 90);
   assert.match(
     result.stdout,
-    /npm pack: @ai-ecoverse\/mcpcat@0\.24\.0 not fetchable after 90 attempts/
+    new RegExp(`integrity mismatch: npm says ${url.replaceAll('.', '\\.')} is sha512-`)
   );
-  assert.equal(existsSync(join(result.work, 'assets/SHA256SUMS')), false);
+  assert.equal(result.views, 1);
+  assert.equal(result.curls, 1);
+  assert.equal(result.sleeps.length, 0);
+  assert.deepEqual(result.files, []);
+});
+
+test('a version npm never shows fails the step clearly after 90 attempts', () => {
+  const result = run({ viewFails: 1000 });
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stdout,
+    /npm view: @ai-ecoverse\/mcpcat@0\.24\.0 has no dist\.tarball and dist\.integrity after 90 attempts/
+  );
+  assert.equal(result.views, 90);
+  assert.equal(result.curls, 0);
+  assert.deepEqual(result.files, []);
+});
+
+test('a tarball that keeps 404ing until the shared budget runs out fails the step clearly', () => {
+  const result = run({ viewFails: 40, curlFails: 50 });
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stdout,
+    /curl: https:\/\/registry\.npmjs\.org\/@ai-ecoverse\/mcpcat\/-\/mcpcat-0\.24\.0\.tgz not downloadable after 90 attempts/
+  );
+  assert.equal(result.views, 41);
+  assert.equal(result.curls, 50);
+  assert.deepEqual(result.files, []);
 });
