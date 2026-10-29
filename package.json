@@ -64,7 +64,7 @@
     "@ai-ecoverse/slicc-shared-web": "2.13.7",
     "@biomejs/biome": "2.6.2",
     "@earendil-works/pi-codemode": "1.4.0",
-    "@earendil-works/pi-mcp": "1.3.0",
+    "@earendil-works/pi-mcp": "1.4.0",
     "@types/node": "26.6.5",
     "esbuild": "0.28.2",
     "lefthook": "2.2.2",
