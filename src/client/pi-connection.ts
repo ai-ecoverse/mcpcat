@@ -13,6 +13,7 @@ import {
   StreamableHttpTransport,
   type Tool,
 } from '@earendil-works/pi-mcp';
+import { SettingsSignInError } from '../auth/placeholder-auth.ts';
 import type { VerboseLogger } from '../cli/verbose.ts';
 import type { Platform, SpawnResult } from '../platform/types.ts';
 import type {
@@ -223,6 +224,7 @@ export async function createPiConnection(options: PiConnectionOptions): Promise<
       },
     };
   } catch (err) {
+    if (err instanceof SettingsSignInError) throw err;
     const msg = (err as Error).message ?? '';
     if (msg.includes('401') || msg.includes('403') || msg.includes('Unauthorized')) {
       throw new McpAuthError(401, options.url ?? options.command ?? '');
