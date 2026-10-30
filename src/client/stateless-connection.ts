@@ -270,6 +270,7 @@ export interface StatelessConnectionOptions {
   signal?: AbortSignal;
   verbose?: VerboseLogger;
   authProvider?: AuthProvider;
+  authAdvice?: string;
   transportRefusals?: boolean;
   redact?: (text: string) => string;
 }
@@ -403,9 +404,12 @@ async function recoverAuth(
   url: string,
   fetchImpl: typeof globalThis.fetch,
   err: AuthRetryableError,
-  token: string | undefined
+  token: string | undefined,
+  authAdvice: string | undefined
 ): Promise<void> {
-  if (!authProvider?.onUnauthorized) throw new McpAuthError(err.response.status, url, err.reason);
+  if (!authProvider?.onUnauthorized) {
+    throw new McpAuthError(err.response.status, url, err.reason, authAdvice);
+  }
   try {
     await authProvider.onUnauthorized({
       response: err.response,
@@ -420,7 +424,7 @@ async function recoverAuth(
       authErr instanceof JerkInvalidUrlError
     )
       throw authErr;
-    const advice = authErr instanceof SettingsSignInError ? authErr.advice : undefined;
+    const advice = authErr instanceof SettingsSignInError ? authErr.advice : authAdvice;
     throw new McpAuthError(err.response.status, url, err.reason, advice);
   }
 }
@@ -554,6 +558,7 @@ export async function createStatelessConnection(
     signal: externalSignal,
     verbose,
     authProvider,
+    authAdvice,
     transportRefusals,
     redact = (text: string) => text,
   } = options;
@@ -591,7 +596,7 @@ export async function createStatelessConnection(
         throw new TransportRefusalError(403, reason ?? '');
       }
       if (authProvider) throw new AuthRetryableError(res, reason);
-      throw new McpAuthError(res.status, url, reason);
+      throw new McpAuthError(res.status, url, reason, authAdvice);
     }
     const text = await res.text();
     let rpc: { code: number; message: string; data?: unknown } | undefined;
@@ -661,7 +666,7 @@ export async function createStatelessConnection(
   }
 
   const handleAuthError = (err: AuthRetryableError, token: string | undefined) =>
-    recoverAuth(authProvider, url, fetchImpl, err, token);
+    recoverAuth(authProvider, url, fetchImpl, err, token, authAdvice);
 
   async function request(method: string, params: Record<string, unknown>): Promise<unknown> {
     const wireParams = modernRequestParams(params, protocolVersion, clientInfo);

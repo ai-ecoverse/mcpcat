@@ -1950,12 +1950,7 @@ function classifyError(err: unknown): { code: number; kind: string; msg: string 
     return { code: EXIT_USAGE, kind: 'error', msg: err.message };
   }
   if (err instanceof AuthStepUpError) {
-    const scopeHint = err.scope ? ` --scope ${err.scope}` : '';
-    return {
-      code: EXIT_AUTH,
-      kind: 'auth',
-      msg: `insufficient scope. Run: mcpcat login ${err.target ?? '<target>'}${scopeHint}`,
-    };
+    return { code: EXIT_AUTH, kind: 'auth', msg: err.report };
   }
   if (
     (err as Error).name === 'McpOAuthAuthorizationRequiredError' ||

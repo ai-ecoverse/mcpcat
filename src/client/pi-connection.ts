@@ -42,10 +42,13 @@ export interface PiConnectionOptions {
   signal?: AbortSignal;
   verbose?: VerboseLogger;
   authProvider?: AuthProvider;
+  authAdvice?: string;
   roots?: { uri: string; name?: string }[];
   existingProcess?: { proc: SpawnResult; pendingStdout: string };
   onElicit?: (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
 }
+
+const AUTH_REQUIRED = new Set(['McpAuthRequiredError', 'McpOAuthAuthorizationRequiredError']);
 
 function buildStderrHandler(options: PiConnectionOptions): ((chunk: string) => void) | undefined {
   if (!options.verbose?.enabled) return undefined;
@@ -226,8 +229,13 @@ export async function createPiConnection(options: PiConnectionOptions): Promise<
   } catch (err) {
     if (err instanceof SettingsSignInError) throw err;
     const msg = (err as Error).message ?? '';
-    if (msg.includes('401') || msg.includes('403') || msg.includes('Unauthorized')) {
-      throw new McpAuthError(401, options.url ?? options.command ?? '');
+    if (
+      msg.includes('401') ||
+      msg.includes('403') ||
+      msg.includes('Unauthorized') ||
+      (options.authAdvice && AUTH_REQUIRED.has((err as Error).name))
+    ) {
+      throw new McpAuthError(401, options.url ?? options.command!, undefined, options.authAdvice);
     }
     if (msg.includes('timeout') || msg.includes('Timeout') || msg.includes('ETIMEDOUT')) {
       throw new McpTimeoutError('connect', options.timeoutMs ?? 60_000);

@@ -12,7 +12,8 @@ import type { McpOAuthConfig } from '../config/types.ts';
 import type { Platform } from '../platform/types.ts';
 import { JerkSignInRequiredError, JerkTokenSource } from './jerk-token-source.ts';
 import { PiFileTokenSource } from './pi-store.ts';
-import type { TokenSource } from './token-source.ts';
+import { SETTINGS_SIGN_IN } from './placeholder-auth.ts';
+import { isKernel, type TokenSource } from './token-source.ts';
 
 const CIMD_URL = 'https://mcpcat.sliccy.ai/oauth/client.json';
 const CLIENT_NAME = 'mcpcat';
@@ -93,11 +94,15 @@ function cimdFn(redirectUrl: string): (
 export class AuthStepUpError extends Error {
   readonly scope: string | undefined;
   readonly target: string | undefined;
-  constructor(scope: string | undefined, target?: string) {
+  readonly report: string;
+  constructor(scope: string | undefined, target?: string, kernel = false) {
     super(scope ? `insufficient_scope: ${scope}` : 'insufficient_scope');
     this.name = 'AuthStepUpError';
     this.scope = scope;
     this.target = target;
+    this.report = kernel
+      ? `insufficient scope${scope ? ` (required: ${scope})` : ''}. ${SETTINGS_SIGN_IN}`
+      : `insufficient scope. Run: mcpcat login ${target ?? '<target>'}${scope ? ` --scope ${scope}` : ''}`;
   }
 }
 
@@ -243,7 +248,7 @@ function createPiAuthProvider(options: {
     async onUnauthorized(context: UnauthorizedContext): Promise<void> {
       const challenge = parseWwwAuthenticate(context.response.headers.get('www-authenticate'));
       if (challenge.error === 'insufficient_scope') {
-        throw new AuthStepUpError(challenge.scope, options.name);
+        throw new AuthStepUpError(challenge.scope, options.name, isKernel(platform));
       }
       await refresh(context.token);
       const state = await store.load();
