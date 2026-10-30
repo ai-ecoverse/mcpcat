@@ -1,6 +1,8 @@
 import type { Tool } from '@earendil-works/pi-mcp';
 import type { McpConnection } from '../client/connection.ts';
 import type { Platform } from '../platform/types.ts';
+import { redactDeep } from '../render/redact.ts';
+import type { Redactor } from '../render/result.ts';
 import { rankDocuments, type SearchDocument } from './search.ts';
 
 export interface DescribeTarget {
@@ -29,7 +31,8 @@ function toolDeclaration(tool: Tool): {
 export async function runDescribeTs(
   platform: Platform,
   targets: DescribeTarget[],
-  budget?: number
+  budget?: number,
+  redact: Redactor = (text) => text
 ): Promise<number> {
   const { renderDeclarations } = await import('@earendil-works/pi-codemode');
 
@@ -57,7 +60,9 @@ export async function runDescribeTs(
   }
 
   const output = renderDeclarations({
-    tools: allTools as unknown as Parameters<typeof renderDeclarations>[0]['tools'],
+    tools: redactDeep(allTools, redact) as unknown as Parameters<
+      typeof renderDeclarations
+    >[0]['tools'],
   });
   await platform.write(1, `${output}\n`);
   return 0;

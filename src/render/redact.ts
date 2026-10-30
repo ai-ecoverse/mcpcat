@@ -1,5 +1,28 @@
 import type { Platform } from '../platform/types.ts';
 import type { Redactor } from './result.ts';
+import { sanitizeJson, sanitizeTerminal } from './sanitize.ts';
+
+const ENCODING_DEPTH = 3;
+const NON_ASCII = /[\u007f-\uffff]/g;
+
+function jsonForms(text: string): string[] {
+  const json = JSON.stringify(text).slice(1, -1);
+  const ascii = json.replace(
+    NON_ASCII,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`
+  );
+  return [json, sanitizeJson(json), ascii].flatMap((form) => [form, form.replaceAll('/', '\\/')]);
+}
+
+function encodedForms(secret: string): string[] {
+  const forms = new Set([secret, sanitizeTerminal(secret)]);
+  let level = [secret];
+  for (let depth = 0; depth < ENCODING_DEPTH; depth++) {
+    level = [...new Set(level.flatMap(jsonForms))];
+    for (const form of level) forms.add(form);
+  }
+  return [...forms];
+}
 
 export function redactDeep(value: unknown, redact: Redactor): unknown {
   if (typeof value === 'string') return redact(value);
@@ -20,7 +43,7 @@ export function redactWrites(platform: Platform, redact: Redactor): Platform {
 }
 
 export function secretMasker(secrets: Iterable<string>, mask: string): (text: string) => string {
-  const ordered = [...new Set(secrets)].filter((s) => s.length > 0);
+  const ordered = [...new Set(secrets)].filter((s) => s.length > 0).flatMap(encodedForms);
   if (ordered.length === 0) return (text) => text;
   return (text) => {
     const hidden = new Uint8Array(text.length);

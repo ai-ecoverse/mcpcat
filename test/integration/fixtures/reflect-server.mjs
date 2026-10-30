@@ -41,6 +41,11 @@ const server = createServer((req, res) => {
     const quoted = bare
       ? `token ${(req.headers.authorization ?? '').slice(7)} key ${req.headers['x-key'] ?? ''}`
       : JSON.stringify(req.headers);
+    if (url.startsWith('/long500')) {
+      res.writeHead(500, { 'content-type': 'text/plain' });
+      res.end(`${'x'.repeat(501)} ${quoted}`);
+      return;
+    }
     if (url.startsWith('/500')) {
       res.writeHead(500, { 'content-type': 'text/plain' });
       res.end(`boom ${quoted}`);
@@ -103,6 +108,21 @@ const server = createServer((req, res) => {
         capabilities: { tools: {} },
         serverInfo: { name: 'reflect', version: '1.0.0' },
       });
+    } else if (method === 'tools/list' && url.includes('badlist')) {
+      res.writeHead(500, { 'content-type': 'text/plain' });
+      res.end(`boom ${quoted}`);
+      return;
+    } else if (method === 'tools/list' && url.includes('listed')) {
+      const token = (req.headers.authorization ?? '').slice(7);
+      const tool = {
+        name: `echo_${token}`,
+        description: `quoting ${quoted}`,
+        inputSchema: {
+          type: 'object',
+          properties: { value: { type: 'string', description: `about ${quoted}` } },
+        },
+      };
+      out = rpc(id, { tools: [tool] });
     } else if (method === 'tools/list') {
       out = rpc(id, { tools: TOOLS });
     } else if (method === 'tools/call' && params?.name === 'headers') {
