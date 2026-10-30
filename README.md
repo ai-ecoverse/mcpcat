@@ -42,6 +42,8 @@ mcpcat serve --http 8808 ./scripts/jira.jsh
 
 The package ships an [Agent Skill](https://agentskills.io/specification) that teaches an agent mcpcat in one file: `dist/skills/mcpcat/SKILL.md`, built from [`src/skill/SKILL.txt`](src/skill/SKILL.txt) (the repo keeps no Markdown besides README.md and AGENTS.md). It covers targets, listing and calling tools, `mcp.json`, exit codes, and the secrets rule: `${NAME}` placeholders in single quotes, never a value in a command, a file or the conversation, and never a token in `mcp.json`. `mcpcat help --skill` prints the copy that matches the installed version. `package.json` declares it as a pi package skill (`"pi": { "skills": ["dist/skills"] }`). In seven, bios links it into `/usr/share/skills` for the catalog install.
 
+The default `mcp.json` is `~/.pi/agent/mcp.json`, or `$PI_CODING_AGENT_DIR/mcp.json` when that is set. In seven the agent reads only `/etc/slicc/agent/mcp.json`: `mcpcat` running as root uses that file (mode 0600), and a regular user adds servers for the agent in Settings › MCP servers.
+
 ## License
 
 Apache-2.0

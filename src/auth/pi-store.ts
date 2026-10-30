@@ -1,6 +1,6 @@
 import type { McpOAuthState } from '@earendil-works/pi-mcp/oauth';
 import { acquireLock } from '../config/lock.ts';
-import { userConfigDir } from '../config/paths.ts';
+import { AGENT_CONFIG_DIR, userConfigDir } from '../config/paths.ts';
 import type { Platform } from '../platform/types.ts';
 import type { TokenResult, TokenSource } from './token-source.ts';
 import { storeKey } from './token-source.ts';
@@ -123,7 +123,7 @@ export class PiFileTokenSource implements TokenSource {
     try {
       await fs.mkdir(this.dirPath, { mode: DIR_MODE });
     } catch {}
-    if (fs.chmod) {
+    if (fs.chmod && this.dirPath !== AGENT_CONFIG_DIR) {
       try {
         await fs.chmod(this.dirPath, DIR_MODE);
       } catch {}

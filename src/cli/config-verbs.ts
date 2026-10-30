@@ -9,7 +9,12 @@ import type {
   McpServerConfig,
   McpStdioServerConfig,
 } from '../config/types.ts';
-import { checkAgentWarnings, literalSecret, urlHasSecret } from '../config/warnings.ts';
+import {
+  checkAgentWarnings,
+  literalSecret,
+  noteAgentConfig,
+  urlHasSecret,
+} from '../config/warnings.ts';
 import type { Platform } from '../platform/types.ts';
 import { sanitizeTerminal } from '../render/sanitize.ts';
 import { parseServeFlags, runServe } from '../serve/runtime.ts';
@@ -226,6 +231,7 @@ export async function runAdd(platform: Platform, args: string[], probe?: ProbeFn
   }
 
   await platform.write(1, `${replaced ? 'replaced' : 'added'} ${name} in ${path}\n`);
+  await noteAgentConfig(platform, 'add', path);
 
   if (!flags.noProbe && probe) {
     const reason = await probe(name, config, platform);
@@ -383,6 +389,7 @@ export async function runEnable(
     }
     await platform.write(1, `${enable ? 'enabled' : 'disabled'} ${name} in ${path}\n`);
   }
+  await noteAgentConfig(platform, enable ? 'enable' : 'disable', path);
   return 0;
 }
 
@@ -426,6 +433,7 @@ export async function runExposure(platform: Platform, args: string[]): Promise<n
   }
   const what = toolGlob ? `${name} tool ${toolGlob}` : name;
   await platform.write(1, `set ${what} to ${mode} in ${path}\n`);
+  await noteAgentConfig(platform, 'exposure', path);
   return 0;
 }
 
@@ -481,6 +489,7 @@ export async function runImport(platform: Platform, args: string[]): Promise<num
     const { replaced } = await addServer(platform.fs, destPath, name, config);
     await platform.write(1, `${replaced ? 'replaced' : 'imported'} ${name}\n`);
   }
+  await noteAgentConfig(platform, 'import', destPath);
   return 0;
 }
 
@@ -553,6 +562,7 @@ export async function runBridge(
         `${replaced ? 'replaced' : 'added'} ${name} in ${path}\n` +
           'bridge does not survive a reload; runs in the foreground (start with &)\n'
       );
+      await noteAgentConfig(platform, 'add --bridge', path);
     };
 
     return runServe(platform, serveOptions, version);
@@ -590,6 +600,7 @@ export async function runBridge(
       `${replaced ? 'replaced' : 'added'} ${name} in ${path}\n` +
         'bridge does not survive a reload; runs in the foreground (start with &)\n'
     );
+    await noteAgentConfig(platform, 'add --bridge', path);
   };
 
   return runServe(platform, serveOptions, version);

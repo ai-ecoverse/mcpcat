@@ -47,7 +47,7 @@ export interface FsApi {
   writeFile(path: string, data: Uint8Array | string, options?: { mode?: number }): Promise<void>;
   mkdir(path: string, options?: { mode?: number }): Promise<void>;
   rename(from: string, to: string): Promise<void>;
-  stat(path: string): Promise<{ size: number; mtimeMs: number }>;
+  stat(path: string): Promise<{ size: number; mtimeMs: number; mode?: number }>;
   exists(path: string): Promise<boolean>;
   mkdirExclusive(path: string): Promise<void>;
   rmdir(path: string): Promise<void>;
@@ -58,6 +58,7 @@ export interface FsApi {
 
 export interface Platform {
   readonly kind: 'host' | 'kernel';
+  readonly uid?: number;
   fetch: typeof globalThis.fetch;
   spawn(options: SpawnOptions): Promise<SpawnResult>;
   listen?(options: ListenOptions): Promise<Listener>;
