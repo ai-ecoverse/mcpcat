@@ -2,7 +2,9 @@ import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { kernelAtLeast } from './helpers/kernel.mjs';
 import {
+  AGENT_DIR,
   assertNoValue,
   bootKernel,
   CONFIG,
@@ -219,6 +221,107 @@ describe('kernel: credentials go out as placeholders', () => {
       [`Bearer ${OAUTH}`]
     );
     assertNoValue(CREDENTIAL.value, out.stdout, out.stderr);
+  });
+});
+
+describe('kernel: a non-root user gets no placeholder', {
+  skip: !kernelAtLeast(74) && 'users need slicc-kernel >= 1.74.0',
+}, () => {
+  const AS_CONE = { user: 'cone' };
+  const NATIVE_TOOLS = "the agent already has this server's tools";
+  const PANEL_ROOT = 'a human can use the server from a panel terminal as root';
+  const NOT_SIGNED_IN = {
+    exit: 3,
+    stderr:
+      'jerk: mcp:bb: not signed in\n' +
+      'jerk: mcp:bb: sign-in happens in Settings › MCP servers, where it is sealed\n',
+  };
+  const REFUSED = { exit: 1, stderr: 'jerk: mcp:bb: refused\n' };
+  let upstream;
+  let exit;
+  let kernel;
+
+  before(async () => {
+    upstream = await gatedServer(CREDENTIAL);
+    exit = sealedExit(upstream.port, standInVault);
+    kernel = await bootKernel(exit.transport, SERVERS, { users: 'enforce' });
+    await kernel.users.add({ name: 'cone', umask: 0o022 });
+    await kernel.chmod(AGENT_DIR, 0o777);
+    await kernel.chmod(CONFIG, 0o644);
+  });
+
+  after(() => {
+    kernel?.terminate();
+    upstream?.close();
+  });
+
+  const reset = async (get) => {
+    await jerkAnswers(kernel, get, ALL);
+    await kernel.chmod('/etc/fake-jerk.json', 0o644);
+    await kernel.chmod('/tmp/fake-jerk.log', 0o666);
+    exit.offered.length = 0;
+    upstream.seen.length = 0;
+  };
+
+  for (const [why, answer] of [
+    ['says no record', NOT_SIGNED_IN],
+    ['refuses', REFUSED],
+  ]) {
+    for (const target of ['bb', 'modern']) {
+      it(`${target}: when jerk ${why}, a 401 exits 4 and says where the server can be used`, async () => {
+        await reset({ [`mcp:${target}`]: answer });
+        const { status, stdout, stderr } = await mcpcat(kernel, {}, AS_CONE)('info', target);
+        assert.equal(status, 4, stderr);
+        assert.ok(stderr.includes(NATIVE_TOOLS), stderr);
+        assert.ok(stderr.includes(PANEL_ROOT), stderr);
+        assert.ok(stderr.includes(SETTINGS), stderr);
+        assert.ok(!stderr.includes('mcpcat login'), stderr);
+        assert.equal(upstream.seen.length, 1);
+        assert.ok(upstream.seen.every((s) => s.authorization === undefined));
+        assert.ok((await jerkLog(kernel)).some((line) => line.startsWith(`mcp:${target} get`)));
+        assertNoValue(CREDENTIAL.value, stdout, stderr);
+      });
+    }
+  }
+
+  it('grep names the same places for a target it cannot reach', async () => {
+    await reset({ 'mcp:bb': NOT_SIGNED_IN });
+    const { stderr } = await mcpcat(kernel, {}, AS_CONE)('grep', 'whoami');
+    assert.ok(stderr.includes(NATIVE_TOOLS), stderr);
+    assert.ok(stderr.includes(PANEL_ROOT), stderr);
+  });
+
+  it('a public server still works with no placeholder', async () => {
+    await reset({});
+    const { status, stderr } = await mcpcat(kernel, {}, AS_CONE)('tools', 'open');
+    assert.equal(status, 0, stderr);
+  });
+
+  it('a placeholder from jerk goes out for a non-root user too', async () => {
+    await reset({ 'mcp:bb': { exit: 0, stdout: `${OAUTH}\n` } });
+    const { status, stderr } = await mcpcat(kernel, {}, AS_CONE)('tools', 'bb');
+    assert.equal(status, 0, stderr);
+    assert.deepEqual(
+      [...new Set(sent(exit.offered, 'https://bb.example.com'))],
+      [`Bearer ${OAUTH}`]
+    );
+  });
+
+  it('root sends the placeholder as before', async () => {
+    await reset({ 'mcp:bb': { exit: 0, stdout: `${OAUTH}\n` } });
+    const { status, stderr } = await mcpcat(kernel, {})('tools', 'bb');
+    assert.equal(status, 0, stderr);
+    assert.deepEqual(
+      [...new Set(sent(exit.offered, 'https://bb.example.com'))],
+      [`Bearer ${OAUTH}`]
+    );
+  });
+
+  it('root without a placeholder never gets the non-root message', async () => {
+    await reset({ 'mcp:bb': NOT_SIGNED_IN });
+    const { status, stderr } = await mcpcat(kernel, {})('info', 'bb');
+    assert.equal(status, 4, stderr);
+    assert.ok(!stderr.includes(NATIVE_TOOLS), stderr);
   });
 });
 

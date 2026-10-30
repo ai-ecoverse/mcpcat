@@ -17,8 +17,9 @@ export default async function main(ctx) {
     return 0;
   }
   if (args[1] === 'get' && state.get[args[0]]) {
-    const { exit, stdout } = state.get[args[0]];
+    const { exit, stdout, stderr } = state.get[args[0]];
     await ctx.write(1, enc.encode(stdout ?? ''));
+    await ctx.write(2, enc.encode(stderr ?? ''));
     return exit;
   }
   await ctx.write(2, enc.encode(`jerk: ${args[0]}: no sealed record\n`));

@@ -8,7 +8,7 @@ import type {
 } from '@earendil-works/pi-mcp';
 import { AuthStepUpError } from '../auth/auth-provider.ts';
 import { JerkInvalidUrlError, JerkTimeoutError } from '../auth/jerk-token-source.ts';
-import { SETTINGS_SIGN_IN, SettingsSignInError } from '../auth/placeholder-auth.ts';
+import { SettingsSignInError } from '../auth/placeholder-auth.ts';
 import type { VerboseLogger } from '../cli/verbose.ts';
 import type {
   CallToolOptions,
@@ -420,7 +420,7 @@ async function recoverAuth(
       authErr instanceof JerkInvalidUrlError
     )
       throw authErr;
-    const advice = authErr instanceof SettingsSignInError ? SETTINGS_SIGN_IN : undefined;
+    const advice = authErr instanceof SettingsSignInError ? authErr.advice : undefined;
     throw new McpAuthError(err.response.status, url, err.reason, advice);
   }
 }
