@@ -1,3 +1,4 @@
+import { usageError } from '../cli/exit-codes.ts';
 import type { FsApi } from '../platform/types.ts';
 
 const LOCK_STALE_MS = 10_000;
@@ -93,7 +94,9 @@ export async function acquireLock(fs: FsApi, configPath: string): Promise<() => 
       }
       break;
     } catch (err) {
-      if (!isEexist(err)) throw err;
+      if (!isEexist(err)) {
+        throw usageError(`could not write ${lockPath}: ${(err as Error).message}`);
+      }
       if (useFile) {
         await removeStaleLockFile(fs, lockPath);
       } else {

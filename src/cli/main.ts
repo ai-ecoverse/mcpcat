@@ -1617,6 +1617,10 @@ export async function run(platform: Platform, version: string, args: string[]): 
     if (upgrading) return await upgrade(platform, version, upgrading);
     return await runInner(platform, version, args);
   } catch (err) {
+    if (err instanceof McpcatError) {
+      await platform.write(2, sanitizeTerminal(`mcpcat: ${err.message}\n`));
+      return err.exitCode;
+    }
     if ((err as NodeJS.ErrnoException).code === 'EACCES') {
       await platform.write(2, `mcpcat: ${(err as Error).message}\n`);
       return EXIT_USAGE;
@@ -2269,7 +2273,7 @@ async function runClientVerb(
     });
     activeConn = conn;
   } catch (err) {
-    if (isSpawnNotFound(err)) {
+    if (resolved.command && isSpawnNotFound(err)) {
       await writeErrRedacted(
         platform,
         parsed.jsonOutput,

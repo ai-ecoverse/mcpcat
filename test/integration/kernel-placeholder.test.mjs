@@ -190,8 +190,10 @@ describe('kernel: credentials go out as placeholders', () => {
     await reset({ 'mcp:bb': { exit: 0, stdout: `${OAUTH}\n` } }, [
       { provider: 'mcp:bb', name: 'bb', source: 'host:laptop' },
     ]);
-    const { status } = await run('info', 'bb');
+    const { status, stderr } = await run('info', 'bb');
     assert.equal(status, 4);
+    assert.ok(stderr.includes(SETTINGS), stderr);
+    assert.ok(!stderr.includes('mcpcat login'), stderr);
     assert.ok(!(await jerkLog(kernel)).some((line) => line.includes(' get')));
   });
 
@@ -258,6 +260,8 @@ describe('kernel: a non-root user gets no placeholder', () => {
     await kernel.chmod('/tmp/fake-jerk.log', 0o666);
     exit.offered.length = 0;
     upstream.seen.length = 0;
+    upstream.status = 401;
+    upstream.headers = {};
   };
 
   for (const [why, answer] of [
@@ -279,6 +283,21 @@ describe('kernel: a non-root user gets no placeholder', () => {
         assertNoValue(CREDENTIAL.value, stdout, stderr);
       });
     }
+  }
+
+  for (const target of ['bb', 'modern']) {
+    it(`${target}: a 403 scope challenge still names the required scope`, async () => {
+      await reset({ [`mcp:${target}`]: NOT_SIGNED_IN });
+      upstream.status = 403;
+      upstream.headers = {
+        'www-authenticate': 'Bearer error="insufficient_scope", scope="admin"',
+      };
+      const { status, stderr } = await mcpcat(kernel, {}, AS_CONE)('info', target);
+      assert.equal(status, 4, stderr);
+      assert.match(stderr, /insufficient scope/);
+      assert.match(stderr, /--scope admin/);
+      assert.ok(!stderr.includes(NATIVE_TOOLS), stderr);
+    });
   }
 
   it('grep names the same places for a target it cannot reach', async () => {
@@ -314,11 +333,25 @@ describe('kernel: a non-root user gets no placeholder', () => {
     );
   });
 
-  it('root without a placeholder never gets the non-root message', async () => {
+  for (const target of ['bb', 'modern']) {
+    it(`${target}: root without a placeholder is sent to Settings, not to mcpcat login`, async () => {
+      await reset({ [`mcp:${target}`]: NOT_SIGNED_IN });
+      const { status, stderr } = await mcpcat(kernel, {})('info', target);
+      assert.equal(status, 4, stderr);
+      assert.ok(stderr.includes(SETTINGS), stderr);
+      assert.ok(!stderr.includes('mcpcat login'), stderr);
+      assert.ok(!stderr.includes(NATIVE_TOOLS), stderr);
+      assert.equal(upstream.seen.length, 1);
+    });
+  }
+
+  it('root: a 403 scope challenge still names the required scope', async () => {
     await reset({ 'mcp:bb': NOT_SIGNED_IN });
+    upstream.status = 403;
+    upstream.headers = { 'www-authenticate': 'Bearer error="insufficient_scope", scope="admin"' };
     const { status, stderr } = await mcpcat(kernel, {})('info', 'bb');
     assert.equal(status, 4, stderr);
-    assert.ok(!stderr.includes(NATIVE_TOOLS), stderr);
+    assert.match(stderr, /--scope admin/);
   });
 });
 
