@@ -1404,7 +1404,8 @@ async function runWebMcpServe(
       version,
       resolvedBearer,
       generatedBearer,
-      notifier
+      notifier,
+      holder
     );
   } finally {
     notifier?.close();
@@ -1519,6 +1520,12 @@ function emptyToolsHint(
   if (isLate(polyfill.holder)) {
     return 'the page may check for WebMCP only when it loads, before the polyfill was injected; reload the tab, or restart with --webmcp-reload (it reloads the tab)';
   }
+  if (status?.refused) {
+    const head = unavailable
+      ? 'WebMCP is unavailable on this page'
+      : 'the page shows no WebMCP tools';
+    return `${head} and the WebMCP polyfill is not running: the guard refused it (${status.error}), and retrying won't help`;
+  }
   if (!unavailable) return undefined;
   if (status?.error) {
     return `WebMCP is unavailable on this page and the WebMCP polyfill is not running (${status.error})`;
@@ -1533,7 +1540,8 @@ async function serveWebMcpHandler(
   version: string,
   resolvedBearer: string | undefined,
   generatedBearer: boolean,
-  notifier: Notifier | undefined
+  notifier: Notifier | undefined,
+  holder: Holder | undefined
 ): Promise<number> {
   const probe = await handler.getRpcTools();
   if (probe === null) {
@@ -1543,7 +1551,7 @@ async function serveWebMcpHandler(
     );
     return 3;
   }
-  if (probe.hint) {
+  if (probe.hint && !holder?.status().refused) {
     await platform.write(2, sanitizeTerminal(`mcpcat serve --webmcp: ${probe.hint}\n`));
   }
 

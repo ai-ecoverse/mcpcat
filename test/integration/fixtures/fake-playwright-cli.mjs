@@ -186,7 +186,9 @@ if (command === 'dialog-hold') {
   record({ command, tab, reload });
   const mode = process.env.FAKE_PWCLI_HOLDER || 'native';
   if (mode === 'fail') {
-    process.stderr.write('webmcp-polyfill: cannot attach\n');
+    process.stderr.write(
+      `${process.env.FAKE_PWCLI_HOLDER_STDERR || 'webmcp-polyfill: cannot attach'}\n`
+    );
     process.exit(2);
   }
   const emit = (event) => process.stdout.write(`${JSON.stringify({ tab, ...event })}\n`);
@@ -204,7 +206,9 @@ if (command === 'dialog-hold') {
   }
   if (process.env.FAKE_PWCLI_HOLDER_EXIT_FIRST && holderRuns() === 1) {
     setTimeout(() => {
-      process.stderr.write('webmcp-polyfill: target closed, changed or was refused by the guard\n');
+      process.stderr.write(
+        `${process.env.FAKE_PWCLI_HOLDER_STDERR || 'webmcp-polyfill: target closed, changed or was refused by the guard'}\n`
+      );
       stop(1);
     }, Number(process.env.FAKE_PWCLI_HOLDER_EXIT_FIRST));
   }

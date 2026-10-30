@@ -102,13 +102,13 @@ async function dispatch(
 async function toolCall(
   id: RpcId,
   params: unknown,
-  { tools, hidden }: ToolListing,
+  { tools, hidden, hint }: ToolListing,
   call: (name: string, args: unknown) => Promise<ToolRunResult>
 ): Promise<RpcOutcome> {
   const name = params && typeof params === 'object' ? readString(params, 'name') : undefined;
   if (!name) return rpcError(id, -32602, 'tools/call requires a name');
   if (!tools.some((tool) => tool.name === name)) {
-    const why = hidden && Object.hasOwn(hidden, name) ? hidden[name] : undefined;
+    const why = hidden && Object.hasOwn(hidden, name) ? hidden[name] : hint;
     return rpcError(id, -32602, why ? `Unknown tool: ${name}: ${why}` : `Unknown tool: ${name}`);
   }
   const args =
