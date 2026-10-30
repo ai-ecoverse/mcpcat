@@ -1,5 +1,6 @@
 import type { AuthProvider } from '@earendil-works/pi-mcp';
 import { AuthStepUpError } from '../auth/auth-provider.ts';
+import { kernelAuthAdvice } from '../auth/placeholder-auth.ts';
 import type { VerboseLogger } from '../cli/verbose.ts';
 import type { Platform } from '../platform/types.ts';
 import type { McpConnection } from './connection.ts';
@@ -32,6 +33,7 @@ export interface ConnectOptions {
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: protocol negotiation requires many branches
 export async function connect(platform: Platform, options: ConnectOptions): Promise<McpConnection> {
+  const authAdvice = kernelAuthAdvice(platform, options.headers);
   const shared = {
     version: options.version,
     timeoutMs: options.timeoutMs,
@@ -39,6 +41,7 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
     verbose: options.verbose,
     onElicit: options.onElicit,
     platform,
+    authAdvice,
   };
 
   if (options.command) {
@@ -103,6 +106,7 @@ export async function connect(platform: Platform, options: ConnectOptions): Prom
       signal: options.signal,
       verbose: options.verbose,
       authProvider: options.authProvider,
+      authAdvice,
       transportRefusals: platform.kind === 'kernel',
       redact: options.redact,
     });

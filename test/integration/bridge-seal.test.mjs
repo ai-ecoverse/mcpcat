@@ -548,7 +548,8 @@ describe("kernel: an upstream server's 403 Forbidden exits 4", () => {
       stderr: 'pipe',
     });
     assert.equal(status, 4, `expected exit 4, got ${status}; stderr: ${stderr}`);
-    assert.ok(stderr.includes(`mcpcat login ${url}`), `stderr: ${stderr}`);
+    assert.ok(stderr.includes('Sign in under Settings › MCP servers'), `stderr: ${stderr}`);
+    assert.ok(!stderr.includes('mcpcat login'), `stderr: ${stderr}`);
     assert.ok(!stderr.includes('reach the host via'), `stderr: ${stderr}`);
   });
 });

@@ -66,18 +66,21 @@ export class PiFileTokenSource implements TokenSource {
   async load(name: string, serverUrl: string): Promise<McpOAuthState | undefined> {
     const key = storeKey(name, serverUrl);
     const legacy = legacyKey(serverUrl);
+    await this.ensureDir();
+    const states = parseStates(await this.readRaw());
+    if (states[key] || !states[legacy]) return states[key];
+    await this.migrate(key, legacy).catch(() => {});
+    return states[legacy];
+  }
+
+  private async migrate(key: string, legacy: string): Promise<void> {
     const release = await this.acquireLock();
     try {
-      const raw = await this.readRaw();
-      const states = parseStates(raw);
-      if (states[key]) return states[key];
-      if (states[legacy]) {
-        states[key] = states[legacy];
-        delete states[legacy];
-        await this.writeStates(states);
-        return states[key];
-      }
-      return undefined;
+      const states = parseStates(await this.readRaw());
+      if (!states[legacy]) return;
+      states[key] ??= states[legacy];
+      delete states[legacy];
+      await this.writeStates(states);
     } finally {
       await release();
     }
@@ -111,6 +114,11 @@ export class PiFileTokenSource implements TokenSource {
     } finally {
       await release();
     }
+  }
+
+  async ensureWritable(): Promise<void> {
+    const release = await this.acquireLock();
+    await release();
   }
 
   private async acquireLock(): Promise<() => Promise<void>> {

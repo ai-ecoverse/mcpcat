@@ -15,7 +15,8 @@ import { isKernel } from './token-source.ts';
 
 const PLACEHOLDER = /^fnox_proxy_[0-9a-f]{24}$/;
 
-const SETTINGS_SIGN_IN = 'Sign in under Settings › MCP servers.';
+export const SETTINGS_SIGN_IN = 'Sign in under Settings › MCP servers.';
+const HEADER_REJECTED = 'The server rejected the explicit Authorization header.';
 const NO_PLACEHOLDER = `jerk gave this user no placeholder. With no sign-in yet: ${SETTINGS_SIGN_IN} After a sign-in, the agent already has this server's tools, because a Settings sign-in gives it the server as native tools, and a human can use the server from a panel terminal as root.`;
 
 export class SettingsSignInError extends McpcatError {
@@ -25,6 +26,18 @@ export class SettingsSignInError extends McpcatError {
     this.name = 'SettingsSignInError';
     this.advice = advice;
   }
+}
+
+function hasAuthorization(headers: Record<string, string> | undefined): boolean {
+  return Object.keys(headers ?? {}).some((k) => k.toLowerCase() === 'authorization');
+}
+
+export function kernelAuthAdvice(
+  platform: Platform,
+  headers: Record<string, string> | undefined
+): string | undefined {
+  if (!isKernel(platform)) return undefined;
+  return hasAuthorization(headers) ? HEADER_REJECTED : SETTINGS_SIGN_IN;
 }
 
 async function jerkIdFor(
@@ -67,7 +80,7 @@ export async function placeholderAuthProvider<Inner extends AuthProvider | undef
   const { platform, name, url, headers, inner, onCredentialObtained } = options;
   const fallback = inner as Inner;
   if (!isKernel(platform) || !url) return fallback;
-  if (Object.keys(headers ?? {}).some((k) => k.toLowerCase() === 'authorization')) return fallback;
+  if (hasAuthorization(headers)) return fallback;
   const id = await jerkIdFor(platform, name, url);
   const timeoutMs = options.timeoutMs ?? JERK_TIMEOUT_MS;
   let noPlaceholder = false;
@@ -83,7 +96,7 @@ export async function placeholderAuthProvider<Inner extends AuthProvider | undef
       if (context.response.status === 401 && noPlaceholder && !context.token) {
         throw new SettingsSignInError(
           context.response.status,
-          platform.uid ? NO_PLACEHOLDER : SETTINGS_SIGN_IN
+          platform.uid && id ? NO_PLACEHOLDER : SETTINGS_SIGN_IN
         );
       }
       if (!inner?.onUnauthorized || (context.token && PLACEHOLDER.test(context.token))) {
