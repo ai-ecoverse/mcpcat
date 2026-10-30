@@ -13,4 +13,5 @@ export type McpServerConfig = {
 
 export interface ConfigSource {
   get(name: string): Promise<McpServerConfig | undefined>;
+  explainMissing(name: string): Promise<string>;
 }

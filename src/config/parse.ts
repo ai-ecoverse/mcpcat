@@ -199,6 +199,10 @@ export function canonical(name: string): string {
   return name.replace(/-/g, '_');
 }
 
+export function lookupKey(name: string): string {
+  return name.replace(/[-_]/g, '').toLowerCase();
+}
+
 export interface ParsedMcpFile {
   servers: Array<{ name: string; config: McpServerConfig }>;
   overrides: Array<{ name: string; raw: Record<string, unknown> }>;

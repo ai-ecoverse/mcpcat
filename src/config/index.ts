@@ -1,5 +1,7 @@
 import type { Platform } from '../platform/types.ts';
+import { type LegacyHint, legacyPathFor } from './legacy.ts';
 import { loadConfig } from './merge.ts';
+import { lookupKey } from './parse.ts';
 import { projectConfigPath, userConfigPath } from './paths.ts';
 import type { ConfigSource, McpServerConfig as FlatConfig } from './source.ts';
 import type { LoadedConfig, McpServerEntry } from './types.ts';
@@ -7,9 +9,11 @@ import type { LoadedConfig, McpServerEntry } from './types.ts';
 export class MergedConfigSource implements ConfigSource {
   private readonly entries: Map<string, McpServerEntry>;
   readonly config: LoadedConfig;
+  private readonly legacy?: LegacyHint;
 
-  constructor(config: LoadedConfig) {
+  constructor(config: LoadedConfig, legacy?: LegacyHint) {
     this.config = config;
+    this.legacy = legacy;
     this.entries = new Map();
     for (const entry of config.servers) {
       this.entries.set(entry.name, entry);
@@ -17,13 +21,18 @@ export class MergedConfigSource implements ConfigSource {
   }
 
   async get(name: string): Promise<FlatConfig | undefined> {
-    const normalizedName = name.replace(/[-_]/g, '').toLowerCase();
+    const normalizedName = lookupKey(name);
     for (const [key, entry] of this.entries) {
-      if (key.replace(/[-_]/g, '').toLowerCase() === normalizedName) {
+      if (lookupKey(key) === normalizedName) {
         return entry.config as unknown as FlatConfig;
       }
     }
     return undefined;
+  }
+
+  async explainMissing(name: string): Promise<string> {
+    const path = this.legacy && (await legacyPathFor(this.legacy, name));
+    return path ? `not found in mcp.json; found in ${path}` : 'not found in mcp.json';
   }
 
   entry(name: string): McpServerEntry | undefined {
@@ -36,7 +45,7 @@ export class MergedConfigSource implements ConfigSource {
 
   static async load(
     platform: Platform,
-    options?: { trustProject?: boolean; configFile?: string }
+    options?: { trustProject?: boolean; configFile?: string; quiet?: boolean }
   ): Promise<MergedConfigSource> {
     const userPath = options?.configFile ?? userConfigPath(platform);
     const projectPath = options?.configFile ? undefined : projectConfigPath(platform);
@@ -46,6 +55,7 @@ export class MergedConfigSource implements ConfigSource {
       trustProject: options?.trustProject ?? false,
       fs: platform.fs,
     });
-    return new MergedConfigSource(config);
+    const legacy = options?.configFile ? undefined : { platform, quiet: options?.quiet };
+    return new MergedConfigSource(config, legacy);
   }
 }

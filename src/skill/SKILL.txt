@@ -111,3 +111,4 @@ mcpcat serve --help
 - Host servers on the user's machine are `http://host.slicc.internal:<port>`, through a linked slicc CLI.
 - Stdio servers must be kernel commands; `npx` needs the optional Node.js package.
 - The agent's own MCP tools come from `/etc/slicc/agent/mcp.json`. As root, `mcpcat add` writes that file; as a regular user, add servers in Settings › MCP servers.
+- If a root `mcpcat` hints that `/root/.pi/agent/mcp.json` holds servers the agent doesn't read, run `mcpcat import /root/.pi/agent/mcp.json` and sign in again in Settings › MCP servers.

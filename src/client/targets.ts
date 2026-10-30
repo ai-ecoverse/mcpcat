@@ -94,7 +94,9 @@ export async function resolveTarget(
     return configToTarget(entry);
   }
 
-  throw new Error(`unknown target '${target}': not a URL and not found in mcp.json`);
+  throw new Error(
+    `unknown target '${target}': not a URL and ${await config.explainMissing(target)}`
+  );
 }
 
 function configToTarget(entry: McpServerConfig): ResolvedTarget {
