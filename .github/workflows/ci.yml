@@ -84,7 +84,7 @@ jobs:
       TAG: v${{ needs.released.outputs.version }}
       GH_TOKEN: ${{ github.token }}
       # renovate: datasource=docker depName=alpine
-      ALPINE_IMAGE: alpine:3.24.2
+      ALPINE_IMAGE: alpine:3.24.3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
