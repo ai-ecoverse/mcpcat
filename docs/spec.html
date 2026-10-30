@@ -378,7 +378,7 @@ jq -n '{q:"cimd"}' | mcpcat call docs search -d @-</code></pre>
   <tr><th>Code</th><th>Meaning</th></tr>
   <tr><td>0</td><td>Success.</td></tr>
   <tr><td>1</td><td>The tool ran and reported <code>isError</code>; <code>grep</code> found nothing; <code>list</code> found a problem.</td></tr>
-  <tr><td>2</td><td>Usage: bad flags, unknown tool, schema validation failed, invalid config.</td></tr>
+  <tr><td>2</td><td>Usage: bad flags, unknown tool, schema validation failed, invalid config, or a config directory mcpcat cannot write (the message names the path).</td></tr>
   <tr><td>3</td><td>Connection, transport or protocol failure (DNS, refused, TLS, CORS in seven, stdio server exited, no common protocol version).</td></tr>
   <tr><td>4</td><td>Authentication required or failed (401/403, refresh failed, <code>insufficient_scope</code>). The message names the <code>mcpcat login</code> to run, or Settings › MCP servers for a 401 in the kernel.</td></tr>
   <tr><td>5</td><td>JSON-RPC error from the server (method not found, invalid params, internal error).</td></tr>

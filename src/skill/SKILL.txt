@@ -100,7 +100,7 @@ mcpcat serve --help
 |---|---|
 | 0 | Success |
 | 1 | The tool reported an error (`isError`), or `grep` found nothing |
-| 2 | Usage: bad flags, unknown tool, invalid arguments or config |
+| 2 | Usage: bad flags, unknown tool, invalid arguments or config, or a config directory mcpcat can't write (the message names the path) |
 | 3 | Connection, transport or protocol failure |
 | 4 | Authentication required or failed: run the `mcpcat login` the message names, or in seven sign in under Settings › MCP servers |
 | 5 | JSON-RPC error from the server |
