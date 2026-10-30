@@ -65,6 +65,8 @@ mcpcat login docs
 
 `login` runs the OAuth sign-in for a server that needs one; `logout` removes its tokens. With slicc-jerk installed, tokens live in jerk: `mcp:<name>` for a server jerk lists from `mcp.json`, and `mcp:url:<url>` for a URL with jerk 0.19.0 or newer. Otherwise they live in pi's `~/.pi/agent/mcp-auth.json`.
 
+In seven, `login` signs in through a browser tab: it opens the sign-in with `playwright-cli` (needs `SLICC_CDP_URL`) and closes the tab once the browser reaches the redirect. With `--no-browser`, or without a browser, it prints the URL and reads the redirect URL you paste. The token goes to seven's vault through jerk, never to a file, so `login` exits 4 and opens nothing with a jerk that has no `import` for MCP tokens.
+
 ## Serve a browser tab's WebMCP tools
 
 ```bash

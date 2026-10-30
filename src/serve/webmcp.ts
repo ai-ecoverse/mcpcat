@@ -345,7 +345,7 @@ function timeoutMessage(
   return head;
 }
 
-async function runProcess(
+export async function runProcess(
   platform: Platform,
   argv: string[],
   stdin: string | undefined,
@@ -442,11 +442,12 @@ interface TabRow {
 
 type TabRows = { rows: TabRow[] } | { error: string; notFound?: boolean };
 
-async function listTabs(
+export async function listTabs(
   platform: Platform,
-  options: Pick<WebMcpOptions, 'playwrightCli' | 'cdp' | 'callTimeoutMs'>
+  options: Pick<WebMcpOptions, 'playwrightCli' | 'cdp' | 'callTimeoutMs'> & { fullUrls?: boolean }
 ): Promise<TabRows> {
   const argv = [options.playwrightCli, 'tab-list'];
+  if (options.fullUrls) argv.push('--full-urls');
   if (options.cdp) argv.push('--cdp', options.cdp);
   const result = await runProcess(
     platform,

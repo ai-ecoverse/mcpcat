@@ -1,4 +1,4 @@
-import type { McpOAuthState } from '@earendil-works/pi-mcp/oauth';
+import type { McpOAuthState, OAuthTokens } from '@earendil-works/pi-mcp/oauth';
 import type { Platform } from '../platform/types.ts';
 import type { TokenResult, TokenSource } from './token-source.ts';
 
@@ -134,9 +134,15 @@ export class JerkTimeoutError extends Error {
 export async function runJerk(
   platform: Platform,
   argv: string[],
-  timeoutMs: number
+  timeoutMs: number,
+  input?: string
 ): Promise<JerkRun> {
-  const proc = await platform.spawn({ argv, stdin: 'ignore' });
+  const proc = await platform.spawn({ argv, stdin: input === undefined ? 'ignore' : 'pipe' });
+  if (input !== undefined) {
+    const writer = proc.stdin.getWriter();
+    await writer.write(new TextEncoder().encode(input)).catch(() => undefined);
+    await writer.close().catch(() => undefined);
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<'timeout'>((resolve) => {
     timer = setTimeout(() => resolve('timeout'), timeoutMs);
@@ -183,6 +189,38 @@ export class JerkInvalidUrlError extends Error {
 
 export function jerkMessage(stderr: string): string {
   return stderr.trim().replace(/^jerk:\s*/, '') || 'jerk refused the URL';
+}
+
+export interface JerkGrant {
+  serverUrl: string;
+  response: OAuthTokens;
+  oauth: { tokenUrl: string; clientId: string; scope?: string; resource?: string };
+}
+
+export async function jerkCanImport(
+  platform: Platform,
+  id: string,
+  timeoutMs: number = JERK_TIMEOUT_MS
+): Promise<boolean> {
+  try {
+    return (await runJerk(platform, ['jerk', id, 'import', '--check'], timeoutMs)).status === 0;
+  } catch {
+    return false;
+  }
+}
+
+export async function jerkImport(
+  platform: Platform,
+  id: string,
+  grant: JerkGrant,
+  timeoutMs: number = JERK_TIMEOUT_MS
+): Promise<void> {
+  const argv = ['jerk', id, 'import'];
+  const result = await runJerk(platform, argv, timeoutMs, JSON.stringify(grant));
+  if (result.status === 0) return;
+  throw new Error(
+    result.stderr.trim() ? jerkMessage(result.stderr) : 'jerk did not keep the token'
+  );
 }
 
 export class JerkTokenSource implements TokenSource {

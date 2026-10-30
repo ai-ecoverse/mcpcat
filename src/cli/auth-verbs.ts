@@ -1,3 +1,4 @@
+import { OAuthError } from '@earendil-works/pi-mcp/oauth';
 import {
   JERK_EXIT_INVALID,
   JERK_EXIT_SIGN_IN,
@@ -5,14 +6,17 @@ import {
   JerkTimeoutError,
   JerkTokenSource,
   jerkAvailable,
+  jerkCanImport,
   jerkHasUrlIds,
   jerkId,
+  jerkImport,
   jerkKnows,
   jerkMessage,
   runJerk,
 } from '../auth/jerk-token-source.ts';
 import { SignInCancelledError, signIn } from '../auth/oauth.ts';
 import { PiFileTokenSource } from '../auth/pi-store.ts';
+import { grantFor, HeldState, tabPrompt } from '../auth/tab-sign-in.ts';
 import type { TokenSource } from '../auth/token-source.ts';
 import { isKernel } from '../auth/token-source.ts';
 import { MergedConfigSource } from '../config/index.ts';
@@ -143,6 +147,66 @@ async function jerkLogin(
   return result.status;
 }
 
+function scopeArg(args: string[]): string | undefined {
+  const at = args.indexOf('--scope');
+  return at === -1 ? undefined : args[at + 1];
+}
+
+function loginFailure(err: unknown): string {
+  const { message } = err as Error;
+  const status = err instanceof OAuthError ? /^HTTP \d+/.exec(message)?.[0] : undefined;
+  return `mcpcat: login failed: ${status ?? message}\n`;
+}
+
+async function reportLoginError(platform: Platform, err: unknown): Promise<number> {
+  if (err instanceof SignInCancelledError) {
+    await platform.write(2, 'mcpcat: sign-in cancelled\n');
+    return 1;
+  }
+  await platform.write(2, sanitizeTerminal(loginFailure(err)));
+  return 4;
+}
+
+async function kernelLogin(
+  platform: Platform,
+  target: string,
+  resolved: LoginTarget,
+  args: string[],
+  timeoutMs?: number
+): Promise<number> {
+  const id = jerkId(resolved.name, resolved.serverUrl);
+  if (!(await jerkCanImport(platform, id, timeoutMs))) {
+    await platform.write(
+      2,
+      "mcpcat: login is not available in seven with this jerk, which cannot keep an MCP token in seven's vault. Use the agent's MCP sign-in in Settings, or run mcpcat login on the host.\n"
+    );
+    return 4;
+  }
+  const held = new HeldState();
+  const prompt = tabPrompt(platform, {
+    cdp: args.includes('--no-browser') ? undefined : platform.env.SLICC_CDP_URL,
+    paste: (signal) => readPastedUrl(platform, signal),
+  });
+  try {
+    await signIn({
+      name: resolved.name,
+      serverUrl: resolved.serverUrl,
+      source: held,
+      oauth: resolved.oauth,
+      platform,
+      prompt,
+      scope: scopeArg(args),
+      listen: false,
+    });
+    const grant = await grantFor(platform, resolved, held, prompt.authorizationUrl());
+    await jerkImport(platform, id, grant, timeoutMs);
+    await platform.write(1, `Signed in to ${target}\n`);
+    return 0;
+  } catch (err) {
+    return reportLoginError(platform, err);
+  }
+}
+
 async function jerkLogout(
   platform: Platform,
   target: string,
@@ -168,14 +232,6 @@ export async function runLogin(
   args: string[],
   timeoutMs?: number
 ): Promise<number> {
-  if (isKernel(platform)) {
-    await platform.write(
-      2,
-      "mcpcat: login is not available in seven. Use the agent's MCP sign-in in Settings, or run mcpcat login on the host.\n"
-    );
-    return 4;
-  }
-
   const positional = positionals(args);
   if (positional.length === 0) {
     await platform.write(2, 'mcpcat: login requires a target\n');
@@ -190,6 +246,8 @@ export async function runLogin(
     await platform.write(2, `mcpcat: ${(err as Error).message}\n`);
     return 2;
   }
+  if (isKernel(platform)) return kernelLogin(platform, target, resolved, args, timeoutMs);
+
   const source = await createTokenSource(platform, resolved.name, timeoutMs);
 
   if (source instanceof JerkTokenSource) {
@@ -226,26 +284,7 @@ export async function runLogin(
               signal.addEventListener('abort', () => reject(new SignInCancelledError()));
             });
           }
-          const reader = platform.stdin.getReader();
-          const chunks: Uint8Array[] = [];
-          try {
-            while (true) {
-              const read = reader.read();
-              const result = await Promise.race([
-                read,
-                new Promise<never>((_, reject) => {
-                  signal.addEventListener('abort', () => reject(new SignInCancelledError()));
-                }),
-              ]);
-              if (result.done) break;
-              chunks.push(result.value);
-              const text = new TextDecoder().decode(concatUint8Arrays(chunks));
-              if (text.includes('\n')) return text.trim();
-            }
-          } finally {
-            reader.releaseLock();
-          }
-          return new TextDecoder().decode(concatUint8Arrays(chunks)).trim() || undefined;
+          return readPastedUrl(platform, signal);
         },
       },
     });
@@ -253,12 +292,7 @@ export async function runLogin(
     await platform.write(1, `Signed in to ${target}\n`);
     return 0;
   } catch (err) {
-    if (err instanceof SignInCancelledError) {
-      await platform.write(2, 'mcpcat: sign-in cancelled\n');
-      return 1;
-    }
-    await platform.write(2, sanitizeTerminal(`mcpcat: login failed: ${(err as Error).message}\n`));
-    return 4;
+    return reportLoginError(platform, err);
   }
 }
 
@@ -308,6 +342,29 @@ export async function runLogout(
     await platform.write(1, `No credentials stored for ${target}\n`);
   }
   return 0;
+}
+
+async function readPastedUrl(platform: Platform, signal: AbortSignal): Promise<string | undefined> {
+  const reader = platform.stdin.getReader();
+  const chunks: Uint8Array[] = [];
+  try {
+    while (true) {
+      const read = reader.read();
+      const result = await Promise.race([
+        read,
+        new Promise<never>((_, reject) => {
+          signal.addEventListener('abort', () => reject(new SignInCancelledError()));
+        }),
+      ]);
+      if (result.done) break;
+      chunks.push(result.value);
+      const text = new TextDecoder().decode(concatUint8Arrays(chunks));
+      if (text.includes('\n')) return text.trim();
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return new TextDecoder().decode(concatUint8Arrays(chunks)).trim() || undefined;
 }
 
 function concatUint8Arrays(arrays: Uint8Array[]): Uint8Array {

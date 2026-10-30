@@ -13,7 +13,7 @@ import {
 } from '@earendil-works/pi-mcp/oauth';
 import type { McpOAuthConfig } from '../config/types.ts';
 import type { Platform } from '../platform/types.ts';
-import type { TokenSource } from './token-source.ts';
+import type { OAuthStateAccess } from './token-source.ts';
 
 const CALLBACK_HOST = '127.0.0.1';
 const CALLBACK_PATH = '/callback';
@@ -21,6 +21,8 @@ const CIMD_URL = 'https://mcpcat.sliccy.ai/oauth/client.json';
 const CLIENT_NAME = 'mcpcat';
 const REQUEST_TIMEOUT_MS = 15_000;
 const _REFRESH_SKEW_MS = 30_000;
+const EPHEMERAL_PORTS = 16_384;
+const EPHEMERAL_BASE = 49_152;
 
 function timedFetch(fetchImpl: typeof globalThis.fetch): McpFetch {
   return (input, init) => {
@@ -56,6 +58,12 @@ function callbackSettings(oauth: McpOAuthConfig | undefined): {
     path: url.pathname,
     fixedRedirectUrl,
   };
+}
+
+function unboundRedirectUrl(): string {
+  const [random] = crypto.getRandomValues(new Uint16Array(1));
+  const port = EPHEMERAL_BASE + ((random as number) % EPHEMERAL_PORTS);
+  return `http://${CALLBACK_HOST}:${port}${CALLBACK_PATH}`;
 }
 
 function cimdForServer(
@@ -114,12 +122,14 @@ function createProvider(
   });
 }
 
+type SignInStore = Pick<OAuthStateAccess, 'load' | 'save'>;
+
 class SourceBackedStateStore implements McpOAuthStateStore {
-  private readonly source: TokenSource;
+  private readonly source: SignInStore;
   private readonly name: string;
   private readonly serverUrl: string;
 
-  constructor(source: TokenSource, name: string, serverUrl: string) {
+  constructor(source: SignInStore, name: string, serverUrl: string) {
     this.source = source;
     this.name = name;
     this.serverUrl = serverUrl;
@@ -171,7 +181,7 @@ function responseFromRedirectUrl(
 }
 
 async function waitForAuthorizationResponse(
-  callback: OAuthCallbackServer,
+  callback: OAuthCallbackServer | undefined,
   state: string,
   redirectUrl: URL,
   prompt: SignInPrompt,
@@ -179,16 +189,16 @@ async function waitForAuthorizationResponse(
 ): Promise<Pick<OAuthCallback, 'code' | 'iss'>> {
   const controller = new AbortController();
   const promptSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
-  const fromBrowser = callback.waitForCallback(state, redirectUrl.pathname);
+  const fromBrowser = callback?.waitForCallback(state, redirectUrl.pathname);
   const fromUser = prompt.promptForRedirectUrl(promptSignal).then((input) => {
     if (!input?.trim()) throw new SignInCancelledError();
     return responseFromRedirectUrl(input, state, redirectUrl);
   });
   try {
-    return await Promise.race([fromBrowser, fromUser]);
+    return await Promise.race(fromBrowser ? [fromBrowser, fromUser] : [fromUser]);
   } finally {
     controller.abort();
-    fromBrowser.catch(() => undefined);
+    fromBrowser?.catch(() => undefined);
     fromUser.catch(() => undefined);
   }
 }
@@ -201,12 +211,13 @@ function mergeScopes(...scopes: (string | undefined)[]): string | undefined {
 export async function signIn(options: {
   name: string;
   serverUrl: string;
-  source: TokenSource;
+  source: SignInStore;
   oauth: McpOAuthConfig | undefined;
   prompt: SignInPrompt;
   platform: Platform;
   scope?: string;
   stepUp?: boolean;
+  listen?: boolean;
   signal?: AbortSignal;
 }): Promise<void> {
   const { name, serverUrl, source, oauth, prompt, platform, signal } = options;
@@ -223,13 +234,20 @@ export async function signIn(options: {
     cbSettings.port ??
     (registered[0] ? Number(new URL(registered[0]).port) || undefined : undefined);
 
-  const callback = await OAuthCallbackServer.listen({
-    host: cbSettings.host,
-    redirectHost: cbSettings.redirectHost,
-    port: preferredPort ?? 0,
-    path: cbSettings.path,
-  });
-  const redirectUrl = cbSettings.fixedRedirectUrl ?? callback.redirectUrl;
+  const callback =
+    options.listen === false
+      ? undefined
+      : await OAuthCallbackServer.listen({
+          host: cbSettings.host,
+          redirectHost: cbSettings.redirectHost,
+          port: preferredPort ?? 0,
+          path: cbSettings.path,
+        });
+  const redirectUrl =
+    cbSettings.fixedRedirectUrl ??
+    callback?.redirectUrl ??
+    oauth?.callbackUrl ??
+    unboundRedirectUrl();
 
   try {
     if (stored) {
@@ -285,7 +303,7 @@ export async function signIn(options: {
     if (signal?.aborted) throw new SignInCancelledError();
     throw err;
   } finally {
-    await callback.close();
+    await callback?.close();
   }
 }
 
