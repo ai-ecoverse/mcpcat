@@ -2177,7 +2177,7 @@ async function runClientVerb(
     platform.write(2, sanitizeTerminal(`* progress:${pct}${msg}\n`)).catch(() => {});
   };
 
-  const config = await MergedConfigSource.load(platform);
+  const config = await MergedConfigSource.load(platform, { quiet: parsed.jsonOutput });
   const target = parsed.target === '__trailing__' ? '' : parsed.target!;
   let resolved;
   try {

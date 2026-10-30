@@ -1,8 +1,9 @@
 import { addServer, removeServer, setExposure, updateServer } from '../config/edit.ts';
 import { importFile } from '../config/import.ts';
 import { MergedConfigSource } from '../config/index.ts';
+import { hintLegacyConfig } from '../config/legacy.ts';
 import { validateServer } from '../config/parse.ts';
-import { projectConfigPath, userConfigPath } from '../config/paths.ts';
+import { AGENT_CONFIG_DIR, projectConfigPath, userConfigPath } from '../config/paths.ts';
 import type {
   LoadedConfig,
   McpHttpServerConfig,
@@ -341,6 +342,7 @@ export async function runList(platform: Platform, args: string[]): Promise<numbe
   } else {
     await printListText(platform, config);
   }
+  if (!configFile) await hintLegacyConfig(platform);
 
   let hasProblems = false;
   for (const p of config.problems) {
@@ -488,6 +490,13 @@ export async function runImport(platform: Platform, args: string[]): Promise<num
     }
     const { replaced } = await addServer(platform.fs, destPath, name, config);
     await platform.write(1, `${replaced ? 'replaced' : 'imported'} ${name}\n`);
+    if (destPath !== `${AGENT_CONFIG_DIR}/mcp.json`) continue;
+    for (const w of checkAgentWarnings(name, validation)) {
+      await platform.write(
+        2,
+        sanitizeTerminal(`mcpcat import: warning: ${name}: ${w.message}; ${w.advice}\n`)
+      );
+    }
   }
   await noteAgentConfig(platform, 'import', destPath);
   return 0;

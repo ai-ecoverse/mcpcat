@@ -1189,7 +1189,7 @@ async function resolveProxyConfig(
 ): Promise<ConnectOptions | string> {
   const config = await MergedConfigSource.load(platform);
   const entry = await config.get(target);
-  if (!entry) return `unknown target '${target}'`;
+  if (!entry) return `unknown target '${target}': ${await config.explainMissing(target)}`;
   if ('url' in entry && entry.url) {
     const expanded: Record<string, string> = {};
     for (const [k, v] of Object.entries(entry.headers ?? {})) {

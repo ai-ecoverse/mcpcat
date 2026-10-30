@@ -2,12 +2,22 @@ import type { Platform } from '../platform/types.ts';
 
 export const AGENT_CONFIG_DIR = '/etc/slicc/agent';
 
+function homeConfigDir(platform: Platform): string {
+  const home = platform.env.HOME ?? platform.env.USERPROFILE ?? '/';
+  return `${home}/.pi/agent`;
+}
+
 export function userConfigDir(platform: Platform): string {
   const piDir = platform.env.PI_CODING_AGENT_DIR;
   if (piDir) return piDir;
   if (platform.kind === 'kernel' && platform.uid === 0) return AGENT_CONFIG_DIR;
-  const home = platform.env.HOME ?? platform.env.USERPROFILE ?? '/';
-  return `${home}/.pi/agent`;
+  return homeConfigDir(platform);
+}
+
+export function legacyConfigDir(platform: Platform): string | undefined {
+  return userConfigDir(platform) === AGENT_CONFIG_DIR && !platform.env.PI_CODING_AGENT_DIR
+    ? homeConfigDir(platform)
+    : undefined;
 }
 
 export function userConfigPath(platform: Platform): string {
