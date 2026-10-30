@@ -50,6 +50,10 @@ describe('host: grep, describe --ts and code expand mcp.json headers', () => {
       long: entry(`${srv.base}/tok/long500`),
       unset: { url: `${srv.base}/tok/mcp?unset`, headers: { Authorization: '${MCP_NOT_SET}' } },
       hdr: { url: `${srv.base}/mcp?hdr` },
+      json: entry(`${srv.base}/mcp?json`),
+      jsonlisted: entry(`${srv.base}/listed-json`),
+      jsondown: entry(`${srv.base}/500-json`),
+      jsonbad: entry(`${srv.base}/badlist-json`),
     };
   });
 
@@ -165,6 +169,63 @@ describe('host: grep, describe --ts and code expand mcp.json headers', () => {
         assertHidden(r, token);
       }
     }
+  });
+
+  describe('a value with characters JSON escapes', () => {
+    const RETURNED = 'return await tools.mcp__json__headers({});';
+    const LOGGED = 'console.log(await tools.mcp__json__headers({}));';
+    const OBJECT = 'console.log({ h: await tools.mcp__json__headers({}) });';
+    const WRAPPED = 'return JSON.stringify({ h: await tools.mcp__json__headers({}) });';
+    const THROWN = 'throw new Error(await tools.mcp__json__headers({}));';
+    const FAILED = 'await tools.mcp__json__err({});';
+
+    const assertEncodingsHidden = ({ stdout, stderr }) => {
+      for (const text of [stdout, stderr]) {
+        assert.ok(!text.includes('token'), text);
+        assert.ok(!text.includes('value9'), text);
+      }
+    };
+
+    for (const [name, source] of Object.entries({
+      'a returned string': RETURNED,
+      'a logged string': LOGGED,
+      'a logged object': OBJECT,
+      'a string encoded again by the script': WRAPPED,
+      'a thrown error': THROWN,
+      'a failing tool': FAILED,
+    })) {
+      for (const extra of [[], ['--json']]) {
+        it(`code ${extra.join('')}: ${name}`, () => {
+          const r = run(['code', ...extra, '-e', source, '--server', 'json'], only(['json'], ODD));
+          assert.match(`${r.stdout}${r.stderr}`, /\[REDACTED\]/);
+          assertEncodingsHidden(r);
+        });
+      }
+    }
+
+    it('call: a failing tool in text and --json', () => {
+      for (const extra of [[], ['--json']]) {
+        const r = run([...extra, 'call', 'json', 'err'], only(['json'], ODD));
+        assert.notEqual(r.status, 0);
+        assert.match(r.stderr, /\[REDACTED\]/);
+        assertEncodingsHidden(r);
+      }
+    });
+
+    it('describe --ts: a tool listing', () => {
+      const r = run(['describe', 'jsonlisted', '--ts'], only(['jsonlisted'], ODD));
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /\[REDACTED\]/);
+      assertEncodingsHidden(r);
+    });
+
+    it('grep: an HTTP error and a listing failure', () => {
+      for (const server of ['jsondown', 'jsonbad']) {
+        const r = run(['grep', '.'], only([server], ODD));
+        assert.match(r.stderr, /\[REDACTED\]/);
+        assertEncodingsHidden(r);
+      }
+    });
   });
 
   it('code: console output quoting the header is hidden', () => {
