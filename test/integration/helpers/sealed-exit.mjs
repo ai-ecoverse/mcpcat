@@ -108,8 +108,8 @@ export function sealedExit(port, fill) {
   return { transport, offered };
 }
 
-export async function bootKernel(transport, servers) {
-  const kernel = await createNodeKernel({ network: { transport } });
+export async function bootKernel(transport, servers, options = {}) {
+  const kernel = await createNodeKernel({ network: { transport }, ...options });
   const install = async (name, command, module, data) => {
     await kernel.writeFile(`/node_modules/${name}/${module}`, data);
     await kernel.writeFile(

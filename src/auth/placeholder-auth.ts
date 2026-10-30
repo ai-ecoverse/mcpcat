@@ -15,12 +15,15 @@ import { isKernel } from './token-source.ts';
 
 const PLACEHOLDER = /^fnox_proxy_[0-9a-f]{24}$/;
 
-export const SETTINGS_SIGN_IN = 'Sign in under Settings › MCP servers.';
+const SETTINGS_SIGN_IN = 'Sign in under Settings › MCP servers.';
+const NO_PLACEHOLDER = `jerk gave this user no placeholder. With no sign-in yet: ${SETTINGS_SIGN_IN} After a sign-in, the agent already has this server's tools, because a Settings sign-in gives it the server as native tools, and a human can use the server from a panel terminal as root.`;
 
 export class SettingsSignInError extends McpcatError {
-  constructor(status: number) {
-    super(EXIT_AUTH, `HTTP ${status}: authentication required. ${SETTINGS_SIGN_IN}`);
+  readonly advice: string;
+  constructor(status: number, advice = SETTINGS_SIGN_IN) {
+    super(EXIT_AUTH, `HTTP ${status}: authentication required. ${advice}`);
     this.name = 'SettingsSignInError';
+    this.advice = advice;
   }
 }
 
@@ -68,14 +71,19 @@ export async function placeholderAuthProvider<Inner extends AuthProvider | undef
   const id = await jerkIdFor(platform, name, url);
   if (!id) return fallback;
   const timeoutMs = options.timeoutMs ?? JERK_TIMEOUT_MS;
+  let noPlaceholder = false;
   return {
     async token(): Promise<string | undefined> {
       const placeholder = await placeholderFrom(platform, id, timeoutMs);
+      noPlaceholder = !placeholder;
       if (!placeholder) return inner?.token();
       onCredentialObtained?.(placeholder);
       return placeholder;
     },
     async onUnauthorized(context: UnauthorizedContext): Promise<void> {
+      if (noPlaceholder && !context.token && platform.uid) {
+        throw new SettingsSignInError(context.response.status, NO_PLACEHOLDER);
+      }
       if (!inner?.onUnauthorized || (context.token && PLACEHOLDER.test(context.token))) {
         throw new SettingsSignInError(context.response.status);
       }
