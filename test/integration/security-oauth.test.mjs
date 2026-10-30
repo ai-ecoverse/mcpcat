@@ -136,3 +136,25 @@ for (const mode of ['bad-state', 'evil-redirect']) {
     });
   });
 }
+
+for (const [mode, shown] of [
+  ['token-500', 'HTTP 500'],
+  ['token-description', 'invalid_request'],
+  ['token-error', 'the token endpoint refused the sign-in'],
+]) {
+  describe(`security: a token endpoint failure (${mode})`, () => {
+    let as;
+    after(() => as?.child.kill('SIGTERM'));
+
+    it('prints no part of a body that echoes the request', async () => {
+      as = await startFixture('security-oauth-as.mjs', { ROW_AS_MODE: mode });
+      const home = scratchHome(mode);
+      const r = await login(`${as.base}/mcp`, homeEnv(home), { via: 'stdin' });
+      assert.equal(r.status, 4, r.err);
+      const tail = r.err.slice(r.err.indexOf('mcpcat: login failed'));
+      assert.equal(tail.trim(), `mcpcat: login failed: ${shown}`);
+      assert.ok(!r.err.includes('code_verifier'), r.err);
+      assert.ok(!/[?&\s]code=/.test(r.err), r.err);
+    });
+  });
+}
