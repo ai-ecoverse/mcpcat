@@ -69,20 +69,22 @@ export async function placeholderAuthProvider<Inner extends AuthProvider | undef
   if (!isKernel(platform) || !url) return fallback;
   if (Object.keys(headers ?? {}).some((k) => k.toLowerCase() === 'authorization')) return fallback;
   const id = await jerkIdFor(platform, name, url);
-  if (!id) return fallback;
   const timeoutMs = options.timeoutMs ?? JERK_TIMEOUT_MS;
   let noPlaceholder = false;
   return {
     async token(): Promise<string | undefined> {
-      const placeholder = await placeholderFrom(platform, id, timeoutMs);
+      const placeholder = id && (await placeholderFrom(platform, id, timeoutMs));
       noPlaceholder = !placeholder;
       if (!placeholder) return inner?.token();
       onCredentialObtained?.(placeholder);
       return placeholder;
     },
     async onUnauthorized(context: UnauthorizedContext): Promise<void> {
-      if (context.response.status === 401 && noPlaceholder && !context.token && platform.uid) {
-        throw new SettingsSignInError(context.response.status, NO_PLACEHOLDER);
+      if (context.response.status === 401 && noPlaceholder && !context.token) {
+        throw new SettingsSignInError(
+          context.response.status,
+          platform.uid ? NO_PLACEHOLDER : SETTINGS_SIGN_IN
+        );
       }
       if (!inner?.onUnauthorized || (context.token && PLACEHOLDER.test(context.token))) {
         throw new SettingsSignInError(context.response.status);
