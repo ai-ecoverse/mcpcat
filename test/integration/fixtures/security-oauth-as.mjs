@@ -186,6 +186,14 @@ const server = createServer((req, res) => {
       return;
     }
     if (p === '/token' && req.method === 'POST') {
+      if (MODE === 'token-500') {
+        res.writeHead(500, { 'content-type': 'text/plain' });
+        return res.end(`rejected ${body}`);
+      }
+      if (MODE === 'token-description') {
+        return json(res, 400, { error: 'invalid_request', error_description: `rejected ${body}` });
+      }
+      if (MODE === 'token-error') return json(res, 400, { error: `rejected ${body}` });
       const f = new URLSearchParams(body);
       if (f.get('grant_type') === 'authorization_code') {
         const c = codes.get(f.get('code'));

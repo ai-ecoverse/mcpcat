@@ -1,3 +1,4 @@
+import { OAuthError } from '@earendil-works/pi-mcp/oauth';
 import {
   JERK_EXIT_INVALID,
   JERK_EXIT_SIGN_IN,
@@ -163,6 +164,13 @@ async function jerkLogout(
   return 0;
 }
 
+export function loginFailure(err: unknown): string {
+  if (!(err instanceof OAuthError)) return (err as Error).message;
+  const status = /^HTTP \d+/.exec(err.message)?.[0];
+  if (status) return status;
+  return /^[a-z0-9_]{1,64}$/.test(err.code) ? err.code : 'the token endpoint refused the sign-in';
+}
+
 export async function runLogin(
   platform: Platform,
   args: string[],
@@ -257,7 +265,7 @@ export async function runLogin(
       await platform.write(2, 'mcpcat: sign-in cancelled\n');
       return 1;
     }
-    await platform.write(2, sanitizeTerminal(`mcpcat: login failed: ${(err as Error).message}\n`));
+    await platform.write(2, sanitizeTerminal(`mcpcat: login failed: ${loginFailure(err)}\n`));
     return 4;
   }
 }
