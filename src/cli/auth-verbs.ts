@@ -179,7 +179,7 @@ export async function runLogin(
   if (isKernel(platform)) {
     await platform.write(
       2,
-      "mcpcat: login is not available in seven. Use the agent's MCP sign-in in Settings, or run mcpcat login on the host.\n"
+      'mcpcat: login is not available in seven. Sign in under Settings › MCP servers.\n'
     );
     return 4;
   }
