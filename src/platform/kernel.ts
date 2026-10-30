@@ -45,7 +45,7 @@ interface KernelContext {
   fdStatus(fd: number): { type: string; tty: boolean; seekable: boolean };
   isatty(fd: number): boolean;
   fs: {
-    stat(path: string): Promise<{ size: number; mtimeMs: number }>;
+    stat(path: string): Promise<{ size: number; mtimeMs: number; mode?: number }>;
     lstat(path: string): Promise<{ size: number; mtimeMs: number }>;
     exists(path: string): Promise<boolean>;
     readdir(path: string): Promise<string[]>;
@@ -56,7 +56,7 @@ interface KernelContext {
     symlink(target: string, path: string): Promise<void>;
     readlink(path: string): Promise<string>;
     readFile(path: string): Promise<Uint8Array>;
-    writeFile(path: string, data: Uint8Array | string): Promise<void>;
+    writeFile(path: string, data: Uint8Array | string, options?: { mode?: number }): Promise<void>;
     chmod?(path: string, mode: number): Promise<void>;
   };
   fetch: typeof globalThis.fetch;
@@ -107,12 +107,14 @@ interface KernelContext {
     reset(signal: string | number): void;
   };
   resolve(path: string): string;
+  sync?: { cred?(): { euid: number } };
 }
 
 function kernelFs(ctx: KernelContext): FsApi {
   return {
     readFile: (path: string) => ctx.fs.readFile(path),
-    writeFile: (path: string, data: Uint8Array | string) => ctx.fs.writeFile(path, data),
+    writeFile: (path: string, data: Uint8Array | string, options?: { mode?: number }) =>
+      ctx.fs.writeFile(path, data, options),
     mkdir: (path: string) => ctx.fs.mkdir(path),
     rename: (from: string, to: string) => ctx.fs.rename(from, to),
     stat: (path: string) => ctx.fs.stat(path),
@@ -610,6 +612,7 @@ export function createKernelPlatform(
   const encoder = new TextEncoder();
   return {
     kind: 'kernel' as const,
+    uid: ctx.sync?.cred?.().euid,
     fetch: createKernelFetch(ctx) as typeof globalThis.fetch,
     spawn: (options: SpawnOptions) => kernelSpawn(ctx, options),
     listen: (options: ListenOptions) => kernelListen(ctx, options),

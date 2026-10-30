@@ -17,11 +17,19 @@ async function privateDir(fs: FsApi, dir: string, made: boolean): Promise<void> 
   }
 }
 
-async function privateFile(fs: FsApi, path: string, output: string): Promise<void> {
+async function keptMode(fs: FsApi, path: string): Promise<number> {
+  const mode = await fs.stat(path).then(
+    (s) => s.mode,
+    () => undefined
+  );
+  return mode === undefined ? FILE_MODE : mode & FILE_MODE;
+}
+
+async function privateFile(fs: FsApi, path: string, output: string, mode: number): Promise<void> {
   await fs.writeFile(path, output, { mode: FILE_MODE });
   if (!fs.chmod) return;
   try {
-    await fs.chmod(path, FILE_MODE);
+    await fs.chmod(path, mode);
   } catch {}
 }
 
@@ -67,7 +75,7 @@ async function editMcpServers(
     if (dir) await privateDir(fs, dir, made);
     const tmpPath = `${path}.tmp.${Date.now()}`;
     try {
-      await privateFile(fs, tmpPath, output);
+      await privateFile(fs, tmpPath, output, await keptMode(fs, path));
       await fs.rename(tmpPath, path);
     } catch (renameErr) {
       try {

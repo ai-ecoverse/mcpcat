@@ -125,9 +125,9 @@ const hostFs: FsApi = {
   async rename(from: string, to: string): Promise<void> {
     await rename(from, to);
   },
-  async stat(path: string): Promise<{ size: number; mtimeMs: number }> {
+  async stat(path: string): Promise<{ size: number; mtimeMs: number; mode: number }> {
     const s = await stat(path);
-    return { size: s.size, mtimeMs: s.mtimeMs };
+    return { size: s.size, mtimeMs: s.mtimeMs, mode: s.mode };
   },
   async exists(path: string): Promise<boolean> {
     try {

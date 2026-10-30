@@ -11,7 +11,7 @@ description: Call Model Context Protocol (MCP) servers from the shell with mcpca
 
 - A URL: `https://example.com/mcp`.
 - A stdio command: `stdio:<command> [args…]`, as one argument (`'stdio:my-server --flag'`).
-- A name from `mcp.json`, the same `~/.pi/agent/mcp.json` the agent reads.
+- A name from `mcp.json`: `~/.pi/agent/mcp.json`, shared with pi, or `/etc/slicc/agent/mcp.json` as root in seven.
 
 ## Discover and call
 
@@ -63,7 +63,7 @@ mcpcat import ~/.cursor/mcp.json
 mcpcat login docs
 ```
 
-`login` runs the OAuth sign-in for a server that needs one; `logout` removes its tokens. With slicc-jerk installed, tokens live in jerk: `mcp:<name>` for a server jerk lists from `mcp.json`, and `mcp:url:<url>` for a URL with jerk 0.19.0 or newer. Otherwise they live in pi's `~/.pi/agent/mcp-auth.json`.
+`login` runs the OAuth sign-in for a server that needs one; `logout` removes its tokens. With slicc-jerk installed, tokens live in jerk: `mcp:<name>` for a server jerk lists from `mcp.json`, and `mcp:url:<url>` for a URL with jerk 0.19.0 or newer. Otherwise they live in `mcp-auth.json`, next to `mcp.json`.
 
 ## Serve a browser tab's WebMCP tools
 
@@ -110,4 +110,4 @@ mcpcat serve --help
 
 - Host servers on the user's machine are `http://host.slicc.internal:<port>`, through a linked slicc CLI.
 - Stdio servers must be kernel commands; `npx` needs the optional Node.js package.
-- The agent's own MCP tools come from `mcp.json`; `mcpcat add` is how to add a server to it.
+- The agent's own MCP tools come from `/etc/slicc/agent/mcp.json`. As root, `mcpcat add` writes that file; as a regular user, add servers in Settings › MCP servers.

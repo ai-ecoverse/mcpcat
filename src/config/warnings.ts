@@ -1,3 +1,5 @@
+import type { Platform } from '../platform/types.ts';
+import { agentIgnoresConfig } from './paths.ts';
 import type { AgentWarning, McpServerConfig } from './types.ts';
 
 const SECRET_HEADER = /authorization|cookie|token|key|secret|password|session/i;
@@ -80,4 +82,16 @@ export function checkAgentWarnings(name: string, config: McpServerConfig): Agent
   }
 
   return warnings;
+}
+
+export async function noteAgentConfig(
+  platform: Platform,
+  verb: string,
+  path: string
+): Promise<void> {
+  if (!agentIgnoresConfig(platform, path)) return;
+  await platform.write(
+    2,
+    `mcpcat ${verb}: note: the agent doesn't read ${path}; add the server in Settings › MCP servers, or run mcpcat as root\n`
+  );
 }

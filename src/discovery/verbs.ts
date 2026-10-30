@@ -1,5 +1,6 @@
 import { addServer } from '../config/edit.ts';
 import { stateDir, userConfigPath } from '../config/paths.ts';
+import { noteAgentConfig } from '../config/warnings.ts';
 import type { Platform } from '../platform/types.ts';
 import { sanitizeTerminal } from '../render/sanitize.ts';
 import { deduplicateCandidates, extractCandidates, resetIdCounter } from './extract.ts';
@@ -175,6 +176,7 @@ export async function runAddCandidate(
   }
 
   await platform.write(1, `${replaced ? 'replaced' : 'added'} ${name} in ${path}\n`);
+  await noteAgentConfig(platform, 'add', path);
   return 0;
 }
 

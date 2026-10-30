@@ -1,14 +1,26 @@
 import type { Platform } from '../platform/types.ts';
 
+export const AGENT_CONFIG_DIR = '/etc/slicc/agent';
+
 export function userConfigDir(platform: Platform): string {
   const piDir = platform.env.PI_CODING_AGENT_DIR;
   if (piDir) return piDir;
+  if (platform.kind === 'kernel' && platform.uid === 0) return AGENT_CONFIG_DIR;
   const home = platform.env.HOME ?? platform.env.USERPROFILE ?? '/';
   return `${home}/.pi/agent`;
 }
 
 export function userConfigPath(platform: Platform): string {
   return `${userConfigDir(platform)}/mcp.json`;
+}
+
+export function agentIgnoresConfig(platform: Platform, path: string): boolean {
+  return (
+    platform.kind === 'kernel' &&
+    Boolean(platform.uid) &&
+    !platform.env.PI_CODING_AGENT_DIR &&
+    path === userConfigPath(platform)
+  );
 }
 
 export function projectConfigPath(platform: Platform): string {
