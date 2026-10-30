@@ -42,7 +42,6 @@ describe('kernel: a non-root user with an unwritable config directory', () => {
     await kernel.chmod(CONFIG, 0o644);
     await jerkAnswers(kernel, {}, listed('bb', 'open'));
     await kernel.chmod('/etc/fake-jerk.json', 0o644);
-    await kernel.chmod('/tmp/fake-jerk.log', 0o666);
     cone = mcpcat(kernel, {}, AS_CONE);
   });
 

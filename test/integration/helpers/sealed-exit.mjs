@@ -10,6 +10,7 @@ export const CONFIG = `${AGENT_DIR}/mcp.json`;
 export const SEALED = /fnox_proxy_[0-9a-f]{24}/;
 
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+const jerkEpochs = new WeakMap();
 const TOOL = { name: 'whoami', description: 'who', inputSchema: { type: 'object' } };
 
 function rpc(id, result) {
@@ -140,13 +141,16 @@ export async function bootKernel(transport, servers, options = {}) {
 }
 
 export async function jerkAnswers(kernel, get, list) {
+  jerkEpochs.set(kernel, (jerkEpochs.get(kernel) ?? 0) + 1);
   await kernel.writeFile('/etc/fake-jerk.json', JSON.stringify({ get, list }));
-  await kernel.writeFile('/tmp/fake-jerk.log', '');
 }
 
 export async function jerkLog(kernel) {
-  const bytes = await kernel.readFile('/tmp/fake-jerk.log').catch(() => new Uint8Array());
-  return new TextDecoder().decode(bytes).split('\n').filter(Boolean);
+  const { stdout } = await kernel.run(['jerk', '--log', String(jerkEpochs.get(kernel))], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  return stdout.split('\n').filter(Boolean);
 }
 
 export function listed(...names) {
@@ -158,7 +162,11 @@ export function mcpcat(kernel, env, options = {}) {
     kernel.run(['mcpcat', ...args], {
       stdout: 'pipe',
       stderr: 'pipe',
-      env: { PI_CODING_AGENT_DIR: AGENT_DIR, ...env },
+      env: {
+        PI_CODING_AGENT_DIR: AGENT_DIR,
+        FAKE_JERK_EPOCH: String(jerkEpochs.get(kernel)),
+        ...env,
+      },
       ...options,
     });
 }
