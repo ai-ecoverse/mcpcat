@@ -2,7 +2,6 @@ import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { kernelAtLeast } from './helpers/kernel.mjs';
 import {
   AGENT_DIR,
   assertNoValue,
@@ -224,9 +223,7 @@ describe('kernel: credentials go out as placeholders', () => {
   });
 });
 
-describe('kernel: a non-root user gets no placeholder', {
-  skip: !kernelAtLeast(74) && 'users need slicc-kernel >= 1.74.0',
-}, () => {
+describe('kernel: a non-root user gets no placeholder', () => {
   const AS_CONE = { user: 'cone' };
   const NATIVE_TOOLS = "the agent already has this server's tools";
   const PANEL_ROOT = 'a human can use the server from a panel terminal as root';
