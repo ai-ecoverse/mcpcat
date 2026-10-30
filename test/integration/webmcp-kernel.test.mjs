@@ -76,4 +76,23 @@ describe('kernel: serve --webmcp sees a JavaScript dialog through ctx.websocket'
       cdp.seen.some((m) => m.method === 'Target.attachToTarget' && m.params.targetId === 'TAB1')
     );
   });
+
+  it('a guard refusal of the polyfill holder is final and its reason reaches the client', async () => {
+    const refusal = 'Debugger.enable: slicc: refused: the guard doesn’t offer the Debugger domains';
+    const r = await kernel.run(
+      ['mcpcat', 'serve', '--webmcp', '--playwright-cli', 'kernel-pwcli'],
+      {
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: { FAKE_PWCLI_HOLDER_REFUSAL: refusal },
+        stdin: `${rpc('tools/list', {}, 1)}\n`,
+      }
+    );
+    assert.equal(r.status, 0, r.stderr);
+    const reply = JSON.parse(r.stdout.trim().split('\n')[0]);
+    assert.deepEqual(reply.result.tools, []);
+    assert.match(reply.result._meta['io.mcpcat/hint'], /the guard refused it \(Debugger\.enable/);
+    assert.equal(r.stderr.split('slicc: refused:').length - 1, 1, r.stderr);
+    assert.doesNotMatch(r.stderr, /restarting/);
+  });
 });

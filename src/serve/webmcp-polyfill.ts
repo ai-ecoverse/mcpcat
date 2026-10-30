@@ -25,6 +25,7 @@ export interface HolderStatus {
   native: boolean;
   loaderId?: string;
   error?: string;
+  refused?: boolean;
 }
 
 export interface ToolsChanged {
@@ -43,6 +44,12 @@ export interface Holder {
 }
 
 const LABEL = 'mcpcat serve --webmcp';
+const GUARD_REFUSAL_RE =
+  /^(?:(?:playwright-cli )?webmcp-polyfill: )?[A-Z][A-Za-z]*\.[a-z][A-Za-z]*: slicc: refused: \S/;
+
+export function isGuardRefusal(line: string): boolean {
+  return GUARD_REFUSAL_RE.test(line.trim());
+}
 
 export function compareVersions(a: string, b: string): number {
   const pa = a.split('.').map(Number);
@@ -112,12 +119,15 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
   let settle!: () => void;
   let waitedOut = false;
   let exited: Promise<unknown> = Promise.resolve();
+  let refusal: string | undefined;
 
   const report = (line: string) => {
     void Promise.resolve(options.report(sanitizeTerminal(`${LABEL}: ${line}`) + '\n')).catch(
       () => {}
     );
   };
+
+  const relay = (text: string) => report(`playwright-cli webmcp-polyfill: ${text}`);
 
   const onEvent = (line: string) => {
     const event = parseEvent(line);
@@ -128,6 +138,8 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
       state.loaderId = loaderOf(event);
       state.error = undefined;
       readyAt = Date.now();
+      if (refusal) relay(refusal);
+      refusal = undefined;
       if (state.mode === 'native' && !options.watch) {
         state.native = true;
         void closeInput();
@@ -184,7 +196,8 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
       const text = line.trim();
       if (!text) return;
       lastError = text;
-      report(`playwright-cli webmcp-polyfill: ${text}`);
+      if (readyAt === undefined && isGuardRefusal(text)) refusal ??= text;
+      else relay(text);
     });
     exited = Promise.all([out, err, child.wait()]).then(([, , result]) => {
       proc = undefined;
@@ -198,6 +211,14 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
       state.late = false;
       state.mode = undefined;
       state.loaderId = undefined;
+      if (refusal) {
+        state.error = refusal;
+        state.refused = true;
+        report(
+          `the guard refused the WebMCP polyfill holder for tab ${options.tab} (${refusal}); retrying won't help, so mcpcat won't restart it and serves without the polyfill`
+        );
+        return;
+      }
       state.error = lastError ?? `playwright-cli webmcp-polyfill exited ${result.status}`;
       report(
         `the WebMCP polyfill holder for tab ${options.tab} exited (${state.error}); restarting in ${Math.ceil(delay / 1000)}s`

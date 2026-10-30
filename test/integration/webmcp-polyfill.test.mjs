@@ -13,6 +13,9 @@ const fixturesDir = join(root, 'test/integration/fixtures');
 const fakePwCli = join(fixturesDir, 'fake-playwright-cli.sh');
 const policyFixture = join(fixturesDir, 'webmcp-tools-policy.json');
 
+const GUARD_REFUSAL =
+  'Debugger.enable: slicc: refused: breakpoints could run in seven’s pages or the vault, so the guard doesn’t offer the Debugger domains';
+
 const testHome = join(tmpdir(), `mcpcat-webmcp-polyfill-${process.pid}-${Date.now()}`);
 mkdirSync(testHome, { recursive: true });
 const children = [];
@@ -203,6 +206,101 @@ describe('serve --webmcp polyfill', () => {
     await stopped(child);
     assert.ok(holders >= 2 && holders <= 4, `${holders} holder starts in 3.5s\n${stderr()}`);
     assert.match(stderr(), /restarting in 2s/);
+  });
+
+  it('stops at a guard refusal, keeps listening and gives the reason', async () => {
+    const dirs = scratch();
+    const env = baseEnv(dirs, {
+      FAKE_PWCLI_HOLDER: 'fail',
+      FAKE_PWCLI_HOLDER_STDERR: GUARD_REFUSAL,
+    });
+    const { child, port, stderr } = await httpServe([], env);
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.equal(readLog(dirs.log).filter((e) => e.command === 'webmcp-polyfill').length, 1);
+    assert.equal(child.exitCode, null);
+    const printed = stderr();
+    assert.equal(printed.split('breakpoints could run').length - 1, 1, printed);
+    assert.match(printed, /the guard refused the WebMCP polyfill holder for tab TAB1 \(Debugger/);
+    assert.doesNotMatch(printed, /restarting/);
+
+    const url = `http://127.0.0.1:${port}/mcp`;
+    const reason = /the guard refused it \(Debugger\.enable: slicc: refused: .*Debugger domains\)/;
+    const clientEnv = { ...process.env, NODE_NO_WARNINGS: '1', HOME: testHome };
+    const human = await run(['tools', url], clientEnv);
+    assert.equal(human.stdout, '(no tools)\n');
+    assert.match(human.stderr, reason);
+    assert.match(human.stderr, /retrying won't help/);
+    const json = await run(['tools', url, '--json'], clientEnv);
+    assert.match(JSON.parse(json.stdout).hint, reason);
+    const call = await run(['call', url, 'get_inbox_state'], clientEnv);
+    assert.notEqual(call.status, 0);
+    assert.match(call.stderr, reason);
+    assert.match(call.stderr, /retrying won't help/);
+    assert.equal(readLog(dirs.log).filter((e) => e.command === 'webmcp-polyfill').length, 1);
+    child.kill('SIGTERM');
+    await stopped(child);
+
+    const stdio = await stdioServe(
+      [],
+      baseEnv(scratch(), { FAKE_PWCLI_HOLDER: 'fail', FAKE_PWCLI_HOLDER_STDERR: GUARD_REFUSAL })
+    );
+    assert.equal(stdio.status, 0, stdio.stderr);
+    assert.match(listResult(stdio.stdout).result._meta['io.mcpcat/hint'], reason);
+  });
+
+  it('says the polyfill is refused when the list is empty but WebMCP is not missing', async () => {
+    const env = baseEnv(scratch(), {
+      FAKE_PWCLI_HOLDER: 'fail',
+      FAKE_PWCLI_HOLDER_STDERR: GUARD_REFUSAL,
+      FAKE_PWCLI_NEEDS_HOLDER: '',
+      FAKE_PWCLI_FIXTURE: join(fixturesDir, 'webmcp-tools-empty.json'),
+    });
+    const r = await stdioServe([], env);
+    assert.equal(r.status, 0, r.stderr);
+    const resp = listResult(r.stdout);
+    assert.deepEqual(resp.result.tools, []);
+    assert.match(resp.result._meta['io.mcpcat/hint'], /^the page shows no WebMCP tools and /);
+    assert.match(resp.result._meta['io.mcpcat/hint'], /the guard refused it/);
+  });
+
+  for (const [name, line] of [
+    ['a crash', 'webmcp-polyfill: cannot attach'],
+    [
+      'the holder lost to the guard',
+      'webmcp-polyfill: target closed, changed or was refused by the guard',
+    ],
+    ['page text that quotes the marker', 'Runtime.evaluate: Error: slicc: refused: page text'],
+    ['a renderer crash', 'slicc: refused: renderer crashed'],
+  ]) {
+    it(`restarts a holder that exits with ${name}`, async () => {
+      const dirs = scratch();
+      const env = baseEnv(dirs, { FAKE_PWCLI_HOLDER: 'fail', FAKE_PWCLI_HOLDER_STDERR: line });
+      const { child, stderr } = await httpServe([], env);
+      const restarted = await until(
+        () => readLog(dirs.log).filter((e) => e.command === 'webmcp-polyfill').length >= 2
+      );
+      assert.ok(restarted, stderr());
+      assert.match(stderr(), /holder for tab TAB1 exited .*; restarting in 1s/);
+      assert.doesNotMatch(stderr(), /the guard refused/);
+      child.kill('SIGTERM');
+      await stopped(child);
+    });
+  }
+
+  it('restarts a holder that was ready before the guard refused it', async () => {
+    const dirs = scratch();
+    const env = baseEnv(dirs, {
+      FAKE_PWCLI_HOLDER_EXIT_FIRST: '100',
+      FAKE_PWCLI_HOLDER_STDERR: GUARD_REFUSAL,
+    });
+    const { child, stderr } = await httpServe([], env);
+    const restarted = await until(
+      () => readLog(dirs.log).filter((e) => e.command === 'webmcp-polyfill').length >= 2
+    );
+    assert.ok(restarted, stderr());
+    assert.match(stderr(), /holder for tab TAB1 exited .*; restarting in 1s/);
+    child.kill('SIGTERM');
+    await stopped(child);
   });
 
   it('surfaces policy and late in tools --json and the human tools output', async () => {
