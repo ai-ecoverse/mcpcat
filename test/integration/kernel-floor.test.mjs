@@ -26,6 +26,7 @@ describe('the kernel bundle runs on the engines.slicc-kernel floor', () => {
   it(`passes every kernel test on slicc-kernel ${floor}`, { timeout: 900_000 }, () => {
     assert.match(pkg.engines['slicc-kernel'], /^>=\d+\.\d+\.\d+$/);
     assert.ok(kernelFiles.length > 10, kernelFiles.join(' '));
+    assert.ok(kernelFiles.includes('test/integration/kernel-placeholder.test.mjs'));
     writeFileSync(join(dir, 'package.json'), '{"private":true}\n');
     const install = spawnSync(
       'npm',

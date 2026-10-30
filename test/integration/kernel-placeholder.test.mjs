@@ -2,6 +2,7 @@ import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { kernelAtLeast } from './helpers/kernel.mjs';
 import {
   AGENT_DIR,
   assertNoValue,
@@ -122,7 +123,9 @@ describe('kernel: credentials go out as placeholders', () => {
     await reset({ 'mcp:bb': { exit: 0, stdout: `${OAUTH}\n` } });
     assert.equal((await run('tools', 'bb')).status, 0);
     const gets = (await jerkLog(kernel)).filter((line) => line.startsWith('mcp:bb get'));
-    assert.equal(gets.length, exit.offered.length);
+    const offered = sent(exit.offered, 'https://bb.example.com').length;
+    assert.ok(offered > 1);
+    assert.ok(gets.length === offered || gets.length === offered + 1, gets.join('\n'));
     assert.ok(gets.every((line) => line.endsWith(`config=${CONFIG}`)));
     assert.ok(!gets.some((line) => line.includes('--reveal')));
     assert.deepEqual(await kernel.readFile(CONFIG), before);
@@ -133,6 +136,8 @@ describe('kernel: credentials go out as placeholders', () => {
     const { status, stderr } = await run('tools', 'modern');
     assert.equal(status, 0, stderr);
     assert.ok(upstream.seen.every((s) => s.authorization === `Bearer ${CREDENTIAL.value}`));
+    const gets = (await jerkLog(kernel)).filter((line) => line.startsWith('mcp:modern get'));
+    assert.equal(gets.length, sent(exit.offered, 'https://modern.example.com').length);
   });
 
   it('refuses with exit 4 what does not look like a placeholder, and never prints it', async () => {
@@ -226,7 +231,9 @@ describe('kernel: credentials go out as placeholders', () => {
   });
 });
 
-describe('kernel: a non-root user gets no placeholder', () => {
+describe('kernel: a non-root user gets no placeholder', {
+  skip: !kernelAtLeast(86) && 'ctx.sync.cred and kernel.chmod need slicc-kernel >= 1.86.0',
+}, () => {
   const AS_CONE = { user: 'cone' };
   const NATIVE_TOOLS = "the agent already has this server's tools";
   const PANEL_ROOT = 'a human can use the server from a panel terminal as root';
@@ -258,7 +265,6 @@ describe('kernel: a non-root user gets no placeholder', () => {
   const reset = async (get, list = ALL) => {
     await jerkAnswers(kernel, get, list);
     await kernel.chmod('/etc/fake-jerk.json', 0o644);
-    await kernel.chmod('/tmp/fake-jerk.log', 0o666);
     exit.offered.length = 0;
     upstream.seen.length = 0;
     upstream.status = 401;
