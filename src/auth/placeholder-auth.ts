@@ -83,7 +83,7 @@ export async function placeholderAuthProvider<Inner extends AuthProvider | undef
       if (context.response.status === 401 && noPlaceholder && !context.token) {
         throw new SettingsSignInError(
           context.response.status,
-          platform.uid ? NO_PLACEHOLDER : SETTINGS_SIGN_IN
+          platform.uid && id ? NO_PLACEHOLDER : SETTINGS_SIGN_IN
         );
       }
       if (!inner?.onUnauthorized || (context.token && PLACEHOLDER.test(context.token))) {

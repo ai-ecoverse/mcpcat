@@ -254,8 +254,8 @@ describe('kernel: a non-root user gets no placeholder', () => {
     upstream?.close();
   });
 
-  const reset = async (get) => {
-    await jerkAnswers(kernel, get, ALL);
+  const reset = async (get, list = ALL) => {
+    await jerkAnswers(kernel, get, list);
     await kernel.chmod('/etc/fake-jerk.json', 0o644);
     await kernel.chmod('/tmp/fake-jerk.log', 0o666);
     exit.offered.length = 0;
@@ -299,6 +299,17 @@ describe('kernel: a non-root user gets no placeholder', () => {
       assert.ok(!stderr.includes(NATIVE_TOOLS), stderr);
     });
   }
+
+  it('a target jerk does not list points to Settings and blames no one', async () => {
+    await reset({}, listed('modern'));
+    const { status, stderr } = await mcpcat(kernel, {}, AS_CONE)('info', 'bb');
+    assert.equal(status, 4, stderr);
+    assert.ok(stderr.includes(SETTINGS), stderr);
+    assert.ok(!stderr.includes('jerk gave'), stderr);
+    assert.ok(!stderr.includes(NATIVE_TOOLS), stderr);
+    assert.ok(!stderr.includes('mcpcat login'), stderr);
+    assert.ok(!(await jerkLog(kernel)).some((line) => line.includes(' get')));
+  });
 
   it('grep names the same places for a target it cannot reach', async () => {
     await reset({ 'mcp:bb': NOT_SIGNED_IN });
