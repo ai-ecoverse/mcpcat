@@ -43,6 +43,7 @@ function answer(url, { id, method }) {
 
 export async function gatedServer(credential) {
   const seen = [];
+  const gate = { seen, status: 401, headers: {} };
   const server = createServer((req, res) => {
     let body = '';
     req.on('data', (chunk) => {
@@ -52,7 +53,7 @@ export async function gatedServer(credential) {
       seen.push({ url: req.url, authorization: req.headers.authorization });
       const open = req.url.startsWith('/open');
       if (!open && req.headers.authorization !== `Bearer ${credential.value}`) {
-        res.writeHead(401, { 'content-type': 'text/plain' });
+        res.writeHead(gate.status, { 'content-type': 'text/plain', ...gate.headers });
         res.end('bad credentials');
         return;
       }
@@ -67,7 +68,7 @@ export async function gatedServer(credential) {
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  return { seen, port: server.address().port, close: () => server.close() };
+  return Object.assign(gate, { port: server.address().port, close: () => server.close() });
 }
 
 export function sealedExit(port, fill) {

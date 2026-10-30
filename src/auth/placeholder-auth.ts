@@ -81,7 +81,7 @@ export async function placeholderAuthProvider<Inner extends AuthProvider | undef
       return placeholder;
     },
     async onUnauthorized(context: UnauthorizedContext): Promise<void> {
-      if (noPlaceholder && !context.token && platform.uid) {
+      if (context.response.status === 401 && noPlaceholder && !context.token && platform.uid) {
         throw new SettingsSignInError(context.response.status, NO_PLACEHOLDER);
       }
       if (!inner?.onUnauthorized || (context.token && PLACEHOLDER.test(context.token))) {

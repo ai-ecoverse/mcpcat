@@ -258,6 +258,8 @@ describe('kernel: a non-root user gets no placeholder', () => {
     await kernel.chmod('/tmp/fake-jerk.log', 0o666);
     exit.offered.length = 0;
     upstream.seen.length = 0;
+    upstream.status = 401;
+    upstream.headers = {};
   };
 
   for (const [why, answer] of [
@@ -279,6 +281,21 @@ describe('kernel: a non-root user gets no placeholder', () => {
         assertNoValue(CREDENTIAL.value, stdout, stderr);
       });
     }
+  }
+
+  for (const target of ['bb', 'modern']) {
+    it(`${target}: a 403 scope challenge still names the required scope`, async () => {
+      await reset({ [`mcp:${target}`]: NOT_SIGNED_IN });
+      upstream.status = 403;
+      upstream.headers = {
+        'www-authenticate': 'Bearer error="insufficient_scope", scope="admin"',
+      };
+      const { status, stderr } = await mcpcat(kernel, {}, AS_CONE)('info', target);
+      assert.equal(status, 4, stderr);
+      assert.match(stderr, /insufficient scope/);
+      assert.match(stderr, /--scope admin/);
+      assert.ok(!stderr.includes(NATIVE_TOOLS), stderr);
+    });
   }
 
   it('grep names the same places for a target it cannot reach', async () => {
