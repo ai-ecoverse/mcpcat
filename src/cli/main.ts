@@ -1,4 +1,4 @@
-import type { CallToolResult, Tool } from '@earendil-works/pi-mcp';
+import type { AuthProvider, CallToolResult, Tool } from '@earendil-works/pi-mcp';
 import { coerceArgsBySchema, mergeArgs } from '../args/coerce.ts';
 import { AuthStepUpError, createMcpAuthProvider } from '../auth/auth-provider.ts';
 import {
@@ -7,6 +7,8 @@ import {
   JerkTimeoutError,
 } from '../auth/jerk-token-source.ts';
 import { PiFileTokenSource } from '../auth/pi-store.ts';
+import { placeholderAuthProvider } from '../auth/placeholder-auth.ts';
+import { isKernel } from '../auth/token-source.ts';
 import { connect } from '../client/connect.ts';
 import type { CompletionRef, McpConnection } from '../client/connection.ts';
 import {
@@ -1416,6 +1418,7 @@ async function connectTargets(
 }> {
   const conns: McpConnection[] = [];
   const targets: { name: string; conn: McpConnection; instructions?: string }[] = [];
+  const warn = (msg: string) => void platform.write(2, `mcpcat: warning: ${msg}\n`).catch(() => {});
   for (const name of names) {
     let resolved;
     try {
@@ -1425,9 +1428,17 @@ async function connectTargets(
       continue;
     }
     try {
+      const merged = { ...resolved.headers, ...parsed.headers };
       const conn = await connect(platform, {
         ...resolved,
-        headers: { ...resolved.headers, ...parsed.headers },
+        headers: isKernel(platform) ? expandHeaders(merged, platform.env, warn) : merged,
+        authProvider: await placeholderAuthProvider({
+          platform,
+          name: config.entry(name) ? name : undefined,
+          url: resolved.url,
+          headers: merged,
+          timeoutMs: parsed.timeoutMs,
+        }),
         protocolVersion: parsed.protocolVersion,
         version,
       });
@@ -1970,23 +1981,31 @@ async function resolveAuthProvider(
   url: string | undefined,
   target: string,
   config: MergedConfigSource,
+  headers: Record<string, string>,
   timeoutMs: number | undefined,
   onCredentialObtained?: (secret: string) => void
-): Promise<
-  { provider: ReturnType<typeof createMcpAuthProvider>; credentialSecrets: string[] } | undefined
-> {
+): Promise<{ provider: AuthProvider; credentialSecrets: string[] } | undefined> {
   if (hasAuthHeader || !url) return undefined;
   const entry = config.entry(target);
   const oauth =
     entry && 'url' in entry.config ? (entry.config as { oauth?: McpOAuthConfig }).oauth : undefined;
   const name = entry ? target : `url:${new URL(url).origin}${new URL(url).pathname}`;
   const source = await createTokenSource(platform, name, timeoutMs);
-  const provider = createMcpAuthProvider({
+  const inner = createMcpAuthProvider({
     name,
     serverUrl: url,
     source,
     oauth,
     platform,
+    onCredentialObtained,
+  });
+  const provider = await placeholderAuthProvider({
+    platform,
+    name: entry ? target : undefined,
+    url,
+    headers,
+    timeoutMs,
+    inner,
     onCredentialObtained,
   });
   const credentialSecrets: string[] = [];
@@ -2026,7 +2045,8 @@ function classifyConnectionError(
     err instanceof AuthStepUpError ||
     err instanceof JerkSignInRequiredError ||
     err instanceof JerkTimeoutError ||
-    err instanceof JerkInvalidUrlError
+    err instanceof JerkInvalidUrlError ||
+    err instanceof McpcatError
   ) {
     return classifyError(err);
   }
@@ -2204,6 +2224,7 @@ async function runClientVerb(
     resolved.url,
     target,
     config,
+    { ...resolved.headers, ...mergedHeaders },
     timeoutMs,
     (secret) => {
       allSecrets.add(secret);

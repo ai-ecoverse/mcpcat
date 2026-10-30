@@ -8,6 +8,7 @@ import type {
 } from '@earendil-works/pi-mcp';
 import { AuthStepUpError } from '../auth/auth-provider.ts';
 import { JerkInvalidUrlError, JerkTimeoutError } from '../auth/jerk-token-source.ts';
+import { SETTINGS_SIGN_IN, SettingsSignInError } from '../auth/placeholder-auth.ts';
 import type { VerboseLogger } from '../cli/verbose.ts';
 import type {
   CallToolOptions,
@@ -119,9 +120,14 @@ export class McpTimeoutError extends Error {
 export class McpAuthError extends Error {
   readonly status: number;
   readonly target: string;
-  constructor(status: number, target: string, reason?: string) {
+  constructor(
+    status: number,
+    target: string,
+    reason?: string,
+    advice = `Run: mcpcat login ${target}`
+  ) {
     const why = reason ? ` (${reason})` : '';
-    super(`HTTP ${status}: authentication required${why}. Run: mcpcat login ${target}`);
+    super(`HTTP ${status}: authentication required${why}. ${advice}`);
     this.name = 'McpAuthError';
     this.status = status;
     this.target = target;
@@ -414,7 +420,8 @@ async function recoverAuth(
       authErr instanceof JerkInvalidUrlError
     )
       throw authErr;
-    throw new McpAuthError(err.response.status, url, err.reason);
+    const advice = authErr instanceof SettingsSignInError ? SETTINGS_SIGN_IN : undefined;
+    throw new McpAuthError(err.response.status, url, err.reason, advice);
   }
 }
 

@@ -1,3 +1,4 @@
+import { placeholderAuthProvider } from '../auth/placeholder-auth.ts';
 import { within } from '../client/events.ts';
 import { EVENTS_EXTENSION } from '../client/modern.ts';
 import {
@@ -1159,6 +1160,21 @@ function resolveProxyUrl(
   return { url, headers, version };
 }
 
+async function withPlaceholder(
+  platform: Platform,
+  opts: ConnectOptions,
+  name: string | undefined,
+  rawHeaders?: Record<string, string>
+): Promise<ConnectOptions> {
+  const authProvider = await placeholderAuthProvider({
+    platform,
+    name,
+    url: opts.url,
+    headers: { ...rawHeaders, ...opts.headers },
+  });
+  return authProvider ? { ...opts, authProvider } : opts;
+}
+
 function unsetIn(
   header: string,
   value: string,
@@ -1199,7 +1215,12 @@ async function resolveProxyConfig(
       hide(hiddenValues, v, expanded[k], platform.env);
     }
     const merged = { ...expanded, ...connectHeaders };
-    return { url: entry.url, headers: merged, version };
+    return withPlaceholder(
+      platform,
+      { url: entry.url, headers: merged, version },
+      target,
+      entry.headers
+    );
   }
   if ('command' in entry && entry.command) {
     return {
@@ -1244,7 +1265,11 @@ async function buildProxyConnectOpts(
   } else if (target.startsWith('stdio:')) {
     connectOpts = resolveProxyStdio(target, version);
   } else if (isUrl) {
-    connectOpts = resolveProxyUrl(target, connectHeaders, version);
+    connectOpts = await withPlaceholder(
+      platform,
+      resolveProxyUrl(target, connectHeaders, version),
+      undefined
+    );
   } else {
     const result = await resolveProxyConfig(
       platform,

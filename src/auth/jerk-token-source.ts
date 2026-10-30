@@ -1,4 +1,5 @@
 import type { McpOAuthState } from '@earendil-works/pi-mcp/oauth';
+import { userConfigPath } from '../config/paths.ts';
 import type { Platform } from '../platform/types.ts';
 import type { TokenResult, TokenSource } from './token-source.ts';
 
@@ -17,14 +18,26 @@ export function resetJerkCache(): void {
   cachedKnown = undefined;
 }
 
+export function jerkEnv(platform: Platform): Record<string, string> | undefined {
+  if (platform.kind !== 'kernel') return undefined;
+  return { ...platform.env, PI_MCP_CONFIG: userConfigPath(platform) } as Record<string, string>;
+}
+
 async function listMcpProviders(platform: Platform): Promise<Set<string>> {
   const known = new Set<string>();
+  const kernel = platform.kind === 'kernel';
   try {
-    const result = await runJerk(platform, ['jerk', 'list', '--json'], VERSION_TIMEOUT_MS);
+    const result = await runJerk(
+      platform,
+      ['jerk', 'list', '--json'],
+      kernel ? JERK_TIMEOUT_MS : VERSION_TIMEOUT_MS,
+      jerkEnv(platform)
+    );
     if (result.status !== 0) return known;
     const providers = JSON.parse(result.stdout) as { provider?: unknown; source?: unknown }[];
     for (const p of providers) {
-      if (p?.source === 'mcp.json' && typeof p.provider === 'string') known.add(p.provider);
+      const listed = p?.source === 'mcp.json' || (kernel && p?.source === 'seven');
+      if (listed && typeof p.provider === 'string') known.add(p.provider);
     }
   } catch {}
   return known;
@@ -134,9 +147,10 @@ export class JerkTimeoutError extends Error {
 export async function runJerk(
   platform: Platform,
   argv: string[],
-  timeoutMs: number
+  timeoutMs: number,
+  env?: Record<string, string>
 ): Promise<JerkRun> {
-  const proc = await platform.spawn({ argv, stdin: 'ignore' });
+  const proc = await platform.spawn({ argv, stdin: 'ignore', ...(env ? { env } : {}) });
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<'timeout'>((resolve) => {
     timer = setTimeout(() => resolve('timeout'), timeoutMs);
