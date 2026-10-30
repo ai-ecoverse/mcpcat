@@ -250,6 +250,10 @@ function createPiAuthProvider(options: {
       if (challenge.error === 'insufficient_scope') {
         throw new AuthStepUpError(challenge.scope, options.name, isKernel(platform));
       }
+      const known = await store.load();
+      if (known?.tokens?.access_token === context.token && !known?.tokens?.refresh_token) {
+        throw new McpOAuthAuthorizationRequiredError();
+      }
       await refresh(context.token);
       const state = await store.load();
       cachedToken = state?.tokens?.access_token;

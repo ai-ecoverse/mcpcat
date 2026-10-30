@@ -209,6 +209,8 @@ export async function runLogin(
     }
   }
 
+  if (source instanceof PiFileTokenSource) await source.ensureWritable();
+
   const noBrowser = args.includes('--no-browser');
 
   try {
