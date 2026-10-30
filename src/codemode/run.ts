@@ -3,6 +3,8 @@ import type { CodemodeSandboxBase } from '@earendil-works/pi-codemode/portable';
 import { parseCodemodeSource } from '@earendil-works/pi-codemode/source';
 import type { McpConnection } from '../client/connection.ts';
 import type { Platform } from '../platform/types.ts';
+import { redactDeep } from '../render/redact.ts';
+import type { Redactor } from '../render/result.ts';
 import { sanitizeTerminal } from '../render/sanitize.ts';
 import { bindDeadline, type Deadline, hookDeadlines } from './deadline.ts';
 import { rankDocuments, type SearchDocument } from './search.ts';
@@ -28,6 +30,7 @@ interface CodeOptions {
   allowShell?: boolean;
   stateDir?: string;
   platform: Platform;
+  redact?: Redactor;
 }
 
 async function loadStore(platform: Platform, stateDir: string): Promise<Record<string, unknown>> {
@@ -283,7 +286,8 @@ export async function runCode(
       }
     }
 
-    return await formatOutput(platform, result, json);
+    const shown = options.redact ? (redactDeep(result, options.redact) as typeof result) : result;
+    return await formatOutput(platform, shown, json);
   } finally {
     await sandbox.close();
   }

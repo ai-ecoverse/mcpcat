@@ -1411,14 +1411,15 @@ async function connectTargets(
   names: string[],
   config: Awaited<ReturnType<typeof MergedConfigSource.load>>,
   parsed: ParsedArgs,
-  version: string
+  version: string,
+  hidden: Set<string>,
+  redact: Redactor
 ): Promise<{
   targets: { name: string; conn: McpConnection; instructions?: string }[];
   cleanup: () => Promise<void>;
 }> {
   const conns: McpConnection[] = [];
   const targets: { name: string; conn: McpConnection; instructions?: string }[] = [];
-  const warn = (msg: string) => void platform.write(2, `mcpcat: warning: ${msg}\n`).catch(() => {});
   for (const name of names) {
     let resolved;
     try {
@@ -1429,9 +1430,11 @@ async function connectTargets(
     }
     try {
       const merged = { ...resolved.headers, ...parsed.headers };
+      const { headers, secrets } = expandConfigHeaders(platform, merged);
+      for (const s of secrets) hidden.add(s);
       const conn = await connect(platform, {
         ...resolved,
-        headers: isKernel(platform) ? expandHeaders(merged, platform.env, warn) : merged,
+        headers,
         authProvider: await placeholderAuthProvider({
           platform,
           name: config.entry(name) ? name : undefined,
@@ -1441,14 +1444,18 @@ async function connectTargets(
         }),
         protocolVersion: parsed.protocolVersion,
         version,
+        redact,
       });
       conns.push(conn);
       const info = await conn.info();
       targets.push({ name, conn, instructions: info.instructions });
     } catch (err) {
-      await platform.write(
-        2,
-        sanitizeTerminal(`mcpcat: connection to ${name} failed: ${(err as Error).message}\n`)
+      await writeErrRedacted(
+        platform,
+        false,
+        'connection',
+        `connection to ${name} failed: ${(err as Error).message}`,
+        redact
       );
     }
   }
@@ -1473,7 +1480,10 @@ async function resolveTargetNames(platform: Platform, parsed: ParsedArgs): Promi
   if (positionalExtra && parsed.verb !== 'call') targets.push(positionalExtra);
   if (targets.length > 0) return targets;
 
-  const config = await MergedConfigSource.load(platform);
+  return enabledNames(await MergedConfigSource.load(platform));
+}
+
+function enabledNames(config: MergedConfigSource): string[] {
   return config
     .list()
     .filter((e) => e.config.enabled !== false)
@@ -1484,6 +1494,20 @@ async function dispatchMultiTarget(
   platform: Platform,
   parsed: ParsedArgs,
   version: string
+): Promise<number> {
+  const { secrets, unset } = expandAndCollect(parsed.headers, platform.env, parsed.extra);
+  if (unset.length > 0 && !isKernel(platform)) return refuseUnsetHeaders(platform, unset);
+  const hidden = new Set(secrets);
+  const redact: Redactor = (text) => redactSecrets(text, hidden);
+  return runMultiTarget(redactWrites(platform, redact), parsed, version, hidden, redact);
+}
+
+async function runMultiTarget(
+  platform: Platform,
+  parsed: ParsedArgs,
+  version: string,
+  hidden: Set<string>,
+  redact: Redactor
 ): Promise<number> {
   let activeCleanup: (() => Promise<void>) | undefined;
 
@@ -1523,22 +1547,16 @@ async function dispatchMultiTarget(
       return 2;
     }
 
-    let serverNames: string[];
-    if (parsed.serverTargets.length > 0) {
-      serverNames = parsed.serverTargets;
-    } else {
-      serverNames = config
-        .list()
-        .filter((e) => e.config.enabled !== false)
-        .map((e) => e.name);
-    }
-
+    const serverNames =
+      parsed.serverTargets.length > 0 ? parsed.serverTargets : enabledNames(config);
     const { targets, cleanup } = await connectTargets(
       platform,
       serverNames,
       config,
       parsed,
-      version
+      version,
+      hidden,
+      redact
     );
     activeCleanup = cleanup;
     try {
@@ -1548,6 +1566,7 @@ async function dispatchMultiTarget(
         memoryLimitMiB: parsed.memoryLimitMiB,
         allowShell: parsed.allowShell,
         platform,
+        redact,
       });
     } catch (err) {
       await platform.write(2, `mcpcat: ${(err as Error).message}\n`);
@@ -1565,18 +1584,15 @@ async function dispatchMultiTarget(
       return 2;
     }
 
-    const serverNames = parsed.toolName
-      ? [parsed.toolName]
-      : config
-          .list()
-          .filter((e) => e.config.enabled !== false)
-          .map((e) => e.name);
+    const serverNames = parsed.toolName ? [parsed.toolName] : enabledNames(config);
     const { targets, cleanup } = await connectTargets(
       platform,
       serverNames,
       config,
       parsed,
-      version
+      version,
+      hidden,
+      redact
     );
     activeCleanup = cleanup;
     try {
@@ -1584,6 +1600,8 @@ async function dispatchMultiTarget(
         rank: parsed.rank,
         extended: parsed.extendedRegex,
       });
+    } catch (err) {
+      return await reportError(platform, parsed.jsonOutput, err, redact);
     } finally {
       await cleanup();
       await killAllStdio().catch(() => {});
@@ -1597,11 +1615,15 @@ async function dispatchMultiTarget(
       serverNames,
       config,
       parsed,
-      version
+      version,
+      hidden,
+      redact
     );
     activeCleanup = cleanup;
     try {
-      return await runDescribeTs(platform, targets, parsed.tsBudget);
+      return await runDescribeTs(platform, targets, parsed.tsBudget, redact);
+    } catch (err) {
+      return await reportError(platform, parsed.jsonOutput, err, redact);
     } finally {
       await cleanup();
       await killAllStdio().catch(() => {});
@@ -2152,13 +2174,7 @@ async function runClientVerb(
   parsed: ParsedArgs
 ): Promise<number> {
   const { expanded, secrets, unset } = expandAndCollect(parsed.headers, platform.env, parsed.extra);
-  if (unset.length > 0) {
-    await platform.write(
-      2,
-      `mcpcat: unset variable${unset.length > 1 ? 's' : ''} in -H: ${unset.join(', ')}\n`
-    );
-    return EXIT_USAGE;
-  }
+  if (unset.length > 0) return refuseUnsetHeaders(platform, unset);
   const verbose = createVerboseLogger(platform, parsed.verbose);
   for (const s of secrets) verbose.secrets.add(s);
 
@@ -2211,10 +2227,10 @@ async function runClientVerb(
     return EXIT_USAGE;
   }
 
-  const configHeaders = expandHeaders(resolved.headers, platform.env, (msg) => {
-    platform.write(2, `mcpcat: warning: ${msg}\n`).catch(() => {});
-  });
-  const configSecrets = collectConfigSecrets(resolved.headers, platform.env);
+  const { headers: configHeaders, secrets: configSecrets } = expandConfigHeaders(
+    platform,
+    resolved.headers
+  );
   for (const s of configSecrets) verbose.secrets.add(s);
 
   const allSecrets = new Set([...secrets, ...configSecrets]);
@@ -2321,9 +2337,7 @@ async function runClientVerb(
       await platform.write(2, `${out}\n`);
       return EXIT_INPUT_REQUIRED;
     }
-    const e = classifyError(err);
-    await writeErrRedacted(platform, parsed.jsonOutput, e.kind, e.msg, redact);
-    return e.code;
+    return await reportError(platform, parsed.jsonOutput, err, redact);
   } finally {
     await closeAndKillStdio(conn);
   }
@@ -2353,6 +2367,36 @@ async function writeErrRedacted(
 ): Promise<void> {
   if (json) await renderErrorJson(p, kind, msg, undefined, undefined, redact);
   else await p.write(2, sanitizeTerminal(`mcpcat: ${redact(msg)}\n`));
+}
+
+async function reportError(
+  platform: Platform,
+  json: boolean,
+  err: unknown,
+  redact: Redactor
+): Promise<number> {
+  const e = classifyError(err);
+  await writeErrRedacted(platform, json, e.kind, e.msg, redact);
+  return e.code;
+}
+
+async function refuseUnsetHeaders(platform: Platform, unset: string[]): Promise<number> {
+  await platform.write(
+    2,
+    `mcpcat: unset variable${unset.length > 1 ? 's' : ''} in -H: ${unset.join(', ')}\n`
+  );
+  return EXIT_USAGE;
+}
+
+function expandConfigHeaders(
+  platform: Platform,
+  headers: Record<string, string> | undefined
+): { headers: Record<string, string> | undefined; secrets: string[] } {
+  const warn = (msg: string) => void platform.write(2, `mcpcat: warning: ${msg}\n`).catch(() => {});
+  return {
+    headers: expandHeaders(headers, platform.env, warn),
+    secrets: collectConfigSecrets(headers, platform.env),
+  };
 }
 
 function collectConfigSecrets(
