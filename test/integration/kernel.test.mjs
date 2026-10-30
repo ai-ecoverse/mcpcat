@@ -689,13 +689,15 @@ describe('kernel: login/logout exits 4 in seven', () => {
     kernel?.terminate();
   });
 
-  it('login exits 4 with pointer to agent sign-in', async () => {
+  it('login exits 4 and points to Settings › MCP servers', async () => {
     const { status, stderr } = await kernel.run(['mcpcat', 'login', 'example.com'], {
       stdout: 'pipe',
       stderr: 'pipe',
     });
     assert.equal(status, 4);
-    assert.ok(stderr.includes('not available in seven'));
+    assert.ok(stderr.includes('not available in seven'), stderr);
+    assert.ok(stderr.includes('Settings › MCP servers'), stderr);
+    assert.ok(!stderr.includes('on the host'), stderr);
   });
 
   it('logout exits 4 in seven', async () => {
