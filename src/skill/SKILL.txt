@@ -87,7 +87,7 @@ mcpcat serve --help
 - **Never print, echo, log or paste a secret's value**, not in a command, a file, a message or your answer. The value must never reach the conversation.
 - **Use `${NAME}` placeholders in single quotes**: `-H 'Authorization: Bearer ${GH_TOKEN}'`. mcpcat expands them itself, so the value stays out of argv. In seven, `NAME` holds the vault's placeholder, and the vault fills in the value where a secret rule allows that host.
 - **Never put a token into `mcp.json`.** Write `${NAME}` there too; `mcpcat add` refuses a literal `Bearer …` value.
-- `-v` traces show expanded headers as `[REDACTED]`, and so do errors and results. Don't try to work around redaction.
+- `-v` traces, errors, results and proxied output hide a header value that is 8 or more characters, and any value under a credential-like name (`authorization`, `proxy-authorization`, `cookie`, `set-cookie`, or a name containing `token`, `secret`, `key`, `password`, `passwd`, `credential` or `auth`). A shorter value under any other name is shown as is, so always send a credential under a credential-like name. Don't try to work around redaction.
 - If a request needs a secret that isn't there, ask the user to add it to the vault; don't ask them to paste it.
 
 ## Upgrade

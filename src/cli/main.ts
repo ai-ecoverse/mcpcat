@@ -30,8 +30,8 @@ import { runCode } from '../codemode/run.ts';
 import {
   expandHeaders,
   expandPlaceholders,
+  headerSecrets,
   missingPlaceholders,
-  placeholderValues,
 } from '../config/expand.ts';
 import { MergedConfigSource } from '../config/index.ts';
 import { releaseAllLocks } from '../config/lock.ts';
@@ -1967,10 +1967,8 @@ function expandAndCollect(
       unset.push(...missing);
       continue;
     }
-    const e = expandPlaceholders(v, env);
-    result[k] = e;
-    if (e !== v) secrets.push(e, ...placeholderValues(v, env));
-    if (v.length > 0) secrets.push(v);
+    result[k] = expandPlaceholders(v, env);
+    secrets.push(...headerSecrets(k, v, env));
   }
   return { expanded: result, secrets, unset };
 }
@@ -2411,22 +2409,8 @@ function expandConfigHeaders(
   const warn = (msg: string) => void platform.write(2, `mcpcat: warning: ${msg}\n`).catch(() => {});
   return {
     headers: expandHeaders(headers, platform.env, warn),
-    secrets: collectConfigSecrets(headers, platform.env),
+    secrets: Object.entries(headers ?? {}).flatMap(([k, v]) => headerSecrets(k, v, platform.env)),
   };
-}
-
-function collectConfigSecrets(
-  headers: Record<string, string> | undefined,
-  env: Record<string, string | undefined>
-): string[] {
-  if (!headers) return [];
-  const secrets: string[] = [];
-  for (const [, v] of Object.entries(headers)) {
-    const expanded = expandPlaceholders(v, env);
-    if (expanded !== v && expanded.length > 0) secrets.push(expanded, ...placeholderValues(v, env));
-    if (v.length > 0 && v !== expanded) secrets.push(v);
-  }
-  return secrets;
 }
 
 function isSpawnNotFound(err: unknown): boolean {

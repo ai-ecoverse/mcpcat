@@ -227,6 +227,26 @@ describe('security: secrets redaction in the kernel', () => {
     });
   }
 
+  const ruleCases = {
+    'a short value under a plain name is shown': ['X-Debug: zq7', 'zq7', true],
+    'a short value under a credential-like name is masked': ['X-Api-Key: zq7', 'zq7', false],
+    'a plain value of 8 or more characters is masked': ['X-Debug: zq7longer9', 'zq7longer9', false],
+  };
+
+  for (const [name, [header, value, shown]] of Object.entries(ruleCases)) {
+    for (const [channel, tool] of [
+      ['result', 'headers'],
+      ['error', 'err'],
+    ]) {
+      it(`${name}: ${channel}`, async () => {
+        const r = await run(['-H', header, 'call', `${base}/mcp`, tool]);
+        const out = `${r.stdout}${r.stderr}`;
+        assert.equal(out.includes(value), shown, out.slice(0, 600));
+        assert.equal(out.includes('[REDACTED]'), !shown, out.slice(0, 600));
+      });
+    }
+  }
+
   for (const [name, args] of Object.entries(tokenCases)) {
     it(`redacts the ${'${VAR}'} value: ${name}`, async () => {
       const r = await kernel.run(['mcpcat', ...args()], {

@@ -161,7 +161,7 @@ describe('results are masked like errors', () => {
       [
         '-v',
         '-H',
-        'X-Word: step',
+        'X-Token: step',
         'call',
         `stdio:node ${script}`,
         'progress-finish',
@@ -218,7 +218,7 @@ describe('results are masked like errors', () => {
   });
 
   it('--json stays valid when a header value matches a number', () => {
-    const r = run(['-H', 'X-Debug: 1', '--json', 'call', target, 'count'], env({}));
+    const r = run(['-H', 'X-Api-Key: 1', '--json', 'call', target, 'count'], env({}));
     assert.equal(r.status, 0, r.stderr);
     assert.deepEqual(JSON.parse(r.stdout).structuredContent, { count: MASK, label: 'plain' });
   });
