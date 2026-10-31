@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
-import { createNodeKernel, nodeTransport } from './kernel.mjs';
+import { createNodeKernel, hasSealedFetch, nodeTransport } from './kernel.mjs';
 import { fixtures, root } from './rows.mjs';
 
 export const AGENT_DIR = '/etc/mcpcat-537';
@@ -107,11 +107,27 @@ export function sealedExit(port, fill) {
       });
     },
   };
-  return { transport, offered };
+  const fetch = ({ method, url, headers, body, bodyStream }, { signal }) =>
+    transport.fetch({ method, url, headers, body, bodyStream, signal });
+  return { transport, fetch, offered };
 }
 
-export async function bootKernel(transport, servers, { jerk = true, ...options } = {}) {
-  const kernel = await createNodeKernel({ network: { transport }, ...options });
+function sealedOption(exit, sealed, fills) {
+  if (!fills || !hasSealedFetch) return sealed ? { sealed } : {};
+  const request = sealed ?? (async () => ({ v: 1, error: { code: 'ENOTCONN' } }));
+  return { users: 'enforce', sealed: { request, fetch: exit.fetch } };
+}
+
+export async function bootKernel(
+  exit,
+  servers,
+  { jerk = true, sealed, fills = true, ...options } = {}
+) {
+  const kernel = await createNodeKernel({
+    network: { transport: exit.transport },
+    ...sealedOption(exit, sealed, fills),
+    ...options,
+  });
   const install = async (name, command, module, data) => {
     await kernel.writeFile(`/node_modules/${name}/${module}`, data);
     await kernel.writeFile(

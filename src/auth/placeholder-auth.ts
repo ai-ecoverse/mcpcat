@@ -23,7 +23,18 @@ const PLACEHOLDER_NOT_ACCEPTED =
   "The request carried the signed-in credential's placeholder and the server still answered 401. Seven's vault fills the placeholder in when the request is forwarded, so either that forwarding is not active in this seven yet or the server rejected the credential. Try again from the Settings page's Connect, or ask whoever runs seven.";
 const VAULT_NO_ANSWER =
   "Seven's vault did not answer, so the request carried no credential. Try again, or ask whoever runs seven.";
+const PLACEHOLDER_REFUSED =
+  "Seven's vault fills a placeholder in when the request is forwarded, so either that forwarding is not active in this seven yet or it failed. Try again, or ask whoever runs seven.";
 const NO_PLACEHOLDER = `This user gets no placeholder for this server. With no sign-in yet: ${SETTINGS_SIGN_IN} After a sign-in, the agent already has this server's tools, because a Settings sign-in gives it the server as native tools, and a human can use the server from a panel terminal as root.`;
+
+export function placeholderRefusal(err: unknown): McpcatError | undefined {
+  if (!(err instanceof TypeError)) return undefined;
+  const { code, detail } = (err.cause ?? {}) as { code?: unknown; detail?: unknown };
+  if (code !== 'EACCES' || typeof detail !== 'string') return undefined;
+  if (!detail.includes('sealed placeholder')) return undefined;
+  const reason = detail.replace(/fnox_proxy_[0-9a-f]{24}/g, '[placeholder]');
+  return authError(`${reason}. ${PLACEHOLDER_REFUSED}`);
+}
 
 export class SettingsSignInError extends McpcatError {
   readonly advice: string;

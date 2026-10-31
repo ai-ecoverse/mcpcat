@@ -1,3 +1,4 @@
+import { placeholderRefusal } from '../auth/placeholder-auth.ts';
 import { readExact, readUntil } from '../serve/http.ts';
 import type {
   Connection,
@@ -588,6 +589,13 @@ function createKernelFetch(
   };
 }
 
+function reportingRefusals(fetch: typeof globalThis.fetch): typeof globalThis.fetch {
+  return (input, init) =>
+    fetch(input, init).catch((err: unknown) => {
+      throw placeholderRefusal(err) ?? err;
+    });
+}
+
 async function kernelSeal(ctx: KernelContext, request: string): Promise<string> {
   const f = await ctx.open('/dev/sealed', { read: true, write: true });
   try {
@@ -613,7 +621,7 @@ export function createKernelPlatform(
   return {
     kind: 'kernel' as const,
     uid: ctx.sync?.cred?.().euid,
-    fetch: createKernelFetch(ctx) as typeof globalThis.fetch,
+    fetch: reportingRefusals(createKernelFetch(ctx) as typeof globalThis.fetch),
     spawn: (options: SpawnOptions) => kernelSpawn(ctx, options),
     listen: (options: ListenOptions) => kernelListen(ctx, options),
     ...(ctx.websocket ? { websocket: (url: string) => ctx.websocket!(url) } : {}),

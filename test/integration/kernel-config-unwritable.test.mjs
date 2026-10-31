@@ -36,7 +36,7 @@ describe('kernel: a non-root user with an unwritable config directory', () => {
   before(async () => {
     upstream = await gatedServer({ value: 'stored' });
     const exit = sealedExit(upstream.port, (head, body) => ({ head, body }));
-    kernel = await bootKernel(exit.transport, SERVERS, { users: 'enforce' });
+    kernel = await bootKernel(exit, SERVERS, { users: 'enforce' });
     await kernel.users.add({ name: 'cone', umask: 0o022 });
     await kernel.chmod(AGENT_DIR, 0o755);
     await kernel.chmod(CONFIG, 0o644);
