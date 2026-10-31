@@ -45,7 +45,7 @@ export interface Holder {
 
 const LABEL = 'mcpcat serve --webmcp';
 const GUARD_REFUSAL_RE =
-  /^(?:(?:playwright-cli )?webmcp-polyfill: )?[A-Z][A-Za-z]*\.[a-z][A-Za-z]*: slicc: refused: \S/;
+  /^(?:(?:(?:playwright-cli )?webmcp-polyfill: )?[A-Z][A-Za-z]*\.[a-z][A-Za-z]*: |playwright-cli webmcp-polyfill: )slicc: refused: \S/;
 
 export function isGuardRefusal(line: string): boolean {
   return GUARD_REFUSAL_RE.test(line.trim());
