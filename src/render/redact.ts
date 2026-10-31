@@ -4,6 +4,7 @@ import { sanitizeJson, sanitizeTerminal } from './sanitize.ts';
 
 const ENCODING_DEPTH = 3;
 const NON_ASCII = /[\u007f-\uffff]/g;
+const JSON_TOKEN = /"(?:[^"\\]|\\.)*"|[^\s"{}[\],:]+/g;
 
 function jsonForms(text: string): string[] {
   const json = JSON.stringify(text).slice(1, -1);
@@ -35,10 +36,29 @@ export function redactDeep(value: unknown, redact: Redactor): unknown {
   return value;
 }
 
+function isJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function redactOutput(text: string, redact: Redactor): string {
+  const masked = redact(text);
+  if (masked === text || isJson(masked) || !isJson(text)) return masked;
+  const tokens = text.replace(JSON_TOKEN, (token) => {
+    const shown = redact(token);
+    return shown === token || token.startsWith('"') ? shown : JSON.stringify(shown);
+  });
+  return redact(tokens) === tokens ? tokens : masked;
+}
+
 export function redactWrites(platform: Platform, redact: Redactor): Platform {
   return Object.assign(Object.create(platform), {
     write: (fd: number, data: Uint8Array | string) =>
-      platform.write(fd, typeof data === 'string' ? redact(data) : data),
+      platform.write(fd, typeof data === 'string' ? redactOutput(data, redact) : data),
   });
 }
 

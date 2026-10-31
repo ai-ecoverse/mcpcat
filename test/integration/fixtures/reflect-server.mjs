@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 
 const seen = [];
+let okRounds = 0;
 
 function rpc(id, result) {
   return JSON.stringify({ jsonrpc: '2.0', id, result });
@@ -22,7 +23,23 @@ const TOOLS = [
     description: 'echo',
     inputSchema: { type: 'object', properties: { message: { type: 'string' } } },
   },
+  { name: 'rich', description: 'every content type', inputSchema: { type: 'object' } },
+  { name: 'structured', description: 'structured only', inputSchema: { type: 'object' } },
+  { name: 'nested', description: 'JSON inside a string', inputSchema: { type: 'object' } },
+  { name: 'failed', description: 'a tool error', inputSchema: { type: 'object' } },
+  { name: 'count', description: 'a number', inputSchema: { type: 'object' } },
 ];
+
+function richResult(quoted) {
+  return {
+    content: [
+      { type: 'text', text: quoted },
+      { type: 'resource', resource: { uri: 'mem://r', text: quoted } },
+      { type: 'resource_link', uri: `mem://${quoted}`, name: 'link' },
+    ],
+    structuredContent: { value: quoted, [quoted]: 'key' },
+  };
+}
 
 const server = createServer((req, res) => {
   let body = '';
@@ -87,6 +104,20 @@ const server = createServer((req, res) => {
         serverInfo: { name: 'reflect', version: '1.0.0' },
         capabilities: { tools: {} },
       });
+    } else if (url.startsWith('/ask') && method === 'tasks/get') {
+      out = rpc(id, {
+        taskId: params?.taskId,
+        status: 'completed',
+        result: { content: [{ type: 'text', text: quoted }] },
+      });
+    } else if (url.startsWith('/ask') && method === 'tasks/cancel') {
+      out = rpc(id, { taskId: params?.taskId, status: 'cancelled' });
+    } else if (url.startsWith('/ask-ok') && method === 'tools/call') {
+      const ask = { message: 'need input', schema: { type: 'object', properties: {} } };
+      out =
+        okRounds++ % 2 === 1
+          ? rpc(id, { content: [{ type: 'text', text: quoted }] })
+          : rpc(id, { resultType: 'input_required', inputRequest: ask });
     } else if (url.startsWith('/ask') && method === 'tools/call') {
       const ask = {
         message: `need input ${quoted}`,
@@ -105,8 +136,9 @@ const server = createServer((req, res) => {
     } else if (method === 'initialize') {
       out = rpc(id, {
         protocolVersion: '2025-11-25',
-        capabilities: { tools: {} },
+        capabilities: { tools: {}, resources: {}, prompts: {}, completions: {} },
         serverInfo: { name: 'reflect', version: '1.0.0' },
+        instructions: quoted,
       });
     } else if (method === 'tools/list' && url.includes('badlist')) {
       res.writeHead(500, { 'content-type': 'text/plain' });
@@ -129,6 +161,35 @@ const server = createServer((req, res) => {
       out = rpc(id, { content: [{ type: 'text', text: quoted }] });
     } else if (method === 'tools/call' && params?.name === 'err') {
       out = rpcError(id, -32000, `bad ${quoted}`);
+    } else if (method === 'tools/call' && params?.name === 'rich') {
+      out = rpc(id, richResult(quoted));
+    } else if (method === 'tools/call' && params?.name === 'structured') {
+      out = rpc(id, { content: [], structuredContent: { value: quoted } });
+    } else if (method === 'tools/call' && params?.name === 'nested') {
+      const inner = JSON.stringify({ quoted });
+      out = rpc(id, { content: [{ type: 'text', text: JSON.stringify({ inner }) }] });
+    } else if (method === 'tools/call' && params?.name === 'failed') {
+      out = rpc(id, { isError: true, content: [{ type: 'text', text: quoted }] });
+    } else if (method === 'tools/call' && params?.name === 'count') {
+      out = rpc(id, {
+        content: [{ type: 'text', text: 'plain' }],
+        structuredContent: { count: 1, label: 'plain' },
+      });
+    } else if (method === 'resources/list') {
+      out = rpc(id, { resources: [{ uri: 'mem://r', name: quoted, description: quoted }] });
+    } else if (method === 'resources/templates/list') {
+      out = rpc(id, { resourceTemplates: [] });
+    } else if (method === 'resources/read') {
+      out = rpc(id, { contents: [{ uri: params?.uri, text: quoted }] });
+    } else if (method === 'prompts/list') {
+      out = rpc(id, { prompts: [{ name: 'p', description: quoted }] });
+    } else if (method === 'prompts/get') {
+      out = rpc(id, {
+        description: quoted,
+        messages: [{ role: 'user', content: { type: 'text', text: quoted } }],
+      });
+    } else if (method === 'completion/complete') {
+      out = rpc(id, { completion: { values: [quoted] } });
     } else if (method === 'tools/call' && params?.name === 'echo') {
       out = rpc(id, {
         content: [{ type: 'text', text: String(params?.arguments?.message ?? '') }],

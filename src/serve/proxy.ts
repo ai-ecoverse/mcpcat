@@ -2,7 +2,7 @@ import { type ConnectOptions, connect } from '../client/connect.ts';
 import type { McpConnection, ServerInfo } from '../client/connection.ts';
 import { completeModernOutcome, modernDiscoverResult } from '../client/modern.ts';
 import type { Platform } from '../platform/types.ts';
-import { secretMasker } from '../render/redact.ts';
+import { redactDeep, secretMasker } from '../render/redact.ts';
 
 export interface ProxyOptions {
   target: string;
@@ -57,19 +57,6 @@ function rpcError(id: RpcId, code: number, message: string): RpcOutcome {
     contentType: JSON_CT,
     body: JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }),
   };
-}
-
-function scrubValue(value: unknown, scrub: (s: string) => string): unknown {
-  if (typeof value === 'string') return scrub(value);
-  if (Array.isArray(value)) return value.map((v) => scrubValue(v, scrub));
-  if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = scrubValue(v, scrub);
-    }
-    return out;
-  }
-  return value;
 }
 
 function translateCapabilities(info: ServerInfo): Record<string, unknown> {
@@ -136,7 +123,7 @@ export function createProxyHandler(options: ProxyOptions): {
   }
 
   function scrubOk(id: RpcId, result: unknown): RpcOutcome {
-    return rpcOk(id, scrubValue(result, scrub));
+    return rpcOk(id, redactDeep(result, scrub));
   }
 
   function scrubErr(id: RpcId, code: number, message: string): RpcOutcome {

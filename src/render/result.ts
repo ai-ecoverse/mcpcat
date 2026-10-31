@@ -7,6 +7,7 @@ import type {
 } from '@earendil-works/pi-mcp';
 import type { GetPromptResult, PromptInfo } from '../client/connection.ts';
 import type { Platform } from '../platform/types.ts';
+import { redactOutput } from './redact.ts';
 import { sanitizeTerminal } from './sanitize.ts';
 
 export type Redactor = (text: string) => string;
@@ -82,7 +83,7 @@ export async function renderCallResult(
     const content = options.json
       ? renderCallResultJson(result)
       : renderCallResultText(result, options);
-    await platform.fs.writeFile(options.outputPath, content);
+    await platform.fs.writeFile(options.outputPath, redactOutput(content, r));
     if (result.isError) {
       await platform.write(
         2,
