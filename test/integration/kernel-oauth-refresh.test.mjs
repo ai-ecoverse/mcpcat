@@ -102,7 +102,7 @@ function refreshes(log) {
   return log.split('\n').filter((l) => l.startsWith('token ')).length;
 }
 
-describe("kernel: an expired token refreshes against an authorization server on the kernel's loopback", () => {
+describe('kernel: an expired literal token is never refreshed or sent', () => {
   let kernel;
   let client;
   let hostDir;
@@ -126,15 +126,6 @@ describe("kernel: an expired token refreshes against an authorization server on 
       'dist/as.mjs',
       readFileSync(join(fixturesDir, 'kernel-oauth-as.mjs'))
     );
-    for (const name of ['kernel-probe-put', 'kernel-probe-stat']) {
-      await installPackage(
-        kernel,
-        `@ai-ecoverse/mcpcat-test-${name}`,
-        name,
-        'dist/main.mjs',
-        readFileSync(join(fixturesDir, `${name}.mjs`))
-      );
-    }
     client = await attachKernel(await kernel.connect());
     hostDir = mkdtempSync(join(tmpdir(), 'mcpcat-kernel-as-'));
   });
@@ -153,17 +144,19 @@ describe("kernel: an expired token refreshes against an authorization server on 
     if (hostDir) rmSync(hostDir, { recursive: true, force: true });
   });
 
-  async function refreshesOnce(url, log) {
+  async function neverRefreshes(url, log) {
     const agentDir = `${AGENT_DIR}/${servers.length}`;
-    await kernel.writeFile(`${agentDir}/mcp-auth.json`, JSON.stringify(url.state));
+    const store = `${agentDir}/mcp-auth.json`;
+    const state = JSON.stringify(url.state);
+    await kernel.writeFile(store, state);
     const { status, stdout, stderr } = await kernel.run(
       ['mcpcat', 'call', url.href, 'echo', '-d', '{"message":"after refresh"}'],
       { stdout: 'pipe', stderr: 'pipe', env: { PI_CODING_AGENT_DIR: agentDir } }
     );
-    assert.equal(status, 0, `expected exit 0, got ${status}; stderr: ${stderr}; AS: ${log()}`);
-    assert.ok(stdout.includes('after refresh'), stdout);
-    assert.equal(refreshes(log()), 1, `AS log: ${log()}`);
-    assert.ok(!log().includes('rejected'), `AS log: ${log()}`);
+    assert.equal(status, 4, `expected exit 4, got ${status}; stderr: ${stderr}; AS: ${log()}`);
+    assert.ok(!stdout.includes('after refresh'), stdout);
+    assert.equal(refreshes(log()), 0, `AS log: ${log()}`);
+    assert.equal(new TextDecoder().decode(await kernel.readFile(store)), state);
   }
 
   async function kernelAs() {
@@ -178,36 +171,7 @@ describe("kernel: an expired token refreshes against an authorization server on 
   it('at 127.0.0.1:<port> served inside the kernel', async () => {
     const { seed, port, log } = await kernelAs();
     const href = `http://127.0.0.1:${port}/mcp`;
-    await refreshesOnce({ href, state: expiredState(href, seed) }, log);
-  });
-
-  it('the token store is 0600 in a 0700 directory after a refresh', async (t) => {
-    const { seed, port, log } = await kernelAs();
-    const href = `http://127.0.0.1:${port}/mcp`;
-    const agentDir = `${AGENT_DIR}/mode`;
-    const store = `${agentDir}/mcp-auth.json`;
-    const modes = async () =>
-      (
-        await kernel.run(['kernel-probe-stat', store, agentDir], { stdout: 'pipe', stderr: 'pipe' })
-      ).stdout
-        .trim()
-        .split('\n')
-        .map((l) => l.split('\t')[1]);
-    const put = await kernel.run(['kernel-probe-put', store, '0o644', '0o755'], {
-      stdout: 'pipe',
-      stderr: 'pipe',
-      stdin: JSON.stringify(expiredState(href, seed)),
-    });
-    assert.equal(put.status, 0, put.stderr);
-    if (put.stdout.trim() === 'no-chmod') return t.skip('this kernel has no ctx.fs.chmod');
-    assert.deepEqual(await modes(), ['644', '755']);
-    const { status, stderr } = await kernel.run(
-      ['mcpcat', 'call', href, 'echo', '-d', '{"message":"after refresh"}'],
-      { stdout: 'pipe', stderr: 'pipe', env: { PI_CODING_AGENT_DIR: agentDir } }
-    );
-    assert.equal(status, 0, `stderr: ${stderr}; AS: ${log()}`);
-    assert.deepEqual(await modes(), ['600', '700']);
-    assert.ok(refreshes(log()) >= 1, `AS log: ${log()}`);
+    await neverRefreshes({ href, state: expiredState(href, seed) }, log);
   });
 
   it('at the host 127.0.0.1:<port> with hostLoopback on', {
@@ -219,6 +183,6 @@ describe("kernel: an expired token refreshes against an authorization server on 
     const as = await startHostAs(seedPath);
     servers.push(as);
     const href = `http://127.0.0.1:${as.port}/mcp`;
-    await refreshesOnce({ href, state: expiredState(href, seed) }, as.log);
+    await neverRefreshes({ href, state: expiredState(href, seed) }, as.log);
   });
 });

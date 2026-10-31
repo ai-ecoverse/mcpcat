@@ -1,4 +1,5 @@
 import type { AuthProvider, UnauthorizedContext } from '@earendil-works/pi-mcp';
+import { parseWwwAuthenticate } from '@earendil-works/pi-mcp/oauth';
 import { authError, EXIT_AUTH, McpcatError } from '../cli/exit-codes.ts';
 import type { Platform } from '../platform/types.ts';
 import {
@@ -30,6 +31,21 @@ export class SettingsSignInError extends McpcatError {
     super(EXIT_AUTH, `HTTP ${status}: authentication required. ${advice}`);
     this.name = 'SettingsSignInError';
     this.advice = advice;
+  }
+}
+
+export class AuthStepUpError extends Error {
+  readonly scope: string | undefined;
+  readonly target: string | undefined;
+  readonly report: string;
+  constructor(scope: string | undefined, target?: string, kernel = false) {
+    super(scope ? `insufficient_scope: ${scope}` : 'insufficient_scope');
+    this.name = 'AuthStepUpError';
+    this.scope = scope;
+    this.target = target;
+    this.report = kernel
+      ? `insufficient scope${scope ? ` (required: ${scope})` : ''}. ${SETTINGS_SIGN_IN}`
+      : `insufficient scope. Run: mcpcat login ${target ?? '<target>'}${scope ? ` --scope ${scope}` : ''}`;
   }
 }
 
@@ -132,11 +148,11 @@ export async function placeholderAuthProvider<Inner extends AuthProvider | undef
   timeoutMs?: number;
   inner?: Inner;
   onCredentialObtained?: (secret: string) => void;
-}): Promise<AuthProvider | Inner> {
+}): Promise<AuthProvider | Inner | undefined> {
   const { platform, name, url, headers, inner, onCredentialObtained } = options;
   const fallback = inner as Inner;
   if (!isKernel(platform) || !url) return fallback;
-  if (hasAuthorization(headers)) return fallback;
+  if (hasAuthorization(headers)) return undefined;
   const server = platform.uid === 0 ? name : undefined;
   const id = server === undefined ? await jerkIdFor(platform, name, url) : undefined;
   const timeoutMs = options.timeoutMs ?? JERK_TIMEOUT_MS;
@@ -157,26 +173,28 @@ export async function placeholderAuthProvider<Inner extends AuthProvider | undef
     async token(): Promise<string | undefined> {
       const placeholder = await obtain();
       noPlaceholder = !placeholder;
-      if (!placeholder) return inner?.token();
+      if (!placeholder) {
+        const held = await inner?.token();
+        return held !== undefined && PLACEHOLDER.test(held) ? held : undefined;
+      }
       onCredentialObtained?.(placeholder);
       return placeholder;
     },
     async onUnauthorized(context: UnauthorizedContext): Promise<void> {
-      if (context.response.status === 401 && noPlaceholder && !context.token) {
-        const advice = hidden ? NO_PLACEHOLDER : SETTINGS_SIGN_IN;
-        throw new SettingsSignInError(
-          context.response.status,
-          vaultSilent ? VAULT_NO_ANSWER : advice
-        );
-      }
+      const { status, headers: replyHeaders } = context.response;
       const placeholderSent = context.token !== undefined && PLACEHOLDER.test(context.token);
-      if (context.response.status === 401 && placeholderSent) {
-        throw new SettingsSignInError(context.response.status, PLACEHOLDER_NOT_ACCEPTED);
+      if (status === 401 && placeholderSent) {
+        throw new SettingsSignInError(status, PLACEHOLDER_NOT_ACCEPTED);
       }
-      if (!inner?.onUnauthorized || placeholderSent) {
-        throw new SettingsSignInError(context.response.status);
+      if (status === 401 && noPlaceholder) {
+        const advice = hidden ? NO_PLACEHOLDER : SETTINGS_SIGN_IN;
+        throw new SettingsSignInError(status, vaultSilent ? VAULT_NO_ANSWER : advice);
       }
-      await inner.onUnauthorized(context);
+      const challenge = parseWwwAuthenticate(replyHeaders.get('www-authenticate'));
+      if (inner && !placeholderSent && challenge.error === 'insufficient_scope') {
+        throw new AuthStepUpError(challenge.scope, name, true);
+      }
+      throw new SettingsSignInError(status);
     },
   };
 }

@@ -57,8 +57,8 @@ const sent = (offered, url) =>
     .filter((o) => o.url.startsWith(url))
     .map((o) => o.headers.find(([name]) => name.toLowerCase() === 'authorization')?.[1]);
 
-async function bench({ jerk, fill = filled, hook = true }) {
-  const upstream = await gatedServer(CREDENTIAL);
+async function bench({ jerk, fill = filled, hook = true, credential = CREDENTIAL }) {
+  const upstream = await gatedServer(credential);
   const exit = sealedExit(upstream.port, fill);
   const vault = standInVault(mcpRecord);
   const kernel = await bootKernel(exit.transport, SERVERS, {
@@ -281,6 +281,111 @@ describe('kernel: what the vault answers decides whether jerk is asked', {
       assert.ok((await jerkGets()).length > 0);
     });
   }
+});
+
+describe('kernel: a cached literal token never goes out', {
+  skip: !kernelAtLeast(86) && 'ctx.sync.cred and kernel.chmod need slicc-kernel >= 1.86.0',
+}, () => {
+  const LITERAL = 'cached-literal-537';
+  const REFRESH = 'cached-refresh-537';
+  const CACHED = { value: LITERAL };
+  const TOKENS = `${AGENT_DIR}/mcp-auth.json`;
+  const STORE = JSON.stringify({
+    'https://bb.example.com/mcp': {
+      serverUrl: 'https://bb.example.com/mcp',
+      tokens: { access_token: LITERAL, token_type: 'Bearer', refresh_token: REFRESH },
+      tokensExpireAt: Date.now() + 3_600_000,
+    },
+  });
+  let bed;
+  let upstream;
+
+  before(async () => {
+    bed = await bench({ jerk: false, credential: CACHED });
+    upstream = bed.upstream;
+  });
+  beforeEach(async () => {
+    await bed.reset();
+    await bed.kernel.writeFile(TOKENS, STORE);
+    await bed.kernel.chmod(TOKENS, 0o644);
+  });
+  after(() => bed?.close());
+
+  const assertNothingSent = (stdout, stderr) => {
+    assert.ok(upstream.seen.every((s) => s.authorization === undefined));
+    assert.deepEqual(
+      sent(bed.exit.offered, 'https://bb.example.com').filter((h) => h !== undefined),
+      []
+    );
+    assertNoValue(LITERAL, stdout, stderr);
+    assertNoValue(REFRESH, stdout, stderr);
+  };
+  const assertStoreKept = async () =>
+    assert.equal(new TextDecoder().decode(await bed.kernel.readFile(TOKENS)), STORE);
+
+  for (const [what, answer] of [
+    ['ENOENT', refused('ENOENT', 'no such record')],
+    ['ETIMEDOUT', refused('ETIMEDOUT', 'vault trouble')],
+    ['EINVAL for several records', refused('EINVAL', 'several mcp records are bound to bb')],
+  ]) {
+    it(`${what}: a non-root user sends nothing and gets the root hint`, async () => {
+      await bed.reset(answer);
+      await bed.kernel.chmod(TOKENS, 0o644);
+      const { status, stdout, stderr } = await mcpcat(bed.kernel, {}, AS_CONE)('info', 'bb');
+      assert.equal(status, 4, stderr);
+      assert.ok(stderr.includes(NATIVE_TOOLS), stderr);
+      assert.ok(stderr.includes(PANEL_ROOT), stderr);
+      assert.equal(upstream.seen.length, 1);
+      assert.equal(bed.vault.requests.length, 0);
+      assertNothingSent(stdout, stderr);
+      await assertStoreKept();
+    });
+  }
+
+  it('ENOENT: root sends nothing and gets the Settings pointer', async () => {
+    await bed.reset(refused('ENOENT', 'no such record'));
+    const { status, stdout, stderr } = await mcpcat(bed.kernel, {})('info', 'bb');
+    assert.equal(status, 4, stderr);
+    assert.ok(stderr.includes(SETTINGS), stderr);
+    assert.equal(upstream.seen.length, 1);
+    assertNothingSent(stdout, stderr);
+    await assertStoreKept();
+  });
+
+  it('ETIMEDOUT: root sends nothing and hears the vault did not answer', async () => {
+    await bed.reset(refused('ETIMEDOUT', 'vault trouble'));
+    const { status, stdout, stderr } = await mcpcat(bed.kernel, {})('info', 'bb');
+    assert.equal(status, 4, stderr);
+    assert.ok(stderr.includes(NO_ANSWER), stderr);
+    assert.equal(upstream.seen.length, 1);
+    assertNothingSent(stdout, stderr);
+    await assertStoreKept();
+  });
+
+  it('EINVAL for several records: root reaches no server at all', async () => {
+    await bed.reset(refused('EINVAL', 'several mcp records are bound to bb'));
+    const { status, stdout, stderr } = await mcpcat(bed.kernel, {})('info', 'bb');
+    assert.equal(status, 4, stderr);
+    assert.match(stderr, /several sign-ins for bb/);
+    assert.equal(upstream.seen.length, 0);
+    assertNothingSent(stdout, stderr);
+    await assertStoreKept();
+  });
+
+  it('a lower-case authorization header keeps the literal out of the request', async () => {
+    await bed.reset(refused('ENOENT', 'no such record'));
+    const { stdout, stderr } = await mcpcat(bed.kernel, {})(
+      '-H',
+      'authorization: Bearer from-the-flag',
+      'info',
+      'bb'
+    );
+    assert.ok(
+      upstream.seen.every((s) => s.authorization === 'Bearer from-the-flag'),
+      JSON.stringify(upstream.seen)
+    );
+    assertNoValue(LITERAL, stdout, stderr);
+  });
 });
 
 describe('kernel: no /dev/sealed hook at all', {
