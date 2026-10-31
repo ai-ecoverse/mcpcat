@@ -196,7 +196,7 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
       const text = line.trim();
       if (!text) return;
       lastError = text;
-      if (readyAt === undefined && isGuardRefusal(text)) refusal ??= text;
+      if (isGuardRefusal(text)) refusal ??= text;
       else relay(text);
     });
     exited = Promise.all([out, err, child.wait()]).then(([, , result]) => {
