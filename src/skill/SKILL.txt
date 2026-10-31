@@ -65,7 +65,7 @@ mcpcat login docs
 
 `login` runs the OAuth sign-in for a server that needs one; `logout` removes its tokens. With slicc-jerk installed, tokens live in jerk: `mcp:<name>` for a server jerk lists from `mcp.json`, and `mcp:url:<url>` for a URL with jerk 0.19.0 or newer. Otherwise they live in `mcp-auth.json`, next to `mcp.json`.
 
-In seven, `login` refuses: sign in under Settings › MCP servers. mcpcat never holds a token there: for a server with no `Authorization` header it asks `jerk mcp:<name> get` for the placeholder on each request. Don't add that header to `mcp.json` yourself. Only root gets the placeholder of a Settings sign-in: as another user a 401 exits 4, the agent already has that server's tools, and a human can use it from a panel terminal as root. As root, a 401 with no placeholder exits 4 and points to Settings. A 403 points there too, with the required scope if the server names one. If the request carries its own `Authorization` header, the message says the server rejected it.
+In seven, `login` refuses: sign in under Settings › MCP servers. mcpcat never holds a token there: for a server with no `Authorization` header it asks `jerk mcp:<name> get` for the placeholder on each request. Don't add that header to `mcp.json` yourself. Only root gets the placeholder of a Settings sign-in: as another user a 401 exits 4, the agent already has that server's tools, and a human can use it from a panel terminal as root. As root, a 401 with no placeholder exits 4 and points to Settings. jerk is optional: seven doesn't preinstall it, and without it no placeholder goes out. A 401 after a placeholder went out exits 4 without a retry and doesn't mean you must sign in: the vault fills the placeholder in when the request is forwarded, so either that forwarding isn't active in this seven yet or the server rejected the credential. Try again from the Settings page's Connect, or ask whoever runs seven. A 403 points to Settings too, with the required scope if the server names one. If the request carries its own `Authorization` header, the message says the server rejected it.
 
 ## Serve a browser tab's WebMCP tools
 
@@ -102,7 +102,7 @@ mcpcat serve --help
 | 1 | The tool reported an error (`isError`), or `grep` found nothing |
 | 2 | Usage: bad flags, unknown tool, invalid arguments or config, or a write (`login`, `add`, `rm`) to a config directory mcpcat can't write (the message names the path) |
 | 3 | Connection, transport or protocol failure |
-| 4 | Authentication required or failed: run the `mcpcat login` the message names, or in seven sign in under Settings › MCP servers |
+| 4 | Authentication required or failed: run the `mcpcat login` the message names, or in seven follow the message, which points to Settings › MCP servers unless a placeholder already went out |
 | 5 | JSON-RPC error from the server |
 | 6 | The server asked for input and there is no terminal |
 | 124 | Timeout |
