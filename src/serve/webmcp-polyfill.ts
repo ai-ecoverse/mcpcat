@@ -48,7 +48,7 @@ const GUARD_REFUSAL_RE =
   /^(?:(?:(?:playwright-cli )?webmcp-polyfill: )?[A-Z][A-Za-z]*\.[a-z][A-Za-z]*: |playwright-cli webmcp-polyfill: )slicc: refused: \S/;
 
 export function isGuardRefusal(line: string): boolean {
-  return GUARD_REFUSAL_RE.test(line.trim());
+  return /^slicc: refused: \S/.test(line.trim()) || GUARD_REFUSAL_RE.test(line.trim());
 }
 
 export function compareVersions(a: string, b: string): number {

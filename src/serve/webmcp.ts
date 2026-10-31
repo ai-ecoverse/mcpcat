@@ -51,6 +51,14 @@ interface CacheEntry {
 
 const UNAVAILABLE_RE = /WebMCP is unavailable on this page/;
 
+function emptyFallbackOrError(error: string): ToolListing {
+  const hint = error.trim();
+  return hint ===
+    'webmcp: no tools are available through the other-extension fallback; page startup or parse-time checks may have happened before installation'
+    ? { tools: [], hint }
+    : { tools: [], error };
+}
+
 function buildBaseArgs(options: WebMcpOptions): string[] {
   const args: string[] = [];
   if (options.cdp) {
@@ -781,7 +789,7 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
   async function getRpcTools(): Promise<ToolListing | null> {
     const { tools, error, notFound, unavailable } = await listRaw();
     if (notFound) return null;
-    if (error) return { tools: [], error };
+    if (error) return emptyFallbackOrError(error);
     const late = options.late?.() ?? false;
 
     const rpcTools: RpcTool[] = [];
