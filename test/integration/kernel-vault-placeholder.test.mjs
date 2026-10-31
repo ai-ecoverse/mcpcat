@@ -39,7 +39,7 @@ const GET = {
 };
 const LISTED = listed('bb', 'hdr', 'open');
 
-const mcpRecord = () => ({ placeholder: VAULT, state: 'active', kind: 'mcp' });
+const mcpRecord = () => ({ placeholder: VAULT, state: 'inert', kind: 'mcp' });
 const refused = (code, message) => () => ({ error: { code, message } });
 
 function filled(head, body) {
@@ -149,10 +149,10 @@ describe('kernel: root asks the vault, jerk optional', {
   });
 
   for (const [what, reply] of [
-    ['a kind other than mcp', { placeholder: VAULT, state: 'active', kind: 'secret' }],
-    ['no kind', { placeholder: VAULT, state: 'active' }],
+    ['a kind other than mcp', { placeholder: VAULT, state: 'inert', kind: 'secret' }],
+    ['no kind', { placeholder: VAULT, state: 'inert' }],
     ['a value in place of the placeholder', { placeholder: 'gho_value537', kind: 'mcp' }],
-    ['no placeholder', { state: 'active', kind: 'mcp' }],
+    ['no placeholder', { state: 'inert', kind: 'mcp' }],
     ['a placeholder in a list', { placeholder: [VAULT], kind: 'mcp' }],
   ]) {
     it(`refuses ${what} with exit 4, sending and printing nothing`, async () => {
@@ -206,7 +206,7 @@ describe('kernel: what the vault answers decides whether jerk is asked', {
   });
 
   it('ENOENT: no placeholder, no jerk, and a 401 points to Settings', async () => {
-    await bed.reset(refused('ENOENT', 'no such record'));
+    await bed.reset(refused('ENOENT', 'no mcp record is bound to bb'));
     const { status, stderr } = await run('info', 'bb');
     assert.equal(status, 4, stderr);
     assert.ok(stderr.includes(SETTINGS), stderr);
@@ -215,7 +215,7 @@ describe('kernel: what the vault answers decides whether jerk is asked', {
   });
 
   it('ENOENT: a public server still works', async () => {
-    await bed.reset(refused('ENOENT', 'no such record'));
+    await bed.reset(refused('ENOENT', 'no mcp record is bound to bb'));
     const { status, stderr } = await run('tools', 'open');
     assert.equal(status, 0, stderr);
     assert.deepEqual(await jerkLog(bed.kernel), []);
@@ -325,9 +325,12 @@ describe('kernel: a cached literal token never goes out', {
     assert.equal(new TextDecoder().decode(await bed.kernel.readFile(TOKENS)), STORE);
 
   for (const [what, answer] of [
-    ['ENOENT', refused('ENOENT', 'no such record')],
+    ['ENOENT', refused('ENOENT', 'no mcp record is bound to bb')],
     ['ETIMEDOUT', refused('ETIMEDOUT', 'vault trouble')],
-    ['EINVAL for several records', refused('EINVAL', 'several mcp records are bound to bb')],
+    [
+      'EINVAL for several records',
+      refused('EINVAL', 'several mcp records are bound to bb; ask for one by name'),
+    ],
   ]) {
     it(`${what}: a non-root user sends nothing and gets the root hint`, async () => {
       await bed.reset(answer);
@@ -344,7 +347,7 @@ describe('kernel: a cached literal token never goes out', {
   }
 
   it('ENOENT: root sends nothing and gets the Settings pointer', async () => {
-    await bed.reset(refused('ENOENT', 'no such record'));
+    await bed.reset(refused('ENOENT', 'no mcp record is bound to bb'));
     const { status, stdout, stderr } = await mcpcat(bed.kernel, {})('info', 'bb');
     assert.equal(status, 4, stderr);
     assert.ok(stderr.includes(SETTINGS), stderr);
@@ -364,7 +367,7 @@ describe('kernel: a cached literal token never goes out', {
   });
 
   it('EINVAL for several records: root reaches no server at all', async () => {
-    await bed.reset(refused('EINVAL', 'several mcp records are bound to bb'));
+    await bed.reset(refused('EINVAL', 'several mcp records are bound to bb; ask for one by name'));
     const { status, stdout, stderr } = await mcpcat(bed.kernel, {})('info', 'bb');
     assert.equal(status, 4, stderr);
     assert.match(stderr, /several sign-ins for bb/);
@@ -374,7 +377,7 @@ describe('kernel: a cached literal token never goes out', {
   });
 
   it('a lower-case authorization header keeps the literal out of the request', async () => {
-    await bed.reset(refused('ENOENT', 'no such record'));
+    await bed.reset(refused('ENOENT', 'no mcp record is bound to bb'));
     const { stdout, stderr } = await mcpcat(bed.kernel, {})(
       '-H',
       'authorization: Bearer from-the-flag',
