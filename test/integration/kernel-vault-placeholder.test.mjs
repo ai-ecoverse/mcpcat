@@ -265,6 +265,7 @@ describe('kernel: what the vault answers decides whether jerk is asked', {
   for (const [what, answer] of [
     ['ENOTCONN', refused('ENOTCONN', 'no vault')],
     ['an old vault without the op', refused('EINVAL', 'unknown op')],
+    ['an old vault with a flat error', () => ({ error: 'unknown op', errno: 'EINVAL' })],
     [
       'a 1.18 vault that needs a name',
       refused('EINVAL', 'name must match ^[A-Za-z_][A-Za-z0-9_]*$'),

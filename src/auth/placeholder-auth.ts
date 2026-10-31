@@ -92,7 +92,8 @@ async function placeholderFrom(
 interface VaultReply {
   placeholder?: unknown;
   kind?: unknown;
-  error?: { code?: unknown; message?: unknown };
+  error?: string | { code?: unknown; message?: unknown };
+  errno?: unknown;
 }
 
 interface VaultAnswer {
@@ -122,10 +123,12 @@ async function vaultPlaceholder(platform: Platform, server: string): Promise<Vau
   if (reply === undefined) return { unavailable: true };
   const error = reply?.error;
   if (error) {
-    const message = String(error.message);
-    if (error.code === 'ENOTCONN') return { unavailable: true };
-    if (error.code === 'ENOENT') return {};
-    if (error.code !== 'EINVAL') return { noAnswer: true };
+    const structured = typeof error === 'object';
+    const code = structured ? error.code : reply.errno;
+    const message = String(structured ? error.message : error);
+    if (code === 'ENOTCONN') return { unavailable: true };
+    if (code === 'ENOENT') return {};
+    if (code !== 'EINVAL') return { noAnswer: true };
     if (OLD_VAULT.test(message)) return { unavailable: true };
     throw authError(
       message.startsWith('several ')
