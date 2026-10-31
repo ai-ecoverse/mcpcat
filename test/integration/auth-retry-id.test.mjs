@@ -84,7 +84,7 @@ describe('a request retried after a 401 gets a fresh JSON-RPC id (host)', () => 
   });
 });
 
-describe('a request retried after a 401 gets a fresh JSON-RPC id (kernel)', () => {
+describe('a literal token is not sent, refreshed or retried in the kernel', () => {
   let kernel;
   let client;
   let as;
@@ -129,7 +129,7 @@ describe('a request retried after a 401 gets a fresh JSON-RPC id (kernel)', () =
     kernel?.terminate();
   });
 
-  it('refreshes and retries with a new id', async () => {
+  it('exits 4 on the 401 without a refresh', async () => {
     const s = seed();
     await kernel.writeFile('/tmp/retry-seed.json', JSON.stringify(s));
     const dec = new TextDecoder();
@@ -159,8 +159,8 @@ describe('a request retried after a 401 gets a fresh JSON-RPC id (kernel)', () =
       stderr: 'pipe',
       env: { PI_CODING_AGENT_DIR: AGENT_DIR },
     });
-    assert.equal(r.status, 0, `stderr: ${r.stderr}; AS: ${log}`);
-    assert.match(r.stdout, /retried/);
-    assertRetried(log);
+    assert.equal(r.status, 4, `stderr: ${r.stderr}; AS: ${log}`);
+    assert.doesNotMatch(r.stdout, /retried/);
+    assert.ok(!log.includes('token refresh_token'), `AS log: ${log}`);
   });
 });

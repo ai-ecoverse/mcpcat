@@ -90,13 +90,14 @@ describe('kernel: a non-root user with an unwritable config directory', () => {
     assert.ok(!stderr.includes('could not write'), stderr);
   });
 
-  it('a token store it can read still works, and stays as it is', async () => {
+  it('a literal token in a store it can read is never sent, and the store stays as it is', async () => {
     await kernel.writeFile(TOKENS, LEGACY_STORE);
     await kernel.chmod(TOKENS, 0o644);
     upstream.seen.length = 0;
-    const { status, stderr } = await cone('tools', 'bb');
-    assert.equal(status, 0, stderr);
-    assert.ok(upstream.seen.every((s) => s.authorization === 'Bearer stored'));
+    const { status, stderr } = await cone('info', 'bb');
+    assert.equal(status, 4, stderr);
+    assert.ok(stderr.includes(SETTINGS), stderr);
+    assert.ok(upstream.seen.every((s) => s.authorization === undefined));
     assert.equal(new TextDecoder().decode(await kernel.readFile(TOKENS)), LEGACY_STORE);
   });
 

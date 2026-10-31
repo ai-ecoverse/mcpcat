@@ -12,7 +12,7 @@ import type { McpOAuthConfig } from '../config/types.ts';
 import type { Platform } from '../platform/types.ts';
 import { JerkSignInRequiredError, JerkTokenSource } from './jerk-token-source.ts';
 import { PiFileTokenSource } from './pi-store.ts';
-import { SETTINGS_SIGN_IN } from './placeholder-auth.ts';
+import { AuthStepUpError } from './placeholder-auth.ts';
 import { isKernel, type TokenSource } from './token-source.ts';
 
 const CIMD_URL = 'https://mcpcat.sliccy.ai/oauth/client.json';
@@ -54,6 +54,9 @@ class SourceBackedStore implements McpOAuthStateStore {
   }
 
   async load(): Promise<McpOAuthState | undefined> {
+    if (isKernel(this.platform) && this.source instanceof PiFileTokenSource) {
+      return this.source.loadWithoutLock(this.name, this.serverUrl);
+    }
     return this.source.load(this.name, this.serverUrl);
   }
 
@@ -91,20 +94,7 @@ function cimdFn(redirectUrl: string): (
   };
 }
 
-export class AuthStepUpError extends Error {
-  readonly scope: string | undefined;
-  readonly target: string | undefined;
-  readonly report: string;
-  constructor(scope: string | undefined, target?: string, kernel = false) {
-    super(scope ? `insufficient_scope: ${scope}` : 'insufficient_scope');
-    this.name = 'AuthStepUpError';
-    this.scope = scope;
-    this.target = target;
-    this.report = kernel
-      ? `insufficient scope${scope ? ` (required: ${scope})` : ''}. ${SETTINGS_SIGN_IN}`
-      : `insufficient scope. Run: mcpcat login ${target ?? '<target>'}${scope ? ` --scope ${scope}` : ''}`;
-  }
-}
+export { AuthStepUpError };
 
 export function createMcpAuthProvider(options: {
   name: string;
@@ -234,7 +224,7 @@ function createPiAuthProvider(options: {
       const skew = computeSkew(state);
       const expired =
         state?.tokensExpireAt !== undefined && state.tokensExpireAt - skew <= Date.now();
-      if (expired && state?.tokens?.refresh_token) {
+      if (expired && state?.tokens?.refresh_token && !isKernel(platform)) {
         await refresh(cachedToken).catch(() => undefined);
         const refreshedState = await store.load();
         cachedToken = refreshedState?.tokens?.access_token;

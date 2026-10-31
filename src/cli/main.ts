@@ -2026,7 +2026,7 @@ async function resolveAuthProvider(
   headers: Record<string, string>,
   timeoutMs: number | undefined,
   onCredentialObtained?: (secret: string) => void
-): Promise<{ provider: AuthProvider; credentialSecrets: string[] } | undefined> {
+): Promise<{ provider: AuthProvider | undefined; credentialSecrets: string[] } | undefined> {
   if (hasAuthHeader || !url) return undefined;
   const entry = config.entry(target);
   const oauth =

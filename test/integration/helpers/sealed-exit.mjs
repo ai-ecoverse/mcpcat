@@ -110,7 +110,7 @@ export function sealedExit(port, fill) {
   return { transport, offered };
 }
 
-export async function bootKernel(transport, servers, options = {}) {
+export async function bootKernel(transport, servers, { jerk = true, ...options } = {}) {
   const kernel = await createNodeKernel({ network: { transport }, ...options });
   const install = async (name, command, module, data) => {
     await kernel.writeFile(`/node_modules/${name}/${module}`, data);
@@ -130,12 +130,14 @@ export async function bootKernel(transport, servers, options = {}) {
     'dist/kernel/mcpcat.mjs',
     readFileSync(join(root, 'dist/kernel/mcpcat.mjs'))
   );
-  await install(
-    '@ai-ecoverse/slicc-jerk',
-    'jerk',
-    'dist/jerk.mjs',
-    readFileSync(join(fixtures, 'kernel-fake-jerk.mjs'))
-  );
+  if (jerk) {
+    await install(
+      '@ai-ecoverse/slicc-jerk',
+      'jerk',
+      'dist/jerk.mjs',
+      readFileSync(join(fixtures, 'kernel-fake-jerk.mjs'))
+    );
+  }
   await kernel.writeFile(CONFIG, JSON.stringify({ mcpServers: servers }));
   return kernel;
 }
@@ -151,6 +153,15 @@ export async function jerkLog(kernel) {
     stderr: 'pipe',
   });
   return stdout.split('\n').filter(Boolean);
+}
+
+export function standInVault(answers) {
+  const vault = { requests: [], answer: answers };
+  vault.sealed = async (request) => {
+    vault.requests.push(structuredClone(request));
+    return vault.answer(request);
+  };
+  return vault;
 }
 
 export function listed(...names) {
