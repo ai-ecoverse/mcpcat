@@ -1,12 +1,12 @@
+import { isCredentialHeader } from '../config/expand.ts';
 import type { Platform } from '../platform/types.ts';
 import { redactSecrets } from '../render/redact.ts';
 import { sanitizeTerminal } from '../render/sanitize.ts';
 
-const SENSITIVE_HEADER_RE = /^(authorization|cookie|proxy-authorization)$/i;
-const SENSITIVE_NAME_RE = /token|key|secret|password|session/i;
+const SESSION_HEADER_RE = /session/i;
 
 function isSensitiveHeader(name: string): boolean {
-  return SENSITIVE_HEADER_RE.test(name) || SENSITIVE_NAME_RE.test(name);
+  return isCredentialHeader(name) || SESSION_HEADER_RE.test(name);
 }
 
 export interface VerboseLogger {

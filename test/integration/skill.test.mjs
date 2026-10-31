@@ -59,7 +59,7 @@ describe('the agent skill', () => {
     assert.match(skill, /\*\*Never print, echo, log or paste a secret's value\*\*/);
     assert.match(skill, /-H 'Authorization: Bearer \$\{GH_TOKEN\}'/);
     assert.match(skill, /\*\*Never put a token into `mcp\.json`\.\*\*/);
-    assert.match(skill, /`-v` traces show expanded headers as `\[REDACTED\]`/);
+    assert.match(skill, /A shorter value under any other name is shown as is/);
   });
 
   it('only names verbs and flags mcpcat has', () => {

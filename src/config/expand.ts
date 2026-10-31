@@ -3,6 +3,8 @@ import type { Platform } from '../platform/types.ts';
 const PLACEHOLDER = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 const PLACEHOLDER_TEST = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/;
 const BANG_COMMAND = /^!(.+)$/;
+const CREDENTIAL_HEADER = /^(?:set-)?cookie$|auth|token|secret|key|password|passwd|credential/i;
+const MIN_SECRET_LENGTH = 8;
 
 export function containsPlaceholders(value: string): boolean {
   return PLACEHOLDER_TEST.test(value);
@@ -12,18 +14,28 @@ export function expandPlaceholders(value: string, env: Record<string, string | u
   return value.replace(PLACEHOLDER, (_, name: string) => env[name] ?? '');
 }
 
-export const MIN_VAR_SECRET = 8;
+export function isCredentialHeader(name: string): boolean {
+  return CREDENTIAL_HEADER.test(name);
+}
 
-export function placeholderValues(
-  value: string,
-  env: Record<string, string | undefined>
-): string[] {
+function placeholderValues(value: string, env: Record<string, string | undefined>): string[] {
   const values: string[] = [];
   for (const m of value.matchAll(PLACEHOLDER)) {
     const v = env[m[1]];
-    if (v !== undefined && v.length >= MIN_VAR_SECRET) values.push(v);
+    if (v !== undefined && v.length >= MIN_SECRET_LENGTH) values.push(v);
   }
   return values;
+}
+
+export function headerSecrets(
+  name: string,
+  template: string,
+  env: Record<string, string | undefined>
+): string[] {
+  const value = expandPlaceholders(template, env);
+  const secrets = value === template ? [] : [template, ...placeholderValues(template, env)];
+  if (isCredentialHeader(name) || value.length >= MIN_SECRET_LENGTH) secrets.push(value);
+  return secrets;
 }
 
 export function missingPlaceholders(

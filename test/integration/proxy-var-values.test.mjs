@@ -8,6 +8,8 @@ import { homeEnv, launch, scratchHome, startFixture } from './helpers/rows.mjs';
 const MARK = 'proxyVarSecretQ7v3Zk9';
 const ID = 'proxyIdPfx01';
 const SUFFIX = 'SuffixLeak77';
+const SHORT = 'zq7';
+const LONG = 'zq7longer9';
 const vars = {
   PROXY_TOK: MARK,
   PROXY_ID: ID,
@@ -55,6 +57,9 @@ describe('proxy: hides each ${VAR} value of a header', () => {
         mcpServers: {
           tok: { url: `${up.base}/tok/mcp`, headers: { Authorization: 'Bearer ${PROXY_TOK}' } },
           short: { url: `${up.base}/tok/mcp`, headers: { 'X-Key': '${PROXY_SHORT}' } },
+          'rule-plain': { url: `${up.base}/mcp`, headers: { 'X-Debug': SHORT } },
+          'rule-credential': { url: `${up.base}/mcp`, headers: { 'X-Api-Key': SHORT } },
+          'rule-long': { url: `${up.base}/mcp`, headers: { 'X-Debug': LONG } },
           unset: {
             url: `${up.base}/tok/mcp`,
             headers: { Authorization: 'Bearer ${PROXY_UNSET}', 'X-Other': '${PROXY_ID}' },
@@ -89,6 +94,13 @@ describe('proxy: hides each ${VAR} value of a header', () => {
       [target, '-H', 'X-Id: ${PROXY_ID}', '-H', 'X-Key: ${PROXY_KEY}'],
       env
     );
+    const open = `${up.base}/mcp`;
+    proxies.plainHeader = await startProxy([open, '-H', `X-Debug: ${SHORT}`], env);
+    proxies.credentialHeader = await startProxy([open, '-H', `X-Api-Key: ${SHORT}`], env);
+    proxies.longHeader = await startProxy([open, '-H', `X-Debug: ${LONG}`], env);
+    proxies.plainConfig = await startProxy(['rule-plain'], env);
+    proxies.credentialConfig = await startProxy(['rule-credential'], env);
+    proxies.longConfig = await startProxy(['rule-long'], env);
   });
 
   after(() => {
@@ -141,6 +153,28 @@ describe('proxy: hides each ${VAR} value of a header', () => {
       assert.ok(!text.includes('abc1234'), text);
       assert.ok(text.includes('key ***'), text);
     });
+  }
+
+  for (const via of ['Header', 'Config']) {
+    for (const tool of ['headers', 'err']) {
+      it(`shows a short value under a plain name: ${via}, ${tool}`, async () => {
+        const text = await call(proxies[`plain${via}`].url, tool);
+        assert.ok(text.includes(SHORT), text);
+        assert.ok(!text.includes('***'), text);
+      });
+
+      it(`masks a short value under a credential-like name: ${via}, ${tool}`, async () => {
+        const text = await call(proxies[`credential${via}`].url, tool);
+        assert.ok(!text.includes(SHORT), text);
+        assert.ok(text.includes('***'), text);
+      });
+
+      it(`masks a plain value of 8 or more characters: ${via}, ${tool}`, async () => {
+        const text = await call(proxies[`long${via}`].url, tool);
+        assert.ok(!text.includes(LONG), text);
+        assert.ok(text.includes('***'), text);
+      });
+    }
   }
 
   const unsetCases = {

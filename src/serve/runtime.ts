@@ -5,8 +5,8 @@ import {
   containsPlaceholders,
   expandPlaceholders,
   expandPlaceholdersStrict,
+  headerSecrets,
   missingPlaceholders,
-  placeholderValues,
 } from '../config/expand.ts';
 import { MergedConfigSource } from '../config/index.ts';
 import { stateDir } from '../config/paths.ts';
@@ -1185,17 +1185,6 @@ function unsetIn(
   return `unset variable ${missing.join(', ')} in header '${header}'`;
 }
 
-function hide(
-  hidden: Set<string>,
-  template: string,
-  expanded: string,
-  env: Record<string, string | undefined>
-): void {
-  if (template) hidden.add(template);
-  if (expanded) hidden.add(expanded);
-  for (const p of placeholderValues(template, env)) hidden.add(p);
-}
-
 async function resolveProxyConfig(
   platform: Platform,
   target: string,
@@ -1212,7 +1201,7 @@ async function resolveProxyConfig(
       const missing = unsetIn(k, v, platform.env);
       if (missing) return missing;
       expanded[k] = expandPlaceholders(v, platform.env);
-      hide(hiddenValues, v, expanded[k], platform.env);
+      for (const s of headerSecrets(k, v, platform.env)) hiddenValues.add(s);
     }
     const merged = { ...expanded, ...connectHeaders };
     return withPlaceholder(
@@ -1249,7 +1238,7 @@ async function buildProxyConnectOpts(
     const expanded = expandPlaceholders(v, platform.env);
     const key = k.toLowerCase() === 'authorization' ? 'Authorization' : k;
     connectHeaders[key] = expanded;
-    hide(hiddenValues, v, expanded, platform.env);
+    for (const s of headerSecrets(k, v, platform.env)) hiddenValues.add(s);
   }
 
   const isUrl =
@@ -1280,12 +1269,6 @@ async function buildProxyConnectOpts(
     );
     if (typeof result === 'string') return { error: result };
     connectOpts = result;
-  }
-
-  if (connectOpts.headers) {
-    for (const v of Object.values(connectOpts.headers)) {
-      if (v) hiddenValues.add(v);
-    }
   }
 
   return { connectOpts, hiddenValues };
