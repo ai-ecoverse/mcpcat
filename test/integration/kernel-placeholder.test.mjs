@@ -405,7 +405,7 @@ describe('kernel: a non-root user gets no placeholder', {
     const { status, stderr } = await mcpcat(kernel, {}, AS_CONE)('info', 'bb');
     assert.equal(status, 4, stderr);
     assert.ok(stderr.includes(SETTINGS), stderr);
-    assert.ok(!stderr.includes('jerk gave'), stderr);
+    assert.ok(!stderr.includes('gets no placeholder'), stderr);
     assert.ok(!stderr.includes(NATIVE_TOOLS), stderr);
     assert.ok(!stderr.includes('mcpcat login'), stderr);
     assert.ok(!(await jerkLog(kernel)).some((line) => line.includes(' get')));
