@@ -2,7 +2,7 @@ import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { kernelAtLeast } from './helpers/kernel.mjs';
+import { hasSealedFetch, kernelAtLeast } from './helpers/kernel.mjs';
 import {
   AGENT_DIR,
   assertNoValue,
@@ -28,6 +28,9 @@ const SETTINGS = 'Sign in under Settings › MCP servers';
 const NOT_ACCEPTED =
   "The request carried the signed-in credential's placeholder and the server still answered 401. Seven's vault fills the placeholder in when the request is forwarded, so either that forwarding is not active in this seven yet or the server rejected the credential. Try again from the Settings page's Connect, or ask whoever runs seven.";
 const REJECTED = 'The server rejected the explicit Authorization header';
+const NOT_FILLED = 'nothing fills it, so it was not sent';
+const NOT_FORWARDED =
+  "Seven's vault fills a placeholder in when the request is forwarded, so either that forwarding is not active in this seven yet or it failed. Try again, or ask whoever runs seven.";
 const SERVERS = {
   bb: { url: 'https://bb.example.com/mcp' },
   modern: { url: 'https://modern.example.com/modern/mcp' },
@@ -67,7 +70,7 @@ describe('kernel: credentials go out as placeholders', () => {
   before(async () => {
     upstream = await gatedServer(CREDENTIAL);
     exit = sealedExit(upstream.port, standInVault);
-    kernel = await bootKernel(exit.transport, SERVERS);
+    kernel = await bootKernel(exit, SERVERS);
     run = mcpcat(kernel, { MCP_HDR_TOKEN: HEADER });
   });
 
@@ -291,7 +294,7 @@ describe('kernel: a non-root user gets no placeholder', {
   before(async () => {
     upstream = await gatedServer(CREDENTIAL);
     exit = sealedExit(upstream.port, standInVault);
-    kernel = await bootKernel(exit.transport, SERVERS, { users: 'enforce' });
+    kernel = await bootKernel(exit, SERVERS, { users: 'enforce' });
     await kernel.users.add({ name: 'cone', umask: 0o022 });
     await kernel.chmod(AGENT_DIR, 0o777);
     await kernel.chmod(CONFIG, 0o644);
@@ -468,6 +471,95 @@ describe('kernel: a non-root user gets no placeholder', {
   });
 });
 
+describe('kernel: a request with a placeholder nothing fills', {
+  skip: !kernelAtLeast(171) && 'the placeholder floor needs slicc-kernel >= 1.171.0',
+}, () => {
+  let upstream;
+  let exit;
+  let kernel;
+  let run;
+
+  before(async () => {
+    upstream = await gatedServer(CREDENTIAL);
+    exit = sealedExit(upstream.port, standInVault);
+    kernel = await bootKernel(exit, SERVERS, { fills: false });
+    run = mcpcat(kernel, { MCP_HDR_TOKEN: HEADER });
+  });
+
+  after(() => {
+    kernel?.terminate();
+    upstream?.close();
+  });
+
+  const reset = async () => {
+    await jerkAnswers(kernel, { 'mcp:bb': { exit: 0, stdout: `${OAUTH}\n` } }, ALL);
+    exit.offered.length = 0;
+    upstream.seen.length = 0;
+  };
+
+  const assertRefused = (text) => {
+    assert.ok(text.includes(NOT_FILLED), text);
+    assert.ok(text.includes(NOT_FORWARDED), text);
+    assert.ok(!text.includes('fnox_proxy_'), text);
+    assert.ok(!text.includes('fetch failed'), text);
+    assert.ok(!text.includes(SETTINGS), text);
+    assert.ok(!text.includes('mcpcat login'), text);
+    assert.equal(exit.offered.length, 0);
+    assert.equal(upstream.seen.length, 0);
+  };
+
+  for (const target of ['bb', 'hdr']) {
+    it(`${target}: is not sent, exits 4 and says why`, async () => {
+      await reset();
+      const { status, stderr } = await run('info', target);
+      assert.equal(status, 4, stderr);
+      assertRefused(stderr);
+    });
+  }
+
+  it('grep says why it could not reach the target', async () => {
+    await reset();
+    const { stderr } = await run('grep', 'whoami');
+    const line = stderr.split('\n').find((l) => l.includes('connection to bb failed'));
+    assert.ok(line?.includes(NOT_FILLED), stderr);
+    assert.ok(line.includes(NOT_FORWARDED), stderr);
+    assert.ok(!stderr.includes('fnox_proxy_'), stderr);
+    assert.deepEqual(sent(exit.offered, 'https://bb.example.com'), []);
+  });
+
+  it('serve --proxy gives the same reason to its client', async () => {
+    await reset();
+    const proxy = mcpcat(
+      kernel,
+      {},
+      { stdin: `${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })}\n` }
+    );
+    const { stdout } = await proxy('serve', '--proxy', 'bb', '--stdio');
+    assertRefused(stdout);
+  });
+});
+
+describe('kernel: a fetch hook that fails', {
+  skip: !hasSealedFetch && 'the sealed fetch hook needs slicc-kernel >= 1.172.0',
+}, () => {
+  it('exits 4 with the reason, and the placeholder stays out of it', async (t) => {
+    const upstream = await gatedServer(CREDENTIAL);
+    t.after(() => upstream.close());
+    const exit = sealedExit(upstream.port, () => {
+      throw new Error(`the vault lost ${OAUTH}`);
+    });
+    const kernel = await bootKernel(exit, SERVERS);
+    t.after(() => kernel.terminate());
+    await jerkAnswers(kernel, { 'mcp:bb': { exit: 0, stdout: `${OAUTH}\n` } }, ALL);
+    const { status, stderr } = await mcpcat(kernel, {})('info', 'bb');
+    assert.equal(status, 4, stderr);
+    assert.ok(stderr.includes('the vault lost'), stderr);
+    assert.ok(stderr.includes(NOT_FORWARDED), stderr);
+    assert.ok(!stderr.includes('fnox_proxy_'), stderr);
+    assert.equal(upstream.seen.length, 0);
+  });
+});
+
 describe('kernel: a Settings sign-in through the real vault', {
   skip: !VAULT_DIR && 'set MCPCAT_VAULT_DIR to a built slicc-vault checkout',
 }, () => {
@@ -521,7 +613,7 @@ describe('kernel: a Settings sign-in through the real vault', {
     t.after(() => upstream.close());
     const exit = sealedExit(upstream.port, vault.fill);
     const kernel = await bootKernel(
-      exit.transport,
+      exit,
       { bb: { url } },
       { jerk: false, sealed: vault.sealed, ...options }
     );

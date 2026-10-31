@@ -42,6 +42,7 @@ export const hasDeathSignal = kernelAtLeast(88);
 export const hasSealed = kernelAtLeast(85);
 export const syncSignals = kernelAtLeast(69);
 export const fetchMarksTransport = kernelAtLeast(170);
+export const hasSealedFetch = kernelNodeMod.SEALED_FETCH_VERSION === 1;
 
 export function hostUrl(port) {
   return fetchReachesKernelLoopback

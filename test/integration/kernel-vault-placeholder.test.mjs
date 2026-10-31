@@ -61,7 +61,7 @@ async function bench({ jerk, fill = filled, hook = true, credential = CREDENTIAL
   const upstream = await gatedServer(credential);
   const exit = sealedExit(upstream.port, fill);
   const vault = standInVault(mcpRecord);
-  const kernel = await bootKernel(exit.transport, SERVERS, {
+  const kernel = await bootKernel(exit, SERVERS, {
     jerk,
     users: 'enforce',
     ...(hook ? { sealed: vault.sealed } : {}),
