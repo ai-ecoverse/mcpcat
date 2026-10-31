@@ -38,7 +38,7 @@ import { releaseAllLocks } from '../config/lock.ts';
 import type { McpOAuthConfig, McpServerConfig } from '../config/types.ts';
 import { runAddCandidate, runDiscover, runFromDiscovery, runInbox } from '../discovery/verbs.ts';
 import type { Platform } from '../platform/types.ts';
-import { redactDeep, redactSecrets, redactWrites } from '../render/redact.ts';
+import { redactDeep, redactOutput, redactSecrets, redactWrites } from '../render/redact.ts';
 import {
   type Redactor,
   renderCallResult,
@@ -813,6 +813,7 @@ interface RunCallOptions {
   inputResponses?: Record<string, unknown>;
   target?: string;
   silent?: boolean;
+  redact: Redactor;
 }
 
 function shellQuote(value: string): string {
@@ -848,7 +849,11 @@ function finishCall(
   if ((result as { resultType?: string }).resultType === 'task') {
     return renderTaskHandle(platform, result as unknown as Record<string, unknown>, opts);
   }
-  return renderCallResult(platform, result, { json: opts.json, outputPath: opts.outputPath });
+  return renderCallResult(platform, result, {
+    json: opts.json,
+    outputPath: opts.outputPath,
+    redact: opts.redact,
+  });
 }
 
 const TASK_USAGE = 'usage: mcpcat task get|cancel <target> [--] <id>';
@@ -871,16 +876,18 @@ interface RunTaskOptions {
   json: boolean;
   silent: boolean;
   outputPath?: string;
+  redact: Redactor;
 }
 
 async function writeTaskJson(
   platform: Platform,
   value: unknown,
-  outputPath: string | undefined
+  opts: RunTaskOptions
 ): Promise<void> {
   const text = `${sanitizeJson(JSON.stringify(value ?? {}, null, 2))}\n`;
-  if (outputPath) await platform.fs.writeFile(outputPath, text);
-  else await platform.write(1, text);
+  if (opts.outputPath) {
+    await platform.fs.writeFile(opts.outputPath, redactOutput(text, opts.redact));
+  } else await platform.write(1, text);
 }
 
 async function runTask(
@@ -892,7 +899,7 @@ async function runTask(
 ): Promise<number> {
   if (sub === 'cancel') {
     const ack = await conn.cancelTask(taskId);
-    if (opts.json) await writeTaskJson(platform, ack, opts.outputPath);
+    if (opts.json) await writeTaskJson(platform, ack, opts);
     else if (!opts.silent) {
       await platform.write(2, sanitizeTerminal(`mcpcat: cancel requested for task ${taskId}\n`));
     }
@@ -900,13 +907,14 @@ async function runTask(
   }
   const task = await conn.getTask(taskId);
   if (opts.json) {
-    await writeTaskJson(platform, task, opts.outputPath);
+    await writeTaskJson(platform, task, opts);
     return taskExit(task);
   }
   const status = String(task.status);
   if (status === 'completed') {
     return renderCallResult(platform, (task.result ?? {}) as CallToolResult, {
       outputPath: opts.outputPath,
+      redact: opts.redact,
     });
   }
   if (status === 'input_required') {
@@ -1051,7 +1059,8 @@ async function runRead(
   conn: McpConnection,
   uri: string,
   json: boolean,
-  outputPath: string | undefined
+  outputPath: string | undefined,
+  redact: Redactor
 ): Promise<number> {
   const result = await conn.readResource(uri);
   if (json) {
@@ -1061,7 +1070,7 @@ async function runRead(
   for (const content of result.contents) {
     if ('text' in content) {
       if (outputPath) {
-        await platform.fs.writeFile(outputPath, content.text);
+        await platform.fs.writeFile(outputPath, redact(content.text));
         await platform.write(1, `${outputPath}\n`);
       } else {
         await platform.write(1, `${content.text}\n`);
@@ -1178,7 +1187,8 @@ async function runComplete(
   platform: Platform,
   conn: McpConnection,
   args: string[],
-  json: boolean
+  json: boolean,
+  redact: Redactor
 ): Promise<number> {
   const { ref, argument } = parseCompleteArgs(args)!;
   const result = await conn.complete(ref, argument);
@@ -1189,7 +1199,10 @@ async function runComplete(
   const completion = result?.completion;
   const values = completion?.values ?? [];
   for (const v of values) {
-    const line = String(v).replace(/\\/g, '\\\\').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+    const line = redact(String(v))
+      .replace(/\\/g, '\\\\')
+      .replace(/\r/g, '\\r')
+      .replace(/\n/g, '\\n');
     await platform.write(1, sanitizeTerminal(`${line}\n`));
   }
   if (completion?.hasMore) {
@@ -1227,6 +1240,7 @@ async function runVerb(
   platform: Platform,
   parsed: ParsedArgs,
   conn: McpConnection,
+  redact: Redactor,
   onProgress?: (progress: number, total?: number, message?: string) => void,
   respondData?: Record<string, unknown>
 ): Promise<number> {
@@ -1247,13 +1261,21 @@ async function runVerb(
         outputPath: parsed.outputPath,
         onProgress,
         inputResponses: respondData,
+        redact,
       });
     case 'describe':
       return runDescribe(platform, conn, parsed.toolName, parsed.showSchema, parsed.jsonOutput);
     case 'resources':
       return runResources(platform, conn, parsed.jsonOutput);
     case 'read':
-      return runRead(platform, conn, parsed.toolName!, parsed.jsonOutput, parsed.outputPath);
+      return runRead(
+        platform,
+        conn,
+        parsed.toolName!,
+        parsed.jsonOutput,
+        parsed.outputPath,
+        redact
+      );
     case 'prompts':
       return runPrompts(platform, conn, parsed.jsonOutput);
     case 'prompt':
@@ -1266,12 +1288,13 @@ async function runVerb(
         parsed.jsonOutput
       );
     case 'complete':
-      return runComplete(platform, conn, parsed.toolArgs, parsed.jsonOutput);
+      return runComplete(platform, conn, parsed.toolArgs, parsed.jsonOutput, redact);
     case 'task':
       return runTask(platform, conn, parsed.toolName!, parsed.toolArgs[0], {
         json: parsed.jsonOutput,
         silent: parsed.silent,
         outputPath: parsed.outputPath,
+        redact,
       });
     default:
       await platform.write(2, `mcpcat: unknown command '${parsed.verb}'\n`);
@@ -2138,12 +2161,7 @@ async function handleInputRequired(
     return EXIT_INPUT_REQUIRED;
   }
   const isTty = !noInput && platform.kind === 'host' && platform.isatty(0) && platform.isatty(2);
-  const elicitResult = await handleElicitation(
-    redactWrites(platform, redact),
-    inputReq,
-    isTty,
-    respondData
-  );
+  const elicitResult = await handleElicitation(platform, inputReq, isTty, respondData);
   if ('exitCode' in elicitResult) {
     await platform.write(2, `${requestOut}\n`);
     return EXIT_INPUT_REQUIRED;
@@ -2154,7 +2172,7 @@ async function handleInputRequired(
       parsed2.arguments as Record<string, unknown>,
       { inputResponses: elicitResult.answers }
     );
-    return renderCallResult(platform, retryResult, { json });
+    return renderCallResult(platform, retryResult, { json, redact });
   } catch (retryErr) {
     const e2 = classifyError(retryErr);
     await writeErrRedacted(platform, json, e2.kind, e2.msg, redact);
@@ -2172,6 +2190,9 @@ async function runClientVerb(
   if (unset.length > 0) return refuseUnsetHeaders(platform, unset);
   const verbose = createVerboseLogger(platform, parsed.verbose);
   for (const s of secrets) verbose.secrets.add(s);
+  const allSecrets = new Set(secrets);
+  const redact: Redactor = (text: string) => redactSecrets(text, allSecrets);
+  const output = redactWrites(platform, redact);
 
   const timeoutMs = parsed.timeoutMs;
   const sigintController = new AbortController();
@@ -2209,7 +2230,7 @@ async function runClientVerb(
     if (!showProgress) return;
     const pct = total ? ` ${Math.round((progress / total) * 100)}%` : '';
     const msg = message ? ` ${message}` : '';
-    platform.write(2, sanitizeTerminal(`* progress:${pct}${msg}\n`)).catch(() => {});
+    output.write(2, sanitizeTerminal(`* progress:${pct}${msg}\n`)).catch(() => {});
   };
 
   const config = await MergedConfigSource.load(platform, { quiet: parsed.jsonOutput });
@@ -2226,10 +2247,10 @@ async function runClientVerb(
     platform,
     resolved.headers
   );
-  for (const s of configSecrets) verbose.secrets.add(s);
-
-  const allSecrets = new Set([...secrets, ...configSecrets]);
-  const redact: Redactor = (text: string) => redactSecrets(text, allSecrets);
+  for (const s of configSecrets) {
+    allSecrets.add(s);
+    verbose.secrets.add(s);
+  }
 
   const mergedHeaders = { ...configHeaders, ...expanded };
   const hasAuthHeader = 'Authorization' in mergedHeaders;
@@ -2265,7 +2286,7 @@ async function runClientVerb(
   const isTty =
     !parsed.noInput && platform.kind === 'host' && platform.isatty(0) && platform.isatty(2);
   const onElicit = (params: Record<string, unknown>) =>
-    answerElicitationRequest(redactWrites(platform, redact), params, isTty, respondData);
+    answerElicitationRequest(output, params, isTty, respondData);
 
   let conn: McpConnection;
   try {
@@ -2305,7 +2326,7 @@ async function runClientVerb(
 
   try {
     Object.assign(parsed, { signal: sigintController.signal, redact });
-    const code = await runVerb(platform, parsed, conn, onProgress, respondData);
+    const code = await runVerb(output, parsed, conn, redact, onProgress, respondData);
     if (interrupted) {
       await platform.write(2, 'mcpcat: interrupted\n');
       return termExitCode;
@@ -2318,7 +2339,7 @@ async function runClientVerb(
     }
     if (err instanceof InputRequiredError) {
       return await handleInputRequired(
-        platform,
+        output,
         conn,
         err,
         respondData,

@@ -211,6 +211,22 @@ describe('security: secrets redaction in the kernel', () => {
     });
   }
 
+  const resultCases = {
+    'a call result': ['call', 'rtok', 'headers'],
+    'a call result, --json': ['--json', 'call', 'rtok', 'rich'],
+    'a structured call result': ['call', 'rtok', 'structured'],
+  };
+
+  for (const [name, argv] of Object.entries(resultCases)) {
+    it(`redacts the value: ${name}`, async () => {
+      const r = await run(argv);
+      const out = `${r.stdout}${r.stderr}`;
+      assert.equal(r.status, 0, out.slice(0, 600));
+      assert.ok(!out.includes(MARK), `the secret leaked:\n${out.slice(0, 600)}`);
+      assert.ok(r.stdout.includes('[REDACTED]'), r.stdout.slice(0, 600));
+    });
+  }
+
   for (const [name, args] of Object.entries(tokenCases)) {
     it(`redacts the ${'${VAR}'} value: ${name}`, async () => {
       const r = await kernel.run(['mcpcat', ...args()], {

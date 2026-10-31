@@ -121,6 +121,12 @@ describe('proxy: hides each ${VAR} value of a header', () => {
     });
   }
 
+  it('never returns the token in a structured result, as a value or a key', async () => {
+    const text = await call(proxies.header.url, 'rich');
+    assert.ok(!text.includes(MARK), text);
+    assert.ok(text.includes('token ***'), text);
+  });
+
   it('redacts an upstream error body before it truncates it', async () => {
     for (const n of [0, 4, 8, 12, 16]) {
       const text = await call(proxies[`cut${n}`].url, 'echo');
