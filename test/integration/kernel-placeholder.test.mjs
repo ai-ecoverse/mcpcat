@@ -472,76 +472,117 @@ describe('kernel: a Settings sign-in through the real vault', {
   skip: !VAULT_DIR && 'set MCPCAT_VAULT_DIR to a built slicc-vault checkout',
 }, () => {
   const TOKEN = 'fake-bb-access-5372';
-  const OWNER = { pid: 9, ppid: 1, uid: 1000, gid: 1000, tag: 'cone', users: 'enforce' };
+  const ROOT = { pid: 9, ppid: 1, uid: 0, gid: 0, tag: null, users: 'enforce' };
   const URL_BB = 'https://bb.example.com/mcp';
+  const ENFORCE = { users: 'enforce' };
 
-  async function signedIn(t) {
+  async function realVault(t) {
     const page = await chrome.embedder(t);
     await page.evaluate(() => window.harness.connect());
     await page.evaluate(() => window.harness.agent());
-    const ask = (op, fields) => page.evaluate((o, f) => window.harness.ask(o, f), op, fields);
-    const tokenUrl = 'https://auth.example.com/token';
-    await ask('endpoints', { mcp: [{ server: 'bb', url: URL_BB, tokenUrl, names: [] }] });
-    const granted = await ask('grant', {
-      server: 'bb',
-      oauth: { tokenUrl, clientId: 'fake-client' },
-      response: JSON.stringify({ access_token: TOKEN, token_type: 'Bearer', expires_in: 3600 }),
+    await page.evaluate((fields) => window.harness.ask('endpoints', fields), {
+      mcp: [{ server: 'bb', url: URL_BB, names: [] }],
     });
-    const fill = (head, body) =>
-      page.evaluate(
-        async (fields) => {
-          const { reply } = await window.harness.forward(fields);
-          const text = reply.body ? new TextDecoder().decode(reply.body) : undefined;
-          return { head: reply.head, refused: reply.refused, body: text };
-        },
-        { head, body, owner: OWNER, exit: 'page', rawTraits: {} }
-      );
-    return { placeholder: granted.records[0].placeholder, fill };
+    const asked = [];
+    return {
+      asked,
+      settings: (name) =>
+        page.evaluate((fields) => window.harness.call('put', fields), {
+          name,
+          value: TOKEN,
+          kind: 'mcp',
+          server: 'bb',
+        }),
+      sealed: ({ caller, ...request }) => {
+        asked.push(request);
+        return page.evaluate((r, s) => window.harness.sealed(r, s), request, caller);
+      },
+      fill: (head, body) =>
+        page.evaluate(
+          async (fields) => {
+            const { reply } = await window.harness.forward(fields);
+            const text = reply.body ? new TextDecoder().decode(reply.body) : undefined;
+            return { head: reply.head, refused: reply.refused, body: text };
+          },
+          {
+            head,
+            body,
+            bodyPresent: body !== undefined,
+            owner: ROOT,
+            exit: 'page',
+            rawTraits: { manualRedirects: true, encodedBodies: false },
+          }
+        ),
+    };
   }
 
-  it('fills the credential on a kernel request that carries only the placeholder', async (t) => {
-    const { placeholder, fill } = await signedIn(t);
+  async function boot(t, vault, url = URL_BB, options = ENFORCE) {
     const upstream = await gatedServer({ value: TOKEN });
     t.after(() => upstream.close());
-    const exit = sealedExit(upstream.port, fill);
-    const kernel = await bootKernel(exit.transport, { bb: { url: URL_BB } });
+    const exit = sealedExit(upstream.port, vault.fill);
+    const kernel = await bootKernel(
+      exit.transport,
+      { bb: { url } },
+      { jerk: false, sealed: vault.sealed, ...options }
+    );
     t.after(() => kernel.terminate());
-    await jerkAnswers(kernel, { 'mcp:bb': { exit: 0, stdout: `${placeholder}\n` } }, listed('bb'));
+    return { upstream, exit, kernel };
+  }
+
+  it('root gets the placeholder from the vault with no jerk, and the credential is filled', async (t) => {
+    const vault = await realVault(t);
+    const { placeholder } = await vault.settings('BB_MCP');
+    const { upstream, exit, kernel } = await boot(t, vault);
     const { status, stdout, stderr } = await mcpcat(kernel, {})('tools', 'bb');
     assert.equal(status, 0, stderr);
     assert.ok(stdout.includes('whoami'), stdout);
+    assert.deepEqual(vault.asked[0], { v: 1, op: 'placeholder', server: 'bb' });
     assert.deepEqual([...new Set(sent(exit.offered, URL_BB))], [`Bearer ${placeholder}`]);
     assert.ok(upstream.seen.length > 0);
     assert.ok(upstream.seen.every((s) => s.authorization === `Bearer ${TOKEN}`));
     assertNoValue(TOKEN, stdout, stderr, JSON.stringify(exit.offered));
+    assertNoValue(placeholder, stdout, stderr);
   });
 
   it('NEGATIVE the placeholder aimed at another URL is refused and exits 4', async (t) => {
-    const { placeholder, fill } = await signedIn(t);
-    const upstream = await gatedServer({ value: TOKEN });
-    t.after(() => upstream.close());
-    const exit = sealedExit(upstream.port, fill);
-    const kernel = await bootKernel(exit.transport, {
-      bb: { url: 'https://evil.example.com/mcp' },
-    });
-    t.after(() => kernel.terminate());
-    await jerkAnswers(kernel, { 'mcp:bb': { exit: 0, stdout: `${placeholder}\n` } }, listed('bb'));
+    const vault = await realVault(t);
+    await vault.settings('BB_MCP');
+    const { upstream, kernel } = await boot(t, vault, 'https://evil.example.com/mcp');
     const { status, stdout, stderr } = await mcpcat(kernel, {})('tools', 'bb');
     assert.equal(status, 4, stderr);
     assert.equal(upstream.seen.length, 0);
     assertNoValue(TOKEN, stdout, stderr);
   });
 
-  it('a request without the placeholder never reaches the vault and gets the 401', async (t) => {
-    const { fill } = await signedIn(t);
-    const upstream = await gatedServer({ value: TOKEN });
-    t.after(() => upstream.close());
-    const exit = sealedExit(upstream.port, fill);
-    const kernel = await bootKernel(exit.transport, { bb: { url: URL_BB } });
-    t.after(() => kernel.terminate());
-    await jerkAnswers(kernel, {}, listed('bb'));
-    const { status } = await mcpcat(kernel, {})('tools', 'bb');
-    assert.equal(status, 4);
+  it('with no record the vault says ENOENT and the bare request gets the 401', async (t) => {
+    const vault = await realVault(t);
+    const { upstream, kernel } = await boot(t, vault);
+    const { status, stderr } = await mcpcat(kernel, {})('info', 'bb');
+    assert.equal(status, 4, stderr);
+    assert.ok(stderr.includes(SETTINGS), stderr);
+    assert.ok(upstream.seen.every((s) => s.authorization === undefined));
+  });
+
+  it('with two records for the server the vault refuses and nothing is sent', async (t) => {
+    const vault = await realVault(t);
+    await vault.settings('BB_MCP');
+    await vault.settings('BB_MCP_TWO');
+    const { upstream, exit, kernel } = await boot(t, vault);
+    const { status, stdout, stderr } = await mcpcat(kernel, {})('info', 'bb');
+    assert.equal(status, 4, stderr);
+    assert.match(stderr, /several sign-ins for bb/);
+    assert.equal(exit.offered.length, 0);
+    assert.equal(upstream.seen.length, 0);
+    assertNoValue(TOKEN, stdout, stderr);
+  });
+
+  it('a kernel that does not enforce users is not root to the vault, and gets no placeholder', async (t) => {
+    const vault = await realVault(t);
+    await vault.settings('BB_MCP');
+    const { upstream, kernel } = await boot(t, vault, URL_BB, { users: 'off' });
+    const { status, stderr } = await mcpcat(kernel, {})('info', 'bb');
+    assert.equal(status, 4, stderr);
+    assert.ok(stderr.includes(SETTINGS), stderr);
     assert.ok(upstream.seen.every((s) => s.authorization === undefined));
   });
 });
