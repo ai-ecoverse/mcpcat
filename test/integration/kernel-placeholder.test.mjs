@@ -22,7 +22,11 @@ const chrome = VAULT_DIR
   : undefined;
 const OAUTH = `fnox_proxy_${'a1'.repeat(12)}`;
 const HEADER = `fnox_proxy_${'b2'.repeat(12)}`;
+const UNFILLED = `fnox_proxy_${'c3'.repeat(12)}`;
+const STALE = `fnox_proxy_${'d4'.repeat(12)}`;
 const SETTINGS = 'Sign in under Settings › MCP servers';
+const NOT_ACCEPTED =
+  "The request carried the signed-in credential's placeholder and the server still answered 401. Seven's vault fills the placeholder in when the request is forwarded, so either that forwarding is not active in this seven yet or the server rejected the credential. Try again from the Settings page's Connect, or ask whoever runs seven.";
 const REJECTED = 'The server rejected the explicit Authorization header';
 const SERVERS = {
   bb: { url: 'https://bb.example.com/mcp' },
@@ -35,7 +39,11 @@ const SERVERS = {
 };
 const ALL = listed('bb', 'modern', 'hdr', 'open');
 const CREDENTIAL = { value: 'real-credential-537' };
-const VALUES = { [OAUTH]: CREDENTIAL.value, [HEADER]: CREDENTIAL.value };
+const VALUES = {
+  [OAUTH]: CREDENTIAL.value,
+  [HEADER]: CREDENTIAL.value,
+  [STALE]: 'stale-credential-537',
+};
 
 function standInVault(head, body) {
   const headers = head.headers.map(([name, value]) => [
@@ -150,23 +158,55 @@ describe('kernel: credentials go out as placeholders', () => {
     assert.equal(exit.offered.length, 0);
   });
 
-  it('a 401 after a placeholder exits 4 with the Settings message, without a retry', async () => {
-    await reset({ 'mcp:bb': { exit: 0, stdout: `fnox_proxy_${'c3'.repeat(12)}\n` } });
-    for (const target of ['bb', 'modern']) {
-      await jerkAnswers(
-        kernel,
-        {
-          [`mcp:${target}`]: { exit: 0, stdout: `fnox_proxy_${'c3'.repeat(12)}\n` },
-        },
-        ALL
-      );
-      upstream.seen.length = 0;
+  const assertNotAccepted = (status, stderr) => {
+    assert.equal(status, 4, stderr);
+    assert.ok(stderr.includes(NOT_ACCEPTED), stderr);
+    assert.ok(!stderr.includes(SETTINGS), stderr);
+    assert.ok(!stderr.includes('mcpcat login'), stderr);
+    assert.ok(!stderr.includes('fnox_proxy_'), stderr);
+    assert.equal(upstream.seen.length, 1);
+  };
+
+  for (const target of ['bb', 'modern']) {
+    it(`${target}: an unfilled placeholder that gets a 401 is reported as such, without a retry`, async () => {
+      await reset({ [`mcp:${target}`]: { exit: 0, stdout: `${UNFILLED}\n` } });
       const { status, stderr } = await run('info', target);
-      assert.equal(status, 4, stderr);
-      assert.ok(stderr.includes(SETTINGS), stderr);
-      assert.ok(!stderr.includes('mcpcat login'), stderr);
-      assert.equal(upstream.seen.length, 1);
-    }
+      assertNotAccepted(status, stderr);
+    });
+
+    it(`${target}: a filled credential the server rejects gets the same report`, async () => {
+      await reset({ [`mcp:${target}`]: { exit: 0, stdout: `${STALE}\n` } });
+      const { status, stderr } = await run('info', target);
+      assertNotAccepted(status, stderr);
+      assert.ok(!stderr.includes(VALUES[STALE]), stderr);
+    });
+  }
+
+  it('on a pinned legacy protocol a placeholder that gets a 401 is reported as such', async () => {
+    await reset({ 'mcp:bb': { exit: 0, stdout: `${UNFILLED}\n` } });
+    const { status, stderr } = await run('--protocol-version', '2025-11-25', 'info', 'bb');
+    assert.equal(status, 4, stderr);
+    assert.ok(stderr.includes(NOT_ACCEPTED), stderr);
+    assert.ok(!stderr.includes(SETTINGS), stderr);
+    assert.ok(!stderr.includes('mcpcat login'), stderr);
+  });
+
+  it('a 401 with no placeholder keeps the sign-in pointer', async () => {
+    await reset({});
+    const { status, stderr } = await run('info', 'bb');
+    assert.equal(status, 4, stderr);
+    assert.ok(stderr.includes(SETTINGS), stderr);
+    assert.ok(!stderr.includes(NOT_ACCEPTED), stderr);
+  });
+
+  it('a 403 after a placeholder keeps the Settings pointer', async () => {
+    await reset({ 'mcp:bb': { exit: 0, stdout: `${UNFILLED}\n` } });
+    upstream.status = 403;
+    const { status, stderr } = await run('info', 'bb');
+    upstream.status = 401;
+    assert.equal(status, 4, stderr);
+    assert.ok(stderr.includes(SETTINGS), stderr);
+    assert.ok(!stderr.includes(NOT_ACCEPTED), stderr);
   });
 
   it('with no placeholder from jerk the request goes out bare and a public server works', async () => {

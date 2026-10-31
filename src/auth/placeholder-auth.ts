@@ -17,6 +17,8 @@ const PLACEHOLDER = /^fnox_proxy_[0-9a-f]{24}$/;
 
 export const SETTINGS_SIGN_IN = 'Sign in under Settings › MCP servers.';
 const HEADER_REJECTED = 'The server rejected the explicit Authorization header.';
+const PLACEHOLDER_NOT_ACCEPTED =
+  "The request carried the signed-in credential's placeholder and the server still answered 401. Seven's vault fills the placeholder in when the request is forwarded, so either that forwarding is not active in this seven yet or the server rejected the credential. Try again from the Settings page's Connect, or ask whoever runs seven.";
 const NO_PLACEHOLDER = `jerk gave this user no placeholder. With no sign-in yet: ${SETTINGS_SIGN_IN} After a sign-in, the agent already has this server's tools, because a Settings sign-in gives it the server as native tools, and a human can use the server from a panel terminal as root.`;
 
 export class SettingsSignInError extends McpcatError {
@@ -99,7 +101,11 @@ export async function placeholderAuthProvider<Inner extends AuthProvider | undef
           platform.uid && id ? NO_PLACEHOLDER : SETTINGS_SIGN_IN
         );
       }
-      if (!inner?.onUnauthorized || (context.token && PLACEHOLDER.test(context.token))) {
+      const placeholderSent = context.token !== undefined && PLACEHOLDER.test(context.token);
+      if (context.response.status === 401 && placeholderSent) {
+        throw new SettingsSignInError(context.response.status, PLACEHOLDER_NOT_ACCEPTED);
+      }
+      if (!inner?.onUnauthorized || placeholderSent) {
         throw new SettingsSignInError(context.response.status);
       }
       await inner.onUnauthorized(context);
