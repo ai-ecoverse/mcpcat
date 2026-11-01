@@ -8,6 +8,8 @@ export const HOLDER_RESTART_MAX_MS = 30_000;
 export const HOLDER_STABLE_MS = 30_000;
 export const HOLDER_STOP_GRACE_MS = 2000;
 export const HOLDER_READY_MS = 20_000;
+export const FALLBACK_UNVERIFIED =
+  'webmcp: other-extension fallback could not verify the reloaded document; tools are unavailable';
 
 export interface HolderOptions {
   playwrightCli: string;
@@ -26,6 +28,7 @@ export interface HolderStatus {
   loaderId?: string;
   error?: string;
   refused?: boolean;
+  fallbackUnavailable?: boolean;
 }
 
 export interface ToolsChanged {
@@ -46,6 +49,12 @@ export interface Holder {
 const LABEL = 'mcpcat serve --webmcp';
 const GUARD_REFUSAL_RE =
   /^(?:(?:(?:playwright-cli )?webmcp-polyfill: )?[A-Z][A-Za-z]*\.[a-z][A-Za-z]*: |playwright-cli webmcp-polyfill: )slicc: refused: \S/;
+
+function isFallbackUnavailable(line: string): boolean {
+  return /^(?:playwright-cli webmcp-polyfill: )?webmcp-polyfill: other-extension fallback could not verify the reloaded document; tools are unavailable$/.test(
+    line
+  );
+}
 
 export function isGuardRefusal(line: string): boolean {
   return /^slicc: refused: \S/.test(line.trim()) || GUARD_REFUSAL_RE.test(line.trim());
@@ -189,6 +198,7 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
       return;
     }
     proc = child;
+    state.fallbackUnavailable = false;
     if (Number.isSafeInteger(child.pid) && child.pid! > 0)
       report(`holder-pid ${child.pid} tab ${options.tab}`);
     writer = child.stdin.getWriter();
@@ -198,6 +208,7 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
       const text = line.trim();
       if (!text) return;
       lastError = text;
+      if (isFallbackUnavailable(text)) state.fallbackUnavailable = true;
       if (isGuardRefusal(text)) refusal ??= text;
       else relay(text);
     });
