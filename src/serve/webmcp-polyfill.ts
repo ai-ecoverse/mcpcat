@@ -189,6 +189,8 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
       return;
     }
     proc = child;
+    if (Number.isSafeInteger(child.pid) && child.pid! > 0)
+      report(`holder-pid ${child.pid} tab ${options.tab}`);
     writer = child.stdin.getWriter();
     let lastError: string | undefined;
     const out = drain(child.stdout, onEvent);

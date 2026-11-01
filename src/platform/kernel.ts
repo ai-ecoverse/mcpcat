@@ -190,6 +190,7 @@ async function kernelSpawn(ctx: KernelContext, options: SpawnOptions): Promise<S
   const useGroupKill = groupSpawnSupported;
   let waited: ReturnType<typeof result.wait> | undefined;
   return {
+    pid: childPid,
     stdin: result.stdin ?? new WritableStream<Uint8Array>(),
     stdout: result.stdout!,
     stderr: result.stderr!,
