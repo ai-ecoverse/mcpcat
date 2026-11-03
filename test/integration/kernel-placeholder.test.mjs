@@ -558,6 +558,25 @@ describe('kernel: a fetch hook that fails', {
     assert.ok(!stderr.includes('fnox_proxy_'), stderr);
     assert.equal(upstream.seen.length, 0);
   });
+
+  it('prints the cause seven names instead of guessing why', async (t) => {
+    const upstream = await gatedServer(CREDENTIAL);
+    t.after(() => upstream.close());
+    const why =
+      'the credentialed request was refused (exit-tailnet): this host goes through the tailnet, which carries no credentialed request yet; stop using the exit node, or reach this host off the tailnet';
+    const exit = sealedExit(upstream.port, () => {
+      throw new Error(why);
+    });
+    const kernel = await bootKernel(exit, SERVERS);
+    t.after(() => kernel.terminate());
+    await jerkAnswers(kernel, { 'mcp:bb': { exit: 0, stdout: `${OAUTH}\n` } }, ALL);
+    const { status, stderr } = await mcpcat(kernel, {})('info', 'bb');
+    assert.equal(status, 4, stderr);
+    assert.ok(stderr.includes(`${why}.`), stderr);
+    assert.ok(!stderr.includes(NOT_FORWARDED), stderr);
+    assert.ok(!stderr.includes('fnox_proxy_'), stderr);
+    assert.equal(upstream.seen.length, 0);
+  });
 });
 
 describe('kernel: a Settings sign-in through the real vault', {
