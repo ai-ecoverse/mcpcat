@@ -4,7 +4,7 @@ import test from 'node:test';
 import { startHolder } from '../../src/serve/webmcp-polyfill.ts';
 
 const refused =
-  'Debugger.setInstrumentationBreakpoint: slicc: refused: a browser extension runs scripts in this page';
+  "Debugger.setInstrumentationBreakpoint: slicc: refused: target is on seven's origin";
 
 test('675 a terminal refusal after readiness stops the actual holder restart loop', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });

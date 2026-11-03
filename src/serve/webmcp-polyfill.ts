@@ -47,24 +47,35 @@ export interface Holder {
 }
 
 const LABEL = 'mcpcat serve --webmcp';
-const GUARD_REFUSAL_RE =
-  /^(?:(?:(?:playwright-cli )?webmcp-polyfill: )?[A-Z][A-Za-z]*\.[a-z][A-Za-z]*: |playwright-cli webmcp-polyfill: )slicc: refused: \S/;
+const TERMINAL_REFUSALS = new Set([
+  "slicc: refused: target is on seven's origin",
+  'slicc: refused: seven’s own pages and the vault are out of reach of browser automation',
+  'slicc: refused: breakpoints could run in seven’s pages or the vault, so the guard doesn’t offer the Debugger domains',
+  'slicc: refused: update the browser guard and client',
+  'slicc: refused: WebMCP installation could not verify the document; update the browser guard and client',
+  'slicc: refused: WebMCP installation could not verify a usable guard and document; update the browser guard and client',
+  'slicc: refused: WebMCP instrumentation is unavailable; update the browser guard and client',
+  'webmcp: no tools are available through the other-extension fallback; page startup or parse-time checks may have happened before installation',
+]);
+const FALLBACK_REFUSALS = new Set([
+  'other-extension fallback could not verify the reloaded document; tools are unavailable',
+  'other-extension fallback could not verify the document',
+]);
+
+function holderReason(line: string): string {
+  return line
+    .trim()
+    .replace(/^playwright-cli webmcp-polyfill: /, '')
+    .replace(/^webmcp-polyfill: /, '')
+    .replace(/^[A-Z][A-Za-z]*\.[a-z][A-Za-z]*: /, '');
+}
 
 function isFallbackUnavailable(line: string): boolean {
-  return /^(?:playwright-cli webmcp-polyfill: )?webmcp-polyfill: other-extension fallback could not verify the reloaded document; tools are unavailable$/.test(
-    line
-  );
+  return FALLBACK_REFUSALS.has(holderReason(line));
 }
 
 export function isGuardRefusal(line: string): boolean {
-  const text = line.trim();
-  if (
-    /^(?:(?:(?:(?:playwright-cli )?webmcp-polyfill: )?[A-Z][A-Za-z]*\.[a-z][A-Za-z]*: |playwright-cli webmcp-polyfill: ))?slicc: refused: renderer crashed$/.test(
-      text
-    )
-  )
-    return false;
-  return /^slicc: refused: \S/.test(text) || GUARD_REFUSAL_RE.test(text);
+  return TERMINAL_REFUSALS.has(holderReason(line)) || isFallbackUnavailable(line);
 }
 
 export function compareVersions(a: string, b: string): number {

@@ -19,6 +19,11 @@ test('renderer restart exception does not turn policy or version refusals into r
     'renderer crashed again',
     'renderer crashed; protected document',
     'seven’s own pages and the vault are out of reach',
+  ])
+    assert.equal(isGuardRefusal(`slicc: refused: ${body}`), false, body);
+  for (const body of [
+    "target is on seven's origin",
+    'seven’s own pages and the vault are out of reach of browser automation',
     'update the browser guard and client',
   ])
     assert.equal(isGuardRefusal(`slicc: refused: ${body}`), true, body);
