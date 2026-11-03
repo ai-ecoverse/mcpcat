@@ -1,6 +1,7 @@
 import type { UpgradeRequest } from '../upgrade/plan.ts';
 
 export interface SpawnResult {
+  readonly pid?: number;
   stdin: WritableStream<Uint8Array>;
   stdout: ReadableStream<Uint8Array>;
   stderr: ReadableStream<Uint8Array>;

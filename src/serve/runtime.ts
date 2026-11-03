@@ -61,6 +61,7 @@ import {
 } from './webmcp-dialog.ts';
 import {
   compareVersions,
+  FALLBACK_UNVERIFIED,
   HOLDER_READY_MS,
   type Holder,
   POLYFILL_MIN_VERSION,
@@ -1525,6 +1526,7 @@ function emptyToolsHint(
     return `the page shows no WebMCP tools, and the WebMCP polyfill needs playwright-cli ${POLYFILL_MIN_VERSION} or newer (found ${polyfill.oldVersion})`;
   }
   const status = polyfill.holder?.status();
+  if (status?.refused && status.fallbackUnavailable) return FALLBACK_UNVERIFIED;
   if (isLate(polyfill.holder)) {
     return 'the page may check for WebMCP only when it loads, before the polyfill was injected; reload the tab, or restart with --webmcp-reload (it reloads the tab)';
   }

@@ -287,18 +287,17 @@ describe('serve --webmcp polyfill', () => {
     });
   }
 
-  it('restarts a holder that was ready before the guard refused it', async () => {
+  it('never restarts a holder that was ready before a terminal guard refusal', async () => {
     const dirs = scratch();
     const env = baseEnv(dirs, {
       FAKE_PWCLI_HOLDER_EXIT_FIRST: '100',
       FAKE_PWCLI_HOLDER_STDERR: GUARD_REFUSAL,
     });
     const { child, stderr } = await httpServe([], env);
-    const restarted = await until(
-      () => readLog(dirs.log).filter((e) => e.command === 'webmcp-polyfill').length >= 2
-    );
-    assert.ok(restarted, stderr());
-    assert.match(stderr(), /holder for tab TAB1 exited .*; restarting in 1s/);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    assert.equal(readLog(dirs.log).filter((e) => e.command === 'webmcp-polyfill').length, 1);
+    assert.match(stderr(), /retrying won't help.*won't restart/);
+    assert.doesNotMatch(stderr(), /restarting in/);
     child.kill('SIGTERM');
     await stopped(child);
   });
