@@ -2,7 +2,7 @@ import type { Platform, SpawnResult, WebSocketChannel } from '../platform/types.
 import type { JsonObjectSchema } from './catalog.ts';
 import type { RpcTool, ToolListing, ToolRunResult } from './jsonrpc.ts';
 import { DIALOG_CLAIM_MS, type DialogHolder } from './webmcp-dialog.ts';
-import type { ToolsChanged } from './webmcp-polyfill.ts';
+import { FALLBACK_UNVERIFIED, type ToolsChanged } from './webmcp-polyfill.ts';
 
 export interface WebMcpAnnotations {
   readOnlyHint?: boolean;
@@ -50,6 +50,16 @@ interface CacheEntry {
 }
 
 const UNAVAILABLE_RE = /WebMCP is unavailable on this page/;
+
+function emptyFallbackOrError(error: string, holderHint?: string): ToolListing {
+  const hint = error.trim();
+  if (hint === 'webmcp: unverified isolated context' && holderHint === FALLBACK_UNVERIFIED)
+    return { tools: [], hint: holderHint };
+  return hint ===
+    'webmcp: no tools are available through the other-extension fallback; page startup or parse-time checks may have happened before installation'
+    ? { tools: [], hint }
+    : { tools: [], error };
+}
 
 function buildBaseArgs(options: WebMcpOptions): string[] {
   const args: string[] = [];
@@ -781,7 +791,7 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
   async function getRpcTools(): Promise<ToolListing | null> {
     const { tools, error, notFound, unavailable } = await listRaw();
     if (notFound) return null;
-    if (error) return { tools: [], error };
+    if (error) return emptyFallbackOrError(error, options.emptyHint?.(false));
     const late = options.late?.() ?? false;
 
     const rpcTools: RpcTool[] = [];

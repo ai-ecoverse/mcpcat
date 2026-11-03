@@ -8,6 +8,8 @@ export const HOLDER_RESTART_MAX_MS = 30_000;
 export const HOLDER_STABLE_MS = 30_000;
 export const HOLDER_STOP_GRACE_MS = 2000;
 export const HOLDER_READY_MS = 20_000;
+export const FALLBACK_UNVERIFIED =
+  'webmcp: other-extension fallback could not verify the reloaded document; tools are unavailable';
 
 export interface HolderOptions {
   playwrightCli: string;
@@ -26,6 +28,7 @@ export interface HolderStatus {
   loaderId?: string;
   error?: string;
   refused?: boolean;
+  fallbackUnavailable?: boolean;
 }
 
 export interface ToolsChanged {
@@ -44,11 +47,35 @@ export interface Holder {
 }
 
 const LABEL = 'mcpcat serve --webmcp';
-const GUARD_REFUSAL_RE =
-  /^(?:(?:playwright-cli )?webmcp-polyfill: )?[A-Z][A-Za-z]*\.[a-z][A-Za-z]*: slicc: refused: \S/;
+const TERMINAL_REFUSALS = new Set([
+  "slicc: refused: target is on seven's origin",
+  'slicc: refused: seven’s own pages and the vault are out of reach of browser automation',
+  'slicc: refused: breakpoints could run in seven’s pages or the vault, so the guard doesn’t offer the Debugger domains',
+  'slicc: refused: update the browser guard and client',
+  'slicc: refused: WebMCP installation could not verify the document; update the browser guard and client',
+  'slicc: refused: WebMCP installation could not verify a usable guard and document; update the browser guard and client',
+  'slicc: refused: WebMCP instrumentation is unavailable; update the browser guard and client',
+  'webmcp: no tools are available through the other-extension fallback; page startup or parse-time checks may have happened before installation',
+]);
+const FALLBACK_REFUSALS = new Set([
+  'other-extension fallback could not verify the reloaded document; tools are unavailable',
+  'other-extension fallback could not verify the document',
+]);
+
+function holderReason(line: string): string {
+  return line
+    .trim()
+    .replace(/^playwright-cli webmcp-polyfill: /, '')
+    .replace(/^webmcp-polyfill: /, '')
+    .replace(/^[A-Z][A-Za-z]*\.[a-z][A-Za-z]*: /, '');
+}
+
+function isFallbackUnavailable(line: string): boolean {
+  return FALLBACK_REFUSALS.has(holderReason(line));
+}
 
 export function isGuardRefusal(line: string): boolean {
-  return GUARD_REFUSAL_RE.test(line.trim());
+  return TERMINAL_REFUSALS.has(holderReason(line)) || isFallbackUnavailable(line);
 }
 
 export function compareVersions(a: string, b: string): number {
@@ -189,6 +216,9 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
       return;
     }
     proc = child;
+    state.fallbackUnavailable = false;
+    if (Number.isSafeInteger(child.pid) && child.pid! > 0)
+      report(`holder-pid ${child.pid} tab ${options.tab}`);
     writer = child.stdin.getWriter();
     let lastError: string | undefined;
     const out = drain(child.stdout, onEvent);
@@ -196,7 +226,8 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
       const text = line.trim();
       if (!text) return;
       lastError = text;
-      if (readyAt === undefined && isGuardRefusal(text)) refusal ??= text;
+      if (isFallbackUnavailable(text)) state.fallbackUnavailable = true;
+      if (isGuardRefusal(text)) refusal ??= text;
       else relay(text);
     });
     exited = Promise.all([out, err, child.wait()]).then(([, , result]) => {

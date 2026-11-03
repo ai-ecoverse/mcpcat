@@ -78,7 +78,8 @@ describe('kernel: serve --webmcp sees a JavaScript dialog through ctx.websocket'
   });
 
   it('a guard refusal of the polyfill holder is final and its reason reaches the client', async () => {
-    const refusal = 'Debugger.enable: slicc: refused: the guard doesn’t offer the Debugger domains';
+    const refusal =
+      'Debugger.enable: slicc: refused: breakpoints could run in seven’s pages or the vault, so the guard doesn’t offer the Debugger domains';
     const r = await kernel.run(
       ['mcpcat', 'serve', '--webmcp', '--playwright-cli', 'kernel-pwcli'],
       {
