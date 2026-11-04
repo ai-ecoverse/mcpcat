@@ -108,16 +108,33 @@ export async function withTempCallbackPortConfig<T>(
     await removeTempDir(platform, tempDir);
   };
 
+  const exitFor = (signal: 'SIGINT' | 'SIGTERM' | 'SIGHUP'): number =>
+    signal === 'SIGINT' ? 130 : signal === 'SIGTERM' ? 143 : 129;
+
+  let signalCode: number | undefined;
+  let wake: (() => void) | undefined;
+  const stopped = new Promise<void>((resolve) => {
+    wake = resolve;
+  });
+
   if (platform.onSignal) {
     for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
       await platform.onSignal(signal, () => {
-        void cleanup();
+        void cleanup().then(() => {
+          signalCode = exitFor(signal);
+          wake?.();
+        });
       });
     }
   }
 
   try {
-    return await fn(env);
+    const result = await Promise.race([
+      fn(env).then((value) => ({ ok: true as const, value })),
+      stopped.then(() => ({ ok: false as const })),
+    ]);
+    if (!result.ok) platform.exit(signalCode ?? 130);
+    return result.value;
   } finally {
     await cleanup();
   }
