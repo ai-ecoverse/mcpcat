@@ -3,11 +3,22 @@ import { cacheDir, userConfigPath } from '../config/paths.ts';
 import type { McpOAuthConfig } from '../config/types.ts';
 import type { Platform } from '../platform/types.ts';
 
+export function hasFixedCallback(oauth: McpOAuthConfig | undefined): boolean {
+  if (oauth?.callbackPort !== undefined && oauth.callbackPort > 0) return true;
+  if (!oauth?.callbackUrl) return false;
+  try {
+    const port = Number(new URL(oauth.callbackUrl).port);
+    return port > 0;
+  } catch {
+    return false;
+  }
+}
+
 export function needsInjectedCallbackPort(options: {
   namedEntry: boolean;
   oauth: McpOAuthConfig | undefined;
 }): boolean {
-  return options.namedEntry && !options.oauth?.callbackPort && !options.oauth?.callbackUrl;
+  return options.namedEntry && !hasFixedCallback(options.oauth);
 }
 
 export async function withInjectedCallbackPortIfNeeded<T>(
@@ -92,7 +103,17 @@ export async function withTempCallbackPortConfig<T>(
   }
   const entry = { ...(parsed.mcpServers[name] as Record<string, unknown>) };
   const prevOauth = isRecord(entry.oauth) ? { ...entry.oauth } : {};
-  entry.oauth = { ...prevOauth, callbackPort: port };
+  const oauth: Record<string, unknown> = { ...prevOauth, callbackPort: port };
+  if (typeof oauth.callbackUrl === 'string') {
+    try {
+      const url = new URL(oauth.callbackUrl);
+      if (!(Number(url.port) > 0)) {
+        url.port = String(port);
+        oauth.callbackUrl = url.href;
+      }
+    } catch {}
+  }
+  entry.oauth = oauth;
   const tempServers = { ...(parsed.mcpServers as Record<string, unknown>), [name]: entry };
   const merged = { ...parsed, mcpServers: tempServers };
   const tempDir = await makeTempDir(platform);

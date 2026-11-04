@@ -201,6 +201,78 @@ exit 2
   });
 });
 
+describe('jerk login SIGINT leaves mcp.json byte-identical', () => {
+  let home;
+  let env;
+  let binDir;
+  let mcpPath;
+  let originalMcp;
+
+  before(() => {
+    home = scratchHome('exact-jerk-sigint');
+    binDir = join(home, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    mkdirSync(join(home, '.pi/agent'), { recursive: true });
+    mcpPath = join(home, '.pi/agent/mcp.json');
+    originalMcp = `${JSON.stringify({ mcpServers: { ch: { url: 'https://example.com/mcp' } } }, null, 2)}\n`;
+    writeFileSync(mcpPath, originalMcp);
+    writeFileSync(
+      join(binDir, 'jerk'),
+      `#!/bin/sh
+case "$1" in
+  --version) echo "jerk 0.19.0"; exit 0 ;;
+  list) echo '[{"provider":"mcp:ch","source":"mcp.json"}]'; exit 0 ;;
+esac
+case "$2" in
+  create)
+    test -n "\${PI_MCP_CONFIG:-}" || exit 3
+    echo "\${PI_MCP_CONFIG}" > "$HOME/pi-mcp-config-path"
+    sleep 30
+    exit 0
+    ;;
+esac
+exit 2
+`,
+      { mode: 0o755 }
+    );
+    env = {
+      ...homeEnv(home),
+      PATH: `${binDir}:${process.env.PATH}`,
+    };
+  });
+
+  it('exits 130 on SIGINT and removes the temp PI_MCP_CONFIG', async () => {
+    const child = launch(['login', 'ch', '--no-browser'], { env });
+    const ready = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), 10_000);
+      const check = () => {
+        if (existsSync(join(home, 'pi-mcp-config-path'))) {
+          clearTimeout(timer);
+          resolve(true);
+        }
+      };
+      child.stdout.on('data', check);
+      child.stderr.on('data', check);
+      const poll = setInterval(check, 50);
+      child.on('exit', () => {
+        clearInterval(poll);
+        clearTimeout(timer);
+        resolve(existsSync(join(home, 'pi-mcp-config-path')));
+      });
+    });
+    assert.ok(ready, child.err + child.out);
+    const tempPath = readFileSync(join(home, 'pi-mcp-config-path'), 'utf8').trim();
+    assert.ok(tempPath);
+    assert.ok(existsSync(tempPath));
+    assert.equal(readFileSync(mcpPath, 'utf8'), originalMcp);
+    child.kill('SIGINT');
+    const r = await child.done;
+    assert.equal(r.code, 130, `${child.err}\n${child.out}`);
+    assert.equal(readFileSync(mcpPath, 'utf8'), originalMcp);
+    assert.equal(existsSync(tempPath), false);
+  });
+});
+
 describe('exact-match redirect_uri scenarios that fail on base oauth', () => {
   let as;
   let home;

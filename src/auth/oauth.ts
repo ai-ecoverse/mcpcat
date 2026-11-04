@@ -72,10 +72,6 @@ export function callbackSettings(oauth: McpOAuthConfig | undefined): {
   };
 }
 
-export function redirectUrisMatch(registered: string[] | undefined, redirectUrl: string): boolean {
-  return Array.isArray(registered) && registered.includes(redirectUrl);
-}
-
 export async function listenCallback(
   cbSettings: {
     host: string;
@@ -101,30 +97,6 @@ export async function listenCallback(
       path: cbSettings.path,
     });
   }
-}
-
-export function isCimdClientId(clientId: unknown): boolean {
-  return typeof clientId === 'string' && /^https:\/\//i.test(clientId);
-}
-
-export function shouldKeepStoredClient(
-  oauth: McpOAuthConfig | undefined,
-  stored: McpOAuthState | undefined,
-  redirectUrl: string
-): boolean {
-  if (oauth?.clientId) return true;
-  const registered =
-    stored?.clientInformation && 'redirect_uris' in stored.clientInformation
-      ? stored.clientInformation.redirect_uris
-      : undefined;
-  if (Array.isArray(registered) && registered.length > 0) {
-    return redirectUrisMatch(registered, redirectUrl);
-  }
-  const clientId =
-    stored?.clientInformation && 'client_id' in stored.clientInformation
-      ? stored.clientInformation.client_id
-      : undefined;
-  return isCimdClientId(clientId);
 }
 
 function cimdForServer(
