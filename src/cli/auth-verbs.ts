@@ -1,4 +1,5 @@
 import { OAuthError } from '@earendil-works/pi-mcp/oauth';
+import { withInjectedCallbackPortIfNeeded } from '../auth/callback-port.ts';
 import {
   JERK_EXIT_INVALID,
   JERK_EXIT_SIGN_IN,
@@ -70,6 +71,7 @@ async function resolveLoginTarget(
   name: string;
   serverUrl: string;
   oauth: McpOAuthConfig | undefined;
+  namedEntry: boolean;
 }> {
   const config = await MergedConfigSource.load(platform);
   const entry = config.entry(target);
@@ -79,13 +81,14 @@ async function resolveLoginTarget(
       name: target,
       serverUrl: httpConfig.url,
       oauth: httpConfig.oauth,
+      namedEntry: true,
     };
   }
 
   const resolved = resolveServerName(target);
   if (resolved.isUrl) {
     const url = withScheme(target);
-    return { name: resolved.name, serverUrl: url, oauth: undefined };
+    return { name: resolved.name, serverUrl: url, oauth: undefined, namedEntry: false };
   }
 
   throw new Error(`unknown target '${target}': not a URL and not found in mcp.json`);
@@ -126,22 +129,29 @@ async function jerkLogin(
   if (args.includes('--no-browser')) {
     argv.push('--no-browser');
   }
-  const proc = await platform.spawn({ argv });
-  proc.stdin.close().catch(() => {});
-  const [, errText, result] = await Promise.all([
-    readStream(proc.stdout),
-    readStream(proc.stderr),
-    proc.wait(),
-  ]);
-  if (result.status === 0) {
-    await platform.write(1, `Signed in to ${target}\n`);
-    return 0;
-  }
-  if (errText.trim()) {
-    await platform.write(2, sanitizeTerminal(errText));
-  }
-  if (result.status === JERK_EXIT_SIGN_IN) return 4;
-  return result.status;
+  return withInjectedCallbackPortIfNeeded(
+    platform,
+    resolved.name,
+    { namedEntry: resolved.namedEntry, oauth: resolved.oauth },
+    async () => {
+      const proc = await platform.spawn({ argv });
+      proc.stdin.close().catch(() => {});
+      const [, errText, result] = await Promise.all([
+        readStream(proc.stdout),
+        readStream(proc.stderr),
+        proc.wait(),
+      ]);
+      if (result.status === 0) {
+        await platform.write(1, `Signed in to ${target}\n`);
+        return 0;
+      }
+      if (errText.trim()) {
+        await platform.write(2, sanitizeTerminal(errText));
+      }
+      if (result.status === JERK_EXIT_SIGN_IN) return 4;
+      return result.status;
+    }
+  );
 }
 
 async function jerkLogout(

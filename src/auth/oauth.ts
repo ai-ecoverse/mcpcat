@@ -32,7 +32,20 @@ function timedFetch(fetchImpl: typeof globalThis.fetch): McpFetch {
   };
 }
 
-function callbackSettings(oauth: McpOAuthConfig | undefined): {
+export function nonzeroPort(value: number | undefined): number | undefined {
+  return value !== undefined && value > 0 ? value : undefined;
+}
+
+export function preferredPortFromRegistration(
+  configured: number | undefined,
+  registered: string[]
+): number | undefined {
+  if (configured !== undefined) return configured;
+  if (!registered[0]) return undefined;
+  return nonzeroPort(Number(new URL(registered[0]).port));
+}
+
+export function callbackSettings(oauth: McpOAuthConfig | undefined): {
   host: string;
   redirectHost: string;
   port: number | undefined;
@@ -42,10 +55,11 @@ function callbackSettings(oauth: McpOAuthConfig | undefined): {
   const raw = oauth?.callbackUrl ?? `http://${CALLBACK_HOST}${CALLBACK_PATH}`;
   const url = new URL(raw);
   const address = url.hostname.replace(/^\[|\]$/g, '');
-  const port = url.port ? Number(url.port) : oauth?.callbackPort;
+  const port = nonzeroPort(url.port ? Number(url.port) : oauth?.callbackPort);
   let fixedRedirectUrl: string | undefined;
-  if (url.port) fixedRedirectUrl = oauth?.callbackUrl;
-  else if (port !== undefined) {
+  if (nonzeroPort(url.port ? Number(url.port) : undefined) !== undefined && oauth?.callbackUrl) {
+    fixedRedirectUrl = oauth.callbackUrl;
+  } else if (port !== undefined) {
     url.port = String(port);
     fixedRedirectUrl = url.href;
   }
@@ -56,6 +70,53 @@ function callbackSettings(oauth: McpOAuthConfig | undefined): {
     path: url.pathname,
     fixedRedirectUrl,
   };
+}
+
+export function redirectUrisMatch(registered: string[] | undefined, redirectUrl: string): boolean {
+  return Array.isArray(registered) && registered.includes(redirectUrl);
+}
+
+export async function listenCallback(
+  cbSettings: {
+    host: string;
+    redirectHost: string;
+    path: string;
+    fixedRedirectUrl: string | undefined;
+  },
+  preferredPort: number | undefined
+): Promise<OAuthCallbackServer> {
+  try {
+    return await OAuthCallbackServer.listen({
+      host: cbSettings.host,
+      redirectHost: cbSettings.redirectHost,
+      port: preferredPort ?? 0,
+      path: cbSettings.path,
+    });
+  } catch (err) {
+    if (preferredPort === undefined || cbSettings.fixedRedirectUrl) throw err;
+    return OAuthCallbackServer.listen({
+      host: cbSettings.host,
+      redirectHost: cbSettings.redirectHost,
+      port: 0,
+      path: cbSettings.path,
+    });
+  }
+}
+
+export function shouldKeepStoredClient(
+  oauth: McpOAuthConfig | undefined,
+  stored: McpOAuthState | undefined,
+  redirectUrl: string
+): boolean {
+  if (oauth?.clientId) return true;
+  const registered =
+    stored?.clientInformation && 'redirect_uris' in stored.clientInformation
+      ? stored.clientInformation.redirect_uris
+      : undefined;
+  if (Array.isArray(registered) && registered.length > 0) {
+    return redirectUrisMatch(registered, redirectUrl);
+  }
+  return Boolean(stored?.clientInformation);
 }
 
 function cimdForServer(
@@ -219,26 +280,16 @@ export async function signIn(options: {
     stored?.clientInformation && 'redirect_uris' in stored.clientInformation
       ? stored.clientInformation.redirect_uris
       : [];
-  const preferredPort =
-    cbSettings.port ??
-    (registered[0] ? Number(new URL(registered[0]).port) || undefined : undefined);
+  const preferredPort = preferredPortFromRegistration(cbSettings.port, registered);
 
-  const callback = await OAuthCallbackServer.listen({
-    host: cbSettings.host,
-    redirectHost: cbSettings.redirectHost,
-    port: preferredPort ?? 0,
-    path: cbSettings.path,
-  });
+  const callback = await listenCallback(cbSettings, preferredPort);
   const redirectUrl = cbSettings.fixedRedirectUrl ?? callback.redirectUrl;
 
   try {
     if (stored) {
       const next: McpOAuthState = { ...stored };
       delete next.oauthState;
-      const hasCimd = buildClientMetadataDocumentFn(oauth, redirectUrl) !== undefined;
-      const keepClient =
-        oauth?.clientId || (hasCimd ? !stored.clientInformation : registered.includes(redirectUrl));
-      if (!keepClient) {
+      if (!shouldKeepStoredClient(oauth, stored, redirectUrl)) {
         delete next.clientInformation;
         delete next.tokens;
         delete next.tokensExpireAt;
