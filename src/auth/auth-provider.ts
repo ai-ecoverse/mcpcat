@@ -133,14 +133,29 @@ function createPiThenJerkAuthProvider(options: {
     return Boolean(state?.tokens?.access_token);
   }
 
+  async function abandonPi(): Promise<void> {
+    await source.pi.remove(name, serverUrl).catch(() => undefined);
+  }
+
   return {
     async token(): Promise<string | undefined> {
-      const provider = (await piHasAccessToken()) ? piProvider : jerkProvider;
-      return provider.token?.();
+      if (await piHasAccessToken()) {
+        const token = await piProvider.token?.();
+        if (token) return token;
+      }
+      return jerkProvider.token?.();
     },
     async onUnauthorized(context: UnauthorizedContext): Promise<void> {
-      const provider = (await piHasAccessToken()) ? piProvider : jerkProvider;
-      await provider.onUnauthorized?.(context);
+      if (await piHasAccessToken()) {
+        try {
+          await piProvider.onUnauthorized?.(context);
+          return;
+        } catch (err) {
+          if (!(err instanceof McpOAuthAuthorizationRequiredError)) throw err;
+          await abandonPi();
+        }
+      }
+      await jerkProvider.onUnauthorized?.(context);
     },
   };
 }

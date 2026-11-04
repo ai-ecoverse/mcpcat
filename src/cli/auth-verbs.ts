@@ -269,7 +269,11 @@ export async function runLogin(
   if (useJerk) {
     await loginPathNote(platform, verbose, 'jerk', undefined, knownVersion);
     try {
-      return await jerkLogin(platform, target, resolved, args);
+      const code = await jerkLogin(platform, target, resolved, args);
+      if (code === 0) {
+        await new PiFileTokenSource(platform).remove(resolved.name, resolved.serverUrl);
+      }
+      return code;
     } catch (err) {
       await platform.write(2, `mcpcat: login failed: ${(err as Error).message}\n`);
       return 4;
@@ -409,14 +413,19 @@ async function piThenJerkLogout(
   resolved: LoginTarget,
   source: PiThenJerkTokenSource
 ): Promise<number> {
+  const piRemoved = await source.pi.remove(resolved.name, resolved.serverUrl).catch(() => false);
   const id = jerkId(resolved.name, resolved.serverUrl);
-  const result = await runJerk(platform, ['jerk', id, 'drop', '--yes'], source.jerk.timeoutMs);
-  if (result.status === JERK_EXIT_INVALID && resolved.name.startsWith('url:')) {
-    await platform.write(2, sanitizeTerminal(`mcpcat: ${jerkMessage(result.stderr)}\n`));
-    return 2;
+  let jerkRemoved = false;
+  try {
+    const result = await runJerk(platform, ['jerk', id, 'drop', '--yes'], source.jerk.timeoutMs);
+    if (result.status === JERK_EXIT_INVALID && resolved.name.startsWith('url:')) {
+      await platform.write(2, sanitizeTerminal(`mcpcat: ${jerkMessage(result.stderr)}\n`));
+      return 2;
+    }
+    jerkRemoved = result.status === 0;
+  } catch (err) {
+    if (!piRemoved) throw err;
   }
-  const jerkRemoved = result.status === 0;
-  const piRemoved = await source.pi.remove(resolved.name, resolved.serverUrl);
   if (jerkRemoved || piRemoved) {
     await platform.write(1, `Signed out of ${target}\n`);
   } else {
