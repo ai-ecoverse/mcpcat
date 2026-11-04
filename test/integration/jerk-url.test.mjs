@@ -138,12 +138,29 @@ exit 2
     assert.doesNotMatch(jerkCalls(), /mcp:url:/);
   });
 
-  it('a configured name still skips jerk when below the login floor', async () => {
+  it('a configured name jerk lists still goes through jerk for reads and logout', async () => {
+    rmSync(log, { force: true });
+    await fetch(`http://127.0.0.1:${mcp.port}/_control/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ add: MARKER }),
+    });
+    const r = run(['call', 'named', 'echo', '-d', '{"text":"via-jerk"}']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /via-jerk/);
+    assert.ok(!r.stdout.includes(MARKER) && !r.stderr.includes(MARKER), 'token leaked');
+    assert.match(jerkCalls(), /ARGV: mcp:named get --reveal --json/);
+
     rmSync(log, { force: true });
     const login = run(['login', 'named', '--no-browser'], { input: '' });
     assert.notEqual(login.status, 0);
     assert.match(login.stderr, /older than 1\.5\.0|using own sign-in/);
     assert.doesNotMatch(jerkCalls(), /mcp:named create/);
+
+    rmSync(log, { force: true });
+    const logout = run(['logout', 'named']);
+    assert.equal(logout.status, 0, logout.stderr);
+    assert.match(jerkCalls(), /ARGV: mcp:named drop/);
   });
 
   it('a configured name jerk does not list uses pi store', () => {

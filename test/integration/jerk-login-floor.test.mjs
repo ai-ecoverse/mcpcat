@@ -108,7 +108,11 @@ describe('login falls back when jerk is below the callbackPort floor', () => {
     assert.doesNotMatch(log, / create/);
     assert.ok(existsSync(store));
     assert.match(readFileSync(store, 'utf8'), /access_token|client_id/);
-    const info = run(['info', 'ch'], { env });
+    const noJerkPath = (process.env.PATH || '')
+      .split(':')
+      .filter((d) => !d.includes(home) && !/jerk/.test(d))
+      .join(':');
+    const info = run(['info', 'ch'], { env: { ...env, PATH: noJerkPath } });
     assert.equal(info.status, 0, info.stderr);
   });
 
@@ -197,5 +201,45 @@ describe('login --help mentions --no-jerk', () => {
     assert.match(r.stdout, /– login/);
     assert.match(r.stdout, /--no-jerk/);
     assert.match(r.stdout, /MCPCAT_NO_JERK/);
+  });
+});
+
+describe('login --no-jerk does not probe a slow jerk --version', () => {
+  let home;
+  let env;
+  let logPath;
+
+  before(() => {
+    home = scratchHome('jerk-floor-slow-ver');
+    const binDir = join(home, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    mkdirSync(join(home, '.pi/agent'), { recursive: true });
+    writeFileSync(
+      join(home, '.pi/agent/mcp.json'),
+      JSON.stringify({ mcpServers: { ch: { url: 'https://example.com/mcp' } } }, null, 2)
+    );
+    logPath = join(home, 'jerk.log');
+    writeFileSync(
+      join(binDir, 'jerk'),
+      `#!/bin/sh
+echo "ARGV: $@" >> "${logPath}"
+case "$1" in
+  --version) sleep 30; echo "jerk 1.5.0"; exit 0 ;;
+  list) echo '[{"provider":"mcp:ch","source":"mcp.json"}]'; exit 0 ;;
+esac
+exit 2
+`,
+      { mode: 0o755 }
+    );
+    env = { ...homeEnv(home), PATH: `${binDir}:${process.env.PATH}` };
+  });
+
+  it('returns without starting jerk', () => {
+    const started = Date.now();
+    const r = run(['login', 'ch', '--no-jerk', '--no-browser'], { env, input: '' });
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 2000, `waited ${elapsed}ms`);
+    assert.match(r.stderr, /skipping jerk \(--no-jerk\)/);
+    assert.equal(existsSync(logPath), false);
   });
 });

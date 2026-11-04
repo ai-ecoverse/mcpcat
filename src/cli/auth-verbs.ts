@@ -35,9 +35,6 @@ export async function createTokenSource(
   if (isKernel(platform) || !(await jerkAvailable(platform)) || noJerkEnv(platform)) {
     return new PiFileTokenSource(platform);
   }
-  if (!(await jerkMeetsLoginMin(platform))) {
-    return new PiFileTokenSource(platform);
-  }
   const viaJerk = name.startsWith('url:')
     ? await jerkHasUrlIds(platform)
     : await jerkKnows(platform, jerkId(name, ''));
@@ -193,11 +190,13 @@ async function loginPathNote(
   platform: Platform,
   verbose: boolean,
   path: 'jerk' | 'own',
-  reason?: string
+  reason?: string,
+  knownVersion?: number[] | undefined
 ): Promise<void> {
-  const ver = await jerkDetectedVersion(platform);
-  const verText = ver ? formatJerkVersion(ver) : 'none';
   if (verbose) {
+    let ver = knownVersion;
+    if (ver === undefined) ver = await jerkDetectedVersion(platform);
+    const verText = ver ? formatJerkVersion(ver) : 'none';
     await platform.write(
       2,
       `mcpcat: login via ${path === 'jerk' ? 'jerk create' : 'own sign-in'} (jerk ${verText})\n`
@@ -244,26 +243,27 @@ export async function runLogin(
   const skipJerk = wantNoJerk(args, platform);
   let useJerk = false;
   let ownReason: string | undefined;
+  let knownVersion: number[] | undefined;
   if (skipJerk) {
     ownReason = args.includes('--no-jerk')
       ? 'skipping jerk (--no-jerk); using own sign-in'
       : 'skipping jerk (MCPCAT_NO_JERK); using own sign-in';
   } else if (await jerkAvailable(platform)) {
+    knownVersion = await jerkDetectedVersion(platform);
     if (await jerkMeetsLoginMin(platform)) {
       const viaJerk = resolved.name.startsWith('url:')
         ? await jerkHasUrlIds(platform)
         : await jerkKnows(platform, jerkId(resolved.name, ''));
       useJerk = viaJerk;
     } else {
-      const ver = await jerkDetectedVersion(platform);
-      const have = ver ? formatJerkVersion(ver) : 'unknown';
+      const have = knownVersion ? formatJerkVersion(knownVersion) : 'unknown';
       const need = formatJerkVersion(JERK_LOGIN_MIN_VERSION);
       ownReason = `jerk ${have} is older than ${need}; using own sign-in (upgrade jerk, or pass --no-jerk)`;
     }
   }
 
   if (useJerk) {
-    await loginPathNote(platform, verbose, 'jerk');
+    await loginPathNote(platform, verbose, 'jerk', undefined, knownVersion);
     try {
       return await jerkLogin(platform, target, resolved, args);
     } catch (err) {
@@ -272,7 +272,7 @@ export async function runLogin(
     }
   }
 
-  await loginPathNote(platform, verbose, 'own', ownReason);
+  await loginPathNote(platform, verbose, 'own', ownReason, knownVersion);
 
   const source = new PiFileTokenSource(platform);
   await source.ensureWritable();
