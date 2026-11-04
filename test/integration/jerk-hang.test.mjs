@@ -120,7 +120,7 @@ describe('mcpcat never hangs on jerk', () => {
   let log;
   let pidFile;
 
-  function writeJerk(getBody, versionBody = 'echo "jerk 0.15.2"') {
+  function writeJerk(getBody, versionBody = 'echo "jerk 1.4.1"') {
     writeFileSync(
       join(binDir, 'jerk'),
       `#!/bin/sh

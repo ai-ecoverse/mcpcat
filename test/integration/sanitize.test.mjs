@@ -460,7 +460,7 @@ describe('control characters in a jerk sign-in failure', () => {
       [
         '#!/bin/sh',
         'case "$1" in',
-        '  --version) echo "jerk 0.14.1"; exit 0 ;;',
+        '  --version) echo "jerk 1.4.1"; exit 0 ;;',
         `  list) echo '[{"provider":"mcp:evil","source":"mcp.json"}]'; exit 0 ;;`,
         'esac',
         `cat "${join(home, 'evil.txt')}" >&2`,

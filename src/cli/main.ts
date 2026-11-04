@@ -85,6 +85,7 @@ import {
   McpcatError,
 } from './exit-codes.ts';
 import { EXPERIMENTAL_FEATURES, experimentalHelp, extractExperimental } from './experimental.ts';
+import { writeLoginHelp } from './login-help.ts';
 import { createVerboseLogger } from './verbose.ts';
 
 const VERBS = [
@@ -190,6 +191,7 @@ Server and code verbs:
                              Replace this install.sh install with the latest
                              release (alias: update; not in the kernel)
   help serve                 Serve options (also: serve --help)
+  help login                 Login options (also: login --help)
 
 Options:
   --json                     JSON output
@@ -1737,6 +1739,9 @@ async function help(platform: Platform, version: string, args: string[]): Promis
     await platform.write(1, serveHelpText(version));
     return 0;
   }
+  if (await writeLoginHelp(platform.write.bind(platform), version, args, parseArgs(args).verb)) {
+    return 0;
+  }
   if (args[0] !== 'help' || !args.includes('--skill')) {
     await platform.write(1, helpText(version));
     return 0;
@@ -1900,7 +1905,7 @@ async function runInner(platform: Platform, version: string, argv: string[]): Pr
   if (discResult !== undefined) return discResult;
 
   if (parsed.verb === 'login') {
-    return runLogin(platform, withoutVerb(args, 'login'), parsed.timeoutMs);
+    return runLogin(platform, withoutVerb(args, 'login'), parsed.timeoutMs, parsed.verbose);
   }
 
   if (parsed.verb === 'logout') {

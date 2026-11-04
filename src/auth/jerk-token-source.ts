@@ -5,6 +5,7 @@ import type { TokenResult, TokenSource } from './token-source.ts';
 
 const MIN_VERSION = [0, 14, 1];
 const URL_IDS_VERSION = [0, 19, 0];
+export const JERK_LOGIN_MIN_VERSION = [1, 4, 1];
 const VERSION_TIMEOUT_MS = 2_000;
 export const JERK_TIMEOUT_MS = 15_000;
 
@@ -16,6 +17,26 @@ export function resetJerkCache(): void {
   cachedAvailable = undefined;
   cachedVersion = undefined;
   cachedKnown = undefined;
+}
+
+export function formatJerkVersion(version: number[]): string {
+  return version.join('.');
+}
+
+export function noJerkEnv(platform: Platform): boolean {
+  const raw = platform.env.MCPCAT_NO_JERK;
+  if (raw === undefined || raw === '') return false;
+  return raw !== '0' && raw.toLowerCase() !== 'false' && raw.toLowerCase() !== 'no';
+}
+
+export async function jerkDetectedVersion(platform: Platform): Promise<number[] | undefined> {
+  if (!(await jerkAvailable(platform))) return undefined;
+  return cachedVersion;
+}
+
+export async function jerkMeetsLoginMin(platform: Platform): Promise<boolean> {
+  const ver = await jerkDetectedVersion(platform);
+  return ver !== undefined && versionSatisfied(ver, JERK_LOGIN_MIN_VERSION);
 }
 
 export function jerkEnv(platform: Platform): Record<string, string> | undefined {

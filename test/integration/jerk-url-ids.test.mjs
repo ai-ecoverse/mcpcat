@@ -107,8 +107,8 @@ function harness(version) {
   return h;
 }
 
-describe('jerk 0.19.0: URL-only targets use mcp:url ids', () => {
-  const h = harness('0.19.0');
+describe('jerk 1.4.1: URL-only targets use mcp:url ids', () => {
+  const h = harness('1.4.1');
   before(h.setup);
   after(h.teardown);
 

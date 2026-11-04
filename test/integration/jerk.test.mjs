@@ -71,7 +71,7 @@ describe('jerk integration', () => {
 echo "JERK_ARGV: $@" >> "${logPath}"
 case "$1" in
   --version)
-    echo "jerk 0.14.1"
+    echo "jerk 1.4.1"
     exit 0
     ;;
   list)
@@ -157,7 +157,7 @@ esac
       const jerkScript = `#!/bin/sh
 case "$1" in
   --version)
-    echo "jerk 0.14.1"
+    echo "jerk 1.4.1"
     exit 0
     ;;
   list)

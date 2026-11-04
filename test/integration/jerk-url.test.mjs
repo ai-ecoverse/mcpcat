@@ -138,7 +138,7 @@ exit 2
     assert.doesNotMatch(jerkCalls(), /mcp:url:/);
   });
 
-  it('a configured name jerk lists still goes through jerk', async () => {
+  it('a configured name jerk lists still goes through jerk for reads and logout', async () => {
     rmSync(log, { force: true });
     await fetch(`http://127.0.0.1:${mcp.port}/_control/token`, {
       method: 'POST',
@@ -150,9 +150,17 @@ exit 2
     assert.match(r.stdout, /via-jerk/);
     assert.ok(!r.stdout.includes(MARKER) && !r.stderr.includes(MARKER), 'token leaked');
     assert.match(jerkCalls(), /ARGV: mcp:named get --reveal --json/);
-    const login = run(['login', 'named']);
-    assert.equal(login.status, 0, login.stderr);
-    assert.match(jerkCalls(), /ARGV: mcp:named create/);
+
+    rmSync(log, { force: true });
+    const login = run(['login', 'named', '--no-browser'], { input: '' });
+    assert.notEqual(login.status, 0);
+    assert.match(login.stderr, /older than 1\.4\.1|using own sign-in/);
+    assert.doesNotMatch(jerkCalls(), /mcp:named create/);
+
+    rmSync(log, { force: true });
+    const logout = run(['logout', 'named']);
+    assert.equal(logout.status, 0, logout.stderr);
+    assert.match(jerkCalls(), /ARGV: mcp:named drop/);
   });
 
   it('a configured name jerk does not list uses pi store', () => {
