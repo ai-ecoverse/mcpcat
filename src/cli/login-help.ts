@@ -11,8 +11,8 @@ in seven.
 Options:
   --no-browser               Print the authorize URL; paste the redirect URL back
   --no-jerk                  Skip slicc-jerk; always use mcpcat's own sign-in
-                             (tokens in mcp-auth.json). Also set MCPCAT_NO_JERK=1
-                             so later commands read that store while jerk is on PATH
+                             (tokens in mcp-auth.json). MCPCAT_NO_JERK=1 is the
+                             same opt-out; a workaround only — reads try pi then jerk
   --scope <scope>            Request these scopes (space-separated)
   -m, --timeout <s>          Request timeout
 

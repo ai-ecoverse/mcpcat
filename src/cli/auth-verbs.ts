@@ -20,6 +20,7 @@ import {
 } from '../auth/jerk-token-source.ts';
 import { SignInCancelledError, signIn } from '../auth/oauth.ts';
 import { PiFileTokenSource } from '../auth/pi-store.ts';
+import { PiThenJerkTokenSource } from '../auth/pi-then-jerk.ts';
 import type { TokenSource } from '../auth/token-source.ts';
 import { isKernel } from '../auth/token-source.ts';
 import { MergedConfigSource } from '../config/index.ts';
@@ -39,7 +40,10 @@ export async function createTokenSource(
     ? await jerkHasUrlIds(platform)
     : await jerkKnows(platform, jerkId(name, ''));
   if (viaJerk) {
-    return new JerkTokenSource(platform, timeoutMs);
+    return new PiThenJerkTokenSource(
+      new PiFileTokenSource(platform),
+      new JerkTokenSource(platform, timeoutMs)
+    );
   }
   return new PiFileTokenSource(platform);
 }
@@ -258,7 +262,7 @@ export async function runLogin(
     } else {
       const have = knownVersion ? formatJerkVersion(knownVersion) : 'unknown';
       const need = formatJerkVersion(JERK_LOGIN_MIN_VERSION);
-      ownReason = `jerk ${have} is older than ${need}; using own sign-in (upgrade jerk, or pass --no-jerk)`;
+      ownReason = `jerk ${have} is older than ${need}; using own sign-in (upgrade jerk; MCPCAT_NO_JERK=1 is a workaround, not required)`;
     }
   }
 
@@ -377,8 +381,43 @@ export async function runLogout(
     }
   }
 
+  if (source instanceof PiThenJerkTokenSource) {
+    try {
+      return await piThenJerkLogout(platform, target, resolved, source);
+    } catch (err) {
+      if (err instanceof JerkTimeoutError) {
+        await platform.write(2, `mcpcat: ${err.message}\n`);
+        return 4;
+      }
+      await platform.write(2, `mcpcat: logout failed: ${(err as Error).message}\n`);
+      return 1;
+    }
+  }
+
   const removed = await source.remove(resolved.name, resolved.serverUrl);
   if (removed) {
+    await platform.write(1, `Signed out of ${target}\n`);
+  } else {
+    await platform.write(1, `No credentials stored for ${target}\n`);
+  }
+  return 0;
+}
+
+async function piThenJerkLogout(
+  platform: Platform,
+  target: string,
+  resolved: LoginTarget,
+  source: PiThenJerkTokenSource
+): Promise<number> {
+  const id = jerkId(resolved.name, resolved.serverUrl);
+  const result = await runJerk(platform, ['jerk', id, 'drop', '--yes'], source.jerk.timeoutMs);
+  if (result.status === JERK_EXIT_INVALID && resolved.name.startsWith('url:')) {
+    await platform.write(2, sanitizeTerminal(`mcpcat: ${jerkMessage(result.stderr)}\n`));
+    return 2;
+  }
+  const jerkRemoved = result.status === 0;
+  const piRemoved = await source.pi.remove(resolved.name, resolved.serverUrl);
+  if (jerkRemoved || piRemoved) {
     await platform.write(1, `Signed out of ${target}\n`);
   } else {
     await platform.write(1, `No credentials stored for ${target}\n`);

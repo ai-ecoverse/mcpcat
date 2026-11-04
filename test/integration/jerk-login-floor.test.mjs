@@ -104,6 +104,7 @@ describe('login falls back when jerk is below the callbackPort floor', () => {
     assert.equal(r.status, 0, r.err);
     assert.match(r.err, /jerk 1\.4\.0 is older than 1\.4\.1/);
     assert.match(r.err, /using own sign-in/);
+    assert.match(r.err, /MCPCAT_NO_JERK=1 is a workaround, not required/);
     const log = existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';
     assert.doesNotMatch(log, / create/);
     assert.ok(existsSync(store));
@@ -114,6 +115,16 @@ describe('login falls back when jerk is below the callbackPort floor', () => {
       .join(':');
     const info = run(['info', 'ch'], { env: { ...env, PATH: noJerkPath } });
     assert.equal(info.status, 0, info.stderr);
+  });
+
+  it('info and call succeed with old jerk still on PATH after fallback login', async () => {
+    const r = await login('ch', { ...env, MCPCAT_NO_JERK: undefined });
+    assert.equal(r.status, 0, r.err);
+    assert.ok(existsSync(store));
+    const info = run(['info', 'ch'], { env });
+    assert.equal(info.status, 0, info.stderr);
+    const call = run(['call', 'ch', 'whoami'], { env });
+    assert.equal(call.status, 0, call.stderr);
   });
 
   it('-v names the own path and jerk version', () => {
