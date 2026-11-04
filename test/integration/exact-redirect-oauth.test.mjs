@@ -114,12 +114,14 @@ describe('exact-match redirect_uri (ClickHouse-like AS)', () => {
   });
 });
 
-describe('exact-match redirect_uri with jerk create + injected callbackPort', () => {
+describe('exact-match redirect_uri with jerk create + PI_MCP_CONFIG callbackPort', () => {
   let as;
   let home;
   let env;
   let url;
   let binDir;
+  let mcpPath;
+  let originalMcp;
 
   before(async () => {
     as = await startFixture('exact-redirect-oauth-as.mjs');
@@ -128,22 +130,23 @@ describe('exact-match redirect_uri with jerk create + injected callbackPort', ()
     binDir = join(home, 'bin');
     mkdirSync(binDir, { recursive: true });
     mkdirSync(join(home, '.pi/agent'), { recursive: true });
-    writeFileSync(
-      join(home, '.pi/agent/mcp.json'),
-      JSON.stringify({ mcpServers: { ch: { url } } }, null, 2)
-    );
+    mcpPath = join(home, '.pi/agent/mcp.json');
+    originalMcp = `${JSON.stringify({ mcpServers: { ch: { url } } }, null, 2)}\n`;
+    writeFileSync(mcpPath, originalMcp);
     const logPath = join(home, 'jerk.log');
     writeFileSync(
       join(binDir, 'jerk'),
       `#!/bin/sh
 echo "ARGV: $@" >> "${logPath}"
+echo "PI_MCP_CONFIG=\${PI_MCP_CONFIG-}" >> "${logPath}"
 case "$1" in
   --version) echo "jerk 0.19.0"; exit 0 ;;
   list) echo '[{"provider":"mcp:ch","source":"mcp.json"}]'; exit 0 ;;
 esac
 case "$2" in
   create)
-    cfg="$HOME/.pi/agent/mcp.json"
+    cfg="\${PI_MCP_CONFIG:?missing PI_MCP_CONFIG}"
+    test "$cfg" != "$HOME/.pi/agent/mcp.json" || exit 3
     port=$(node -e "const j=require(process.argv[1]); const o=j.mcpServers.ch.oauth||{}; if(!o.callbackPort) process.exit(2); console.log(o.callbackPort)" "$cfg") || exit 2
     node -e '
       const fs=require("fs");
@@ -185,7 +188,7 @@ exit 2
 
   after(() => as?.child.kill('SIGTERM'));
 
-  it('injects a nonzero callbackPort so jerk DCR matches authorize', async () => {
+  it('passes a nonzero callbackPort via PI_MCP_CONFIG so jerk DCR matches authorize', async () => {
     const r = run(['login', 'ch', '--no-browser'], { env });
     assert.equal(r.status, 0, r.stderr + r.stdout);
     const log = await (await fetch(`${as.base}/log`)).json();
@@ -194,7 +197,117 @@ exit 2
     assert.ok(!/:0(?:\/|$)/.test(registered), registered);
     assert.ok(!log.flags.some((f) => f === 'port-zero' || f.register === 'port-zero'));
     assert.ok(!log.flags.some((f) => f.authorize === 'invalid_redirect_uri'));
-    const cfg = JSON.parse(readFileSync(join(home, '.pi/agent/mcp.json'), 'utf8'));
-    assert.equal(cfg.mcpServers.ch.oauth?.callbackPort, undefined);
+    assert.equal(readFileSync(mcpPath, 'utf8'), originalMcp);
+  });
+});
+
+describe('exact-match redirect_uri scenarios that fail on base oauth', () => {
+  let as;
+  let home;
+  let env;
+  let url;
+  let store;
+
+  before(async () => {
+    as = await startFixture('exact-redirect-oauth-as.mjs');
+    url = `${as.base}/mcp`;
+    home = scratchHome('exact-base-fail');
+    env = {
+      ...homeEnv(home),
+      PATH: (process.env.PATH || '')
+        .split(':')
+        .filter((d) => !/jerk/.test(d))
+        .join(':'),
+    };
+    store = join(home, '.pi/agent/mcp-auth.json');
+    mkdirSync(join(home, '.pi/agent'), { recursive: true });
+    writeFileSync(
+      join(home, '.pi/agent/mcp.json'),
+      JSON.stringify({ mcpServers: { ch: { url, oauth: { clientRegistration: 'dcr' } } } }, null, 2)
+    );
+  });
+
+  after(() => as?.child.kill('SIGTERM'));
+
+  it('seeds auth state with a successful login', async () => {
+    const r = await login('ch', env);
+    assert.equal(r.status, 0, r.err);
+    assert.ok(existsSync(store));
+  });
+
+  it('falls back when the preferred registered port is occupied', async () => {
+    const before = JSON.parse(readFileSync(store, 'utf8'));
+    const key = Object.keys(before)[0];
+    assert.ok(key);
+    const { createServer } = await import('node:net');
+    const holder = createServer();
+    await new Promise((resolve) => holder.listen(0, '127.0.0.1', resolve));
+    const occupied = holder.address().port;
+    before[key].clientInformation = {
+      client_id: 'occupied_port_client',
+      redirect_uris: [`http://127.0.0.1:${occupied}/callback`],
+      token_endpoint_auth_method: 'none',
+    };
+    delete before[key].tokens;
+    delete before[key].tokensExpireAt;
+    writeFileSync(store, `${JSON.stringify(before, null, 2)}\n`);
+
+    try {
+      const r = await login('ch', env);
+      assert.equal(r.status, 0, r.err);
+      const sent = new URL(r.authorizeUrl).searchParams.get('redirect_uri');
+      assert.ok(sent);
+      assert.notEqual(sent, `http://127.0.0.1:${occupied}/callback`);
+      assert.ok(!/:0(?:\/|$)/.test(sent), sent);
+      const log = await (await fetch(`${as.base}/log`)).json();
+      assert.ok(!log.flags.some((f) => f.authorize === 'invalid_redirect_uri'));
+    } finally {
+      await new Promise((resolve) => holder.close(resolve));
+    }
+  });
+
+  it('re-registers when a cached DCR client has no redirect_uris', async () => {
+    const before = JSON.parse(readFileSync(store, 'utf8'));
+    const key = Object.keys(before)[0];
+    assert.ok(key);
+    before[key].clientInformation = {
+      client_id: 'no_redirect_metadata',
+      token_endpoint_auth_method: 'none',
+    };
+    delete before[key].tokens;
+    delete before[key].tokensExpireAt;
+    writeFileSync(store, `${JSON.stringify(before, null, 2)}\n`);
+
+    const r = await login('ch', env);
+    assert.equal(r.status, 0, r.err);
+    const after = JSON.parse(readFileSync(store, 'utf8'));
+    assert.notEqual(after[key].clientInformation.client_id, 'no_redirect_metadata');
+    const registered = after[key].clientInformation.redirect_uris ?? [];
+    assert.ok(registered.length > 0);
+    assert.ok(!/:0(?:\/|$)/.test(registered[0]));
+  });
+
+  it('re-registers a stale client whose redirect_uri was registered as port zero', async () => {
+    const before = JSON.parse(readFileSync(store, 'utf8'));
+    const key = Object.keys(before)[0];
+    assert.ok(key);
+    before[key].clientInformation = {
+      client_id: 'port_zero_client',
+      redirect_uris: ['http://127.0.0.1:0/callback'],
+      token_endpoint_auth_method: 'none',
+    };
+    delete before[key].tokens;
+    delete before[key].tokensExpireAt;
+    writeFileSync(store, `${JSON.stringify(before, null, 2)}\n`);
+
+    const r = await login('ch', env);
+    assert.equal(r.status, 0, r.err);
+    const sent = new URL(r.authorizeUrl).searchParams.get('redirect_uri');
+    assert.ok(sent);
+    assert.ok(!/:0(?:\/|$)/.test(sent), sent);
+    const after = JSON.parse(readFileSync(store, 'utf8'));
+    assert.notEqual(after[key].clientInformation.client_id, 'port_zero_client');
+    const log = await (await fetch(`${as.base}/log`)).json();
+    assert.ok(!log.flags.some((f) => f === 'port-zero' || f.register === 'port-zero'));
   });
 });

@@ -133,8 +133,8 @@ async function jerkLogin(
     platform,
     resolved.name,
     { namedEntry: resolved.namedEntry, oauth: resolved.oauth },
-    async () => {
-      const proc = await platform.spawn({ argv });
+    async (env) => {
+      const proc = await platform.spawn({ argv, env });
       proc.stdin.close().catch(() => {});
       const [, errText, result] = await Promise.all([
         readStream(proc.stdout),

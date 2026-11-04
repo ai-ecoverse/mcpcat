@@ -103,6 +103,10 @@ export async function listenCallback(
   }
 }
 
+export function isCimdClientId(clientId: unknown): boolean {
+  return typeof clientId === 'string' && /^https:\/\//i.test(clientId);
+}
+
 export function shouldKeepStoredClient(
   oauth: McpOAuthConfig | undefined,
   stored: McpOAuthState | undefined,
@@ -116,7 +120,11 @@ export function shouldKeepStoredClient(
   if (Array.isArray(registered) && registered.length > 0) {
     return redirectUrisMatch(registered, redirectUrl);
   }
-  return Boolean(stored?.clientInformation);
+  const clientId =
+    stored?.clientInformation && 'client_id' in stored.clientInformation
+      ? stored.clientInformation.client_id
+      : undefined;
+  return isCimdClientId(clientId);
 }
 
 function cimdForServer(
@@ -289,10 +297,10 @@ export async function signIn(options: {
     if (stored) {
       const next: McpOAuthState = { ...stored };
       delete next.oauthState;
-      if (!shouldKeepStoredClient(oauth, stored, redirectUrl)) {
+      delete next.tokens;
+      delete next.tokensExpireAt;
+      if (!oauth?.clientId) {
         delete next.clientInformation;
-        delete next.tokens;
-        delete next.tokensExpireAt;
       }
       await store.save(next);
     }

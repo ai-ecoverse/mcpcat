@@ -1,5 +1,5 @@
 import { OAuthCallbackServer } from '@earendil-works/pi-mcp/oauth';
-import { userConfigPath } from '../config/paths.ts';
+import { cacheDir, userConfigPath } from '../config/paths.ts';
 import type { McpOAuthConfig } from '../config/types.ts';
 import type { Platform } from '../platform/types.ts';
 
@@ -14,11 +14,11 @@ export async function withInjectedCallbackPortIfNeeded<T>(
   platform: Platform,
   name: string,
   options: { namedEntry: boolean; oauth: McpOAuthConfig | undefined },
-  fn: () => Promise<T>
+  fn: (env: Record<string, string> | undefined) => Promise<T>
 ): Promise<T> {
-  if (!needsInjectedCallbackPort(options)) return fn();
+  if (!needsInjectedCallbackPort(options)) return fn(undefined);
   const port = await allocateCallbackPort();
-  return withNamedCallbackPort(platform, name, port, fn);
+  return withTempCallbackPortConfig(platform, name, port, fn);
 }
 
 export async function allocateCallbackPort(): Promise<number> {
@@ -38,63 +38,87 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export async function withNamedCallbackPort<T>(
+function hostEnv(platform: Platform): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(platform.env)) {
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
+}
+
+async function makeTempDir(platform: Platform): Promise<string> {
+  const base = `${cacheDir(platform)}/mcp-cb`;
+  await platform.fs.mkdir(base, { mode: 0o700 });
+  for (let i = 0; i < 32; i++) {
+    const dir = `${base}/${Date.now().toString(36)}-${i.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    try {
+      await platform.fs.mkdirExclusive(dir);
+      return dir;
+    } catch {}
+  }
+  throw new Error('unable to create temporary mcp config directory');
+}
+
+async function removeTempDir(platform: Platform, dir: string): Promise<void> {
+  try {
+    if (platform.fs.unlink) await platform.fs.unlink(`${dir}/mcp.json`);
+  } catch {}
+  try {
+    await platform.fs.rmdir(dir);
+  } catch {}
+}
+
+export async function withTempCallbackPortConfig<T>(
   platform: Platform,
   name: string,
   port: number,
-  fn: () => Promise<T>
+  fn: (env: Record<string, string> | undefined) => Promise<T>
 ): Promise<T> {
   const path = userConfigPath(platform);
-  const fs = platform.fs;
-  let raw: string | undefined;
+  let raw: string;
   try {
-    raw = new TextDecoder().decode(await fs.readFile(path));
+    raw = new TextDecoder().decode(await platform.fs.readFile(path));
   } catch {
-    return fn();
+    return fn(undefined);
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return fn();
+    return fn(undefined);
   }
   if (!isRecord(parsed) || !isRecord(parsed.mcpServers) || !isRecord(parsed.mcpServers[name])) {
-    return fn();
+    return fn(undefined);
   }
-  const entry = parsed.mcpServers[name] as Record<string, unknown>;
-  const prevOauth = isRecord(entry.oauth) ? { ...entry.oauth } : undefined;
-  const hadPort = prevOauth !== undefined && 'callbackPort' in prevOauth;
-  const previousPort = hadPort ? prevOauth.callbackPort : undefined;
-  entry.oauth = { ...(prevOauth ?? {}), callbackPort: port };
-  const indent = /^([ \t]+)\S/m.exec(raw)?.[1] ?? '  ';
-  const output = `${JSON.stringify(parsed, null, indent)}\n`;
-  const tmpPath = `${path}.tmp.${Date.now()}`;
-  await fs.writeFile(tmpPath, output, { mode: 0o600 });
-  await fs.rename(tmpPath, path);
+  const entry = { ...(parsed.mcpServers[name] as Record<string, unknown>) };
+  const prevOauth = isRecord(entry.oauth) ? { ...entry.oauth } : {};
+  entry.oauth = { ...prevOauth, callbackPort: port };
+  const tempServers = { ...(parsed.mcpServers as Record<string, unknown>), [name]: entry };
+  const merged = { ...parsed, mcpServers: tempServers };
+  const tempDir = await makeTempDir(platform);
+  const tempPath = `${tempDir}/mcp.json`;
+  await platform.fs.writeFile(tempPath, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
+
+  const env = { ...hostEnv(platform), PI_MCP_CONFIG: tempPath };
+
+  let cleaned = false;
+  const cleanup = async () => {
+    if (cleaned) return;
+    cleaned = true;
+    await removeTempDir(platform, tempDir);
+  };
+
+  if (platform.onSignal) {
+    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+      await platform.onSignal(signal, () => {
+        void cleanup();
+      });
+    }
+  }
+
   try {
-    return await fn();
+    return await fn(env);
   } finally {
-    try {
-      const again = JSON.parse(new TextDecoder().decode(await fs.readFile(path))) as Record<
-        string,
-        unknown
-      >;
-      if (isRecord(again.mcpServers) && isRecord(again.mcpServers[name])) {
-        const restore = again.mcpServers[name] as Record<string, unknown>;
-        if (hadPort) {
-          restore.oauth = {
-            ...(isRecord(restore.oauth) ? restore.oauth : {}),
-            callbackPort: previousPort,
-          };
-        } else if (isRecord(restore.oauth)) {
-          delete restore.oauth.callbackPort;
-          if (Object.keys(restore.oauth).length === 0) delete restore.oauth;
-        }
-        const out = `${JSON.stringify(again, null, indent)}\n`;
-        const tmp = `${path}.tmp.${Date.now()}`;
-        await fs.writeFile(tmp, out, { mode: 0o600 });
-        await fs.rename(tmp, path);
-      }
-    } catch {}
+    await cleanup();
   }
 }
