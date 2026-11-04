@@ -102,7 +102,7 @@ describe('login falls back when jerk is below the callbackPort floor', () => {
   it('uses own sign-in, leaves no hanging create, and info works from pi store', async () => {
     const r = await login('ch', { ...env, MCPCAT_NO_JERK: undefined });
     assert.equal(r.status, 0, r.err);
-    assert.match(r.err, /jerk 1\.4\.0 is older than 1\.5\.0/);
+    assert.match(r.err, /jerk 1\.4\.0 is older than 1\.4\.1/);
     assert.match(r.err, /using own sign-in/);
     const log = existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';
     assert.doesNotMatch(log, / create/);
@@ -119,7 +119,7 @@ describe('login falls back when jerk is below the callbackPort floor', () => {
   it('-v names the own path and jerk version', () => {
     const r = run(['-v', 'login', 'ch', '--no-browser'], { env, input: '' });
     assert.match(r.stderr, /login via own sign-in \(jerk 1\.4\.0\)/);
-    assert.match(r.stderr, /older than 1\.5\.0/);
+    assert.match(r.stderr, /older than 1\.4\.1/);
   });
 });
 
@@ -143,7 +143,7 @@ describe('login --no-jerk skips a new-enough jerk', () => {
       JSON.stringify({ mcpServers: { ch: { url } } }, null, 2)
     );
     store = join(home, '.pi/agent/mcp-auth.json');
-    logPath = writeFakeJerk(binDir, home, '1.5.0', { honourPort: true });
+    logPath = writeFakeJerk(binDir, home, '1.4.1', { honourPort: true });
     env = { ...homeEnv(home), PATH: `${binDir}:${process.env.PATH}` };
   });
 
@@ -179,7 +179,7 @@ describe('login keeps the jerk path for a new-enough jerk', () => {
       join(home, '.pi/agent/mcp.json'),
       JSON.stringify({ mcpServers: { ch: { url } } }, null, 2)
     );
-    logPath = writeFakeJerk(binDir, home, '1.5.0', { honourPort: true });
+    logPath = writeFakeJerk(binDir, home, '1.4.1', { honourPort: true });
     env = { ...homeEnv(home), PATH: `${binDir}:${process.env.PATH}` };
   });
 
@@ -188,7 +188,7 @@ describe('login keeps the jerk path for a new-enough jerk', () => {
   it('delegates to jerk create and -v names that path', () => {
     const r = run(['-v', 'login', 'ch', '--no-browser'], { env });
     assert.equal(r.status, 0, r.stderr + r.stdout);
-    assert.match(r.stderr, /login via jerk create \(jerk 1\.5\.0\)/);
+    assert.match(r.stderr, /login via jerk create \(jerk 1\.4\.1\)/);
     assert.match(readFileSync(logPath, 'utf8'), / create/);
     assert.match(readFileSync(logPath, 'utf8'), /CREATE_PORT=/);
   });
@@ -224,7 +224,7 @@ describe('login --no-jerk does not probe a slow jerk --version', () => {
       `#!/bin/sh
 echo "ARGV: $@" >> "${logPath}"
 case "$1" in
-  --version) sleep 30; echo "jerk 1.5.0"; exit 0 ;;
+  --version) sleep 30; echo "jerk 1.4.1"; exit 0 ;;
   list) echo '[{"provider":"mcp:ch","source":"mcp.json"}]'; exit 0 ;;
 esac
 exit 2

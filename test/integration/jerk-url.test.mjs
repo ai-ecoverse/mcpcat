@@ -154,7 +154,7 @@ exit 2
     rmSync(log, { force: true });
     const login = run(['login', 'named', '--no-browser'], { input: '' });
     assert.notEqual(login.status, 0);
-    assert.match(login.stderr, /older than 1\.5\.0|using own sign-in/);
+    assert.match(login.stderr, /older than 1\.4\.1|using own sign-in/);
     assert.doesNotMatch(jerkCalls(), /mcp:named create/);
 
     rmSync(log, { force: true });

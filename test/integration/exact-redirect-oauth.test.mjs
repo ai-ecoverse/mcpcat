@@ -140,7 +140,7 @@ describe('exact-match redirect_uri with jerk create + PI_MCP_CONFIG callbackPort
 echo "ARGV: $@" >> "${logPath}"
 echo "PI_MCP_CONFIG=\${PI_MCP_CONFIG-}" >> "${logPath}"
 case "$1" in
-  --version) echo "jerk 1.5.0"; exit 0 ;;
+  --version) echo "jerk 1.4.1"; exit 0 ;;
   list) echo '[{"provider":"mcp:ch","source":"mcp.json"}]'; exit 0 ;;
 esac
 case "$2" in
@@ -220,7 +220,7 @@ describe('jerk login SIGINT leaves mcp.json byte-identical', () => {
       join(binDir, 'jerk'),
       `#!/bin/sh
 case "$1" in
-  --version) echo "jerk 1.5.0"; exit 0 ;;
+  --version) echo "jerk 1.4.1"; exit 0 ;;
   list) echo '[{"provider":"mcp:ch","source":"mcp.json"}]'; exit 0 ;;
 esac
 case "$2" in

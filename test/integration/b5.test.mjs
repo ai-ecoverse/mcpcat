@@ -340,13 +340,13 @@ esac
     assert.ok(status !== 0 || !stderr.includes('jerk'), 'should not use jerk 0.13.0');
   });
 
-  it('accepts jerk 1.5.0', () => {
+  it('accepts jerk 1.4.1', () => {
     const fakeJerk = join(tempDir, 'bin', 'jerk');
     writeFileSync(
       fakeJerk,
       `#!/bin/sh
 case "$1" in
-  --version) echo "jerk 1.5.0"; exit 0;;
+  --version) echo "jerk 1.4.1"; exit 0;;
   mcp:*) echo '{"token":"fake_tok_123","expires_at":9999999999}'; exit 0;;
   *) exit 4;;
 esac
@@ -560,7 +560,7 @@ describe('B5-6b: jerk not called for unauthenticated servers', () => {
     const fakeJerk = join(tempDir, 'bin', 'jerk');
     writeFileSync(
       fakeJerk,
-      `#!/bin/sh\necho "$@" >> ${invocationLog}\ncase "$1" in\n  --version) echo "jerk 1.5.0"; exit 0;;\n  *) exit 4;;\nesac\n`,
+      `#!/bin/sh\necho "$@" >> ${invocationLog}\ncase "$1" in\n  --version) echo "jerk 1.4.1"; exit 0;;\n  *) exit 4;;\nesac\n`,
       { mode: 0o755 }
     );
   });

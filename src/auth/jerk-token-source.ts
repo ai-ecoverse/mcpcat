@@ -5,7 +5,7 @@ import type { TokenResult, TokenSource } from './token-source.ts';
 
 const MIN_VERSION = [0, 14, 1];
 const URL_IDS_VERSION = [0, 19, 0];
-export const JERK_LOGIN_MIN_VERSION = [1, 5, 0];
+export const JERK_LOGIN_MIN_VERSION = [1, 4, 1];
 const VERSION_TIMEOUT_MS = 2_000;
 export const JERK_TIMEOUT_MS = 15_000;
 
