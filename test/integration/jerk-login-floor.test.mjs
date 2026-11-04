@@ -104,6 +104,7 @@ describe('login falls back when jerk is below the callbackPort floor', () => {
     assert.equal(r.status, 0, r.err);
     assert.match(r.err, /jerk 1\.4\.0 is older than 1\.4\.1/);
     assert.match(r.err, /using own sign-in/);
+    assert.match(r.err, /MCPCAT_NO_JERK=1 is a workaround, not required/);
     const log = existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';
     assert.doesNotMatch(log, / create/);
     assert.ok(existsSync(store));
@@ -114,6 +115,29 @@ describe('login falls back when jerk is below the callbackPort floor', () => {
       .join(':');
     const info = run(['info', 'ch'], { env: { ...env, PATH: noJerkPath } });
     assert.equal(info.status, 0, info.stderr);
+  });
+
+  it('info and call succeed with old jerk still on PATH after fallback login', async () => {
+    const r = await login('ch', { ...env, MCPCAT_NO_JERK: undefined });
+    assert.equal(r.status, 0, r.err);
+    assert.ok(existsSync(store));
+    const info = run(['info', 'ch'], { env });
+    assert.equal(info.status, 0, info.stderr);
+    const call = run(['call', 'ch', 'whoami'], { env });
+    assert.equal(call.status, 0, call.stderr);
+  });
+
+  it('logout clears the pi store and still asks jerk drop with old jerk on PATH', async () => {
+    const r = await login('ch', { ...env, MCPCAT_NO_JERK: undefined });
+    assert.equal(r.status, 0, r.err);
+    assert.match(readFileSync(store, 'utf8'), /access_token|client_id/);
+    writeFileSync(logPath, '');
+    const logout = run(['logout', 'ch'], { env });
+    assert.equal(logout.status, 0, logout.stderr);
+    assert.match(logout.stdout, /Signed out/);
+    assert.match(readFileSync(logPath, 'utf8'), / drop/);
+    const body = readFileSync(store, 'utf8').trim();
+    assert.equal(body === '' || body === '{}', true, body);
   });
 
   it('-v names the own path and jerk version', () => {
@@ -167,6 +191,7 @@ describe('login keeps the jerk path for a new-enough jerk', () => {
   let env;
   let url;
   let logPath;
+  let store;
 
   before(async () => {
     as = await startFixture('exact-redirect-oauth-as.mjs');
@@ -179,6 +204,7 @@ describe('login keeps the jerk path for a new-enough jerk', () => {
       join(home, '.pi/agent/mcp.json'),
       JSON.stringify({ mcpServers: { ch: { url } } }, null, 2)
     );
+    store = join(home, '.pi/agent/mcp-auth.json');
     logPath = writeFakeJerk(binDir, home, '1.4.1', { honourPort: true });
     env = { ...homeEnv(home), PATH: `${binDir}:${process.env.PATH}` };
   });
@@ -191,6 +217,19 @@ describe('login keeps the jerk path for a new-enough jerk', () => {
     assert.match(r.stderr, /login via jerk create \(jerk 1\.4\.1\)/);
     assert.match(readFileSync(logPath, 'utf8'), / create/);
     assert.match(readFileSync(logPath, 'utf8'), /CREATE_PORT=/);
+  });
+
+  it('clears a stale pi entry after a successful jerk create', () => {
+    writeFileSync(
+      store,
+      JSON.stringify({
+        [`mcp__ch|${url}`]: { tokens: { access_token: 'STALE', token_type: 'bearer' } },
+      })
+    );
+    const r = run(['login', 'ch', '--no-browser'], { env });
+    assert.equal(r.status, 0, r.stderr + r.stdout);
+    const body = existsSync(store) ? readFileSync(store, 'utf8').trim() : '{}';
+    assert.equal(body === '' || body === '{}', true, body);
   });
 });
 

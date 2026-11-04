@@ -163,6 +163,27 @@ exit 2
     assert.match(jerkCalls(), /ARGV: mcp:named drop/);
   });
 
+  it('a stale pi access_token falls through to jerk get', async () => {
+    const authPath = join(tmp, '.pi', 'agent', 'mcp-auth.json');
+    const key = `mcp__named|${url}`;
+    writeFileSync(
+      authPath,
+      JSON.stringify({
+        [key]: { tokens: { access_token: 'STALE_PI_TOKEN', token_type: 'bearer' } },
+      })
+    );
+    rmSync(log, { force: true });
+    await fetch(`http://127.0.0.1:${mcp.port}/_control/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ add: MARKER }),
+    });
+    const r = run(['call', 'named', 'echo', '-d', '{"text":"stale-pi"}']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /stale-pi/);
+    assert.match(jerkCalls(), /ARGV: mcp:named get --reveal --json/);
+  });
+
   it('a configured name jerk does not list uses pi store', () => {
     rmSync(log, { force: true });
     const r = run(['logout', 'other']);

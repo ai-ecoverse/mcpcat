@@ -12,6 +12,7 @@ import type { McpOAuthConfig } from '../config/types.ts';
 import type { Platform } from '../platform/types.ts';
 import { JerkSignInRequiredError, JerkTokenSource } from './jerk-token-source.ts';
 import { PiFileTokenSource } from './pi-store.ts';
+import { PiThenJerkTokenSource } from './pi-then-jerk.ts';
 import { AuthStepUpError } from './placeholder-auth.ts';
 import { isKernel, type TokenSource } from './token-source.ts';
 
@@ -104,10 +105,59 @@ export function createMcpAuthProvider(options: {
   platform: Platform;
   onCredentialObtained?: (secret: string) => void;
 }): AuthProvider {
+  if (options.source instanceof PiThenJerkTokenSource) {
+    return createPiThenJerkAuthProvider({ ...options, source: options.source });
+  }
   if (options.source instanceof JerkTokenSource) {
     return createJerkAuthProvider({ ...options, source: options.source });
   }
   return createPiAuthProvider(options);
+}
+
+function createPiThenJerkAuthProvider(options: {
+  name: string;
+  serverUrl: string;
+  source: PiThenJerkTokenSource;
+  oauth: McpOAuthConfig | undefined;
+  platform: Platform;
+  onCredentialObtained?: (secret: string) => void;
+}): AuthProvider {
+  const { name, serverUrl, source } = options;
+  const piProvider = createPiAuthProvider({ ...options, source: source.pi });
+  const jerkProvider = createJerkAuthProvider({ ...options, source: source.jerk });
+
+  async function piHasAccessToken(): Promise<boolean> {
+    const state = isKernel(options.platform)
+      ? await source.pi.loadWithoutLock(name, serverUrl)
+      : await source.pi.load(name, serverUrl);
+    return Boolean(state?.tokens?.access_token);
+  }
+
+  async function abandonPi(): Promise<void> {
+    await source.pi.remove(name, serverUrl).catch(() => undefined);
+  }
+
+  return {
+    async token(): Promise<string | undefined> {
+      if (await piHasAccessToken()) {
+        const token = await piProvider.token?.();
+        if (token) return token;
+      }
+      return jerkProvider.token?.();
+    },
+    async onUnauthorized(context: UnauthorizedContext): Promise<void> {
+      if (await piHasAccessToken()) {
+        try {
+          await piProvider.onUnauthorized?.(context);
+          return;
+        } catch (err) {
+          if (!(err instanceof McpOAuthAuthorizationRequiredError)) throw err;
+          await abandonPi();
+        }
+      }
+      await jerkProvider.onUnauthorized?.(context);
+    },
+  };
 }
 
 function createJerkAuthProvider(options: {

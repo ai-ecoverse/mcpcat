@@ -6,7 +6,7 @@ import {
   JerkSignInRequiredError,
   JerkTimeoutError,
 } from '../auth/jerk-token-source.ts';
-import { PiFileTokenSource } from '../auth/pi-store.ts';
+import { piStoreForSecrets } from '../auth/pi-then-jerk.ts';
 import { placeholderAuthProvider } from '../auth/placeholder-auth.ts';
 import { isKernel } from '../auth/token-source.ts';
 import { connect } from '../client/connect.ts';
@@ -2022,7 +2022,7 @@ function classifyError(err: unknown): { code: number; kind: string; msg: string 
   return { code: EXIT_RPC_ERROR, kind: 'rpc_error', msg };
 }
 
-async function resolveAuthProvider(
+export async function resolveAuthProvider(
   platform: Platform,
   hasAuthHeader: boolean,
   url: string | undefined,
@@ -2056,8 +2056,9 @@ async function resolveAuthProvider(
     onCredentialObtained,
   });
   const credentialSecrets: string[] = [];
-  if (source instanceof PiFileTokenSource) {
-    const state = await source.loadWithoutLock(name, url);
+  const piStore = piStoreForSecrets(source);
+  if (piStore) {
+    const state = await piStore.loadWithoutLock(name, url);
     if (state?.tokens?.access_token) credentialSecrets.push(state.tokens.access_token);
     if (state?.tokens?.refresh_token) credentialSecrets.push(state.tokens.refresh_token);
     if (
