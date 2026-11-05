@@ -226,6 +226,14 @@ function parseOneFlag(
     return { ok: false, error: `unknown flag: ${a}` };
   }
   if (!a.startsWith('--')) {
+    const eq = /^([^=]+)=(.*)$/.exec(a);
+    if (eq) {
+      const hint = eq[2] === '' ? '…' : eq[2];
+      return {
+        ok: false,
+        error: `unexpected positional argument "${a}" (use --${eq[1]} ${hint} or --${eq[1]}=${hint}; bare key=value is not accepted)`,
+      };
+    }
     return { ok: false, error: `unexpected positional argument "${a}"` };
   }
   const { key, inlineValue } = splitFlag(a);
