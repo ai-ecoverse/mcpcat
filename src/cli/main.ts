@@ -54,6 +54,7 @@ import { sanitizeJson, sanitizeTerminal } from '../render/sanitize.ts';
 import { eventFlagsUsed, parseServeFlags, runServe } from '../serve/runtime.ts';
 import { parseUpgradeArgs, upgradeUsage } from '../upgrade/plan.ts';
 import { createTokenSource, runLogin, runLogout } from './auth-verbs.ts';
+import { writeCallHelp } from './call-help.ts';
 import {
   runAdd,
   runBridge,
@@ -191,6 +192,7 @@ Server and code verbs:
                              Replace this install.sh install with the latest
                              release (alias: update; not in the kernel)
   help serve                 Serve options (also: serve --help)
+  help call                  Tool call options (also: call --help)
   help login                 Login options (also: login --help)
 
 Options:
@@ -1739,7 +1741,11 @@ async function help(platform: Platform, version: string, args: string[]): Promis
     await platform.write(1, serveHelpText(version));
     return 0;
   }
-  if (await writeLoginHelp(platform.write.bind(platform), version, args, parseArgs(args).verb)) {
+  const helpVerb = parseArgs(args).verb;
+  if (await writeCallHelp(platform.write.bind(platform), version, args, helpVerb)) {
+    return 0;
+  }
+  if (await writeLoginHelp(platform.write.bind(platform), version, args, helpVerb)) {
     return 0;
   }
   if (args[0] !== 'help' || !args.includes('--skill')) {

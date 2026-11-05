@@ -349,7 +349,7 @@ mcpcat call crawl run --params.url https://x --params.depth 2</code></pre>
 <ul>
   <li>Types follow <code>inputSchema.properties</code>: <code>string</code>, <code>integer</code>, <code>number</code>, <code>boolean</code>, arrays of those, objects as JSON or dotted paths. <code>--no-x</code> sets a boolean to false.</li>
   <li>Unknown flags exit 2 with the list of known ones (six's rule: never silently drop).</li>
-  <li><code>--name=value</code> and <code>--name value</code> both work; <code>--</code> ends flag parsing for values that start with <code>-</code>.</li>
+  <li><code>--name=value</code> and <code>--name value</code> both work; bare <code>key=value</code> is not accepted. <code>--</code> ends flag parsing for values that start with <code>-</code>. See <code>mcpcat call --help</code>.</li>
   <li>Missing <code>required</code> properties exit 2 before any request (skip with <code>--no-validate</code>).</li>
 </ul>
 
