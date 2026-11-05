@@ -151,6 +151,7 @@ async function jerkLogin(
         proc.wait(),
       ]);
       if (result.status === 0) {
+        await new PiFileTokenSource(platform).remove(resolved.name, resolved.serverUrl);
         await platform.write(1, `Signed in to ${target}\n`);
         return 0;
       }
@@ -269,11 +270,7 @@ export async function runLogin(
   if (useJerk) {
     await loginPathNote(platform, verbose, 'jerk', undefined, knownVersion);
     try {
-      const code = await jerkLogin(platform, target, resolved, args);
-      if (code === 0) {
-        await new PiFileTokenSource(platform).remove(resolved.name, resolved.serverUrl);
-      }
-      return code;
+      return await jerkLogin(platform, target, resolved, args);
     } catch (err) {
       await platform.write(2, `mcpcat: login failed: ${(err as Error).message}\n`);
       return 4;

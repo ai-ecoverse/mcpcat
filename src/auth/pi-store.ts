@@ -106,9 +106,16 @@ export class PiFileTokenSource implements TokenSource {
     try {
       const raw = await this.readRaw();
       const states = parseStates(raw);
-      const stored = key in states ? key : legacy in states ? legacy : undefined;
-      if (!stored) return false;
-      delete states[stored];
+      let removed = false;
+      if (key in states) {
+        delete states[key];
+        removed = true;
+      }
+      if (legacy in states) {
+        delete states[legacy];
+        removed = true;
+      }
+      if (!removed) return false;
       await this.writeStates(states);
       return true;
     } finally {
