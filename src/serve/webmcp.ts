@@ -33,7 +33,7 @@ export interface WebMcpOptions {
   dialogs?: DialogHolder;
   beforeList?: () => Promise<void>;
   late?: () => boolean;
-  emptyHint?: (unavailable: boolean) => string | undefined;
+  emptyHint?: (unavailable: boolean, crossOriginOff?: boolean) => string | undefined;
   topLoader?: () => string | undefined;
   onChange?: () => void;
 }
@@ -46,10 +46,16 @@ interface FrameTools {
 interface CacheEntry {
   tools: WebMcpTool[];
   unavailable: boolean;
+  crossOriginOff?: boolean;
   expiresAt: number;
 }
 
 const UNAVAILABLE_RE = /WebMCP is unavailable on this page/;
+export const CROSS_ORIGIN_OFF_RE = /cross-origin child tools are unavailable/;
+export const FROM_ORIGIN_POLL_MS = 100;
+export const FROM_ORIGIN_POLL_MAX_MS = 15_000;
+export const CROSS_ORIGIN_OFF_HINT =
+  'cross-origin child tools are unavailable on this guarded route';
 
 function emptyFallbackOrError(error: string, holderHint?: string): ToolListing {
   const hint = error.trim();
@@ -712,36 +718,36 @@ function createLiveFrames(platform: Platform, options: WebMcpOptions) {
   };
 }
 
-export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) {
-  let cache: CacheEntry | undefined;
-  const baseArgs = buildBaseArgs(options);
+interface ListOutcome {
+  tools?: WebMcpTool[];
+  error?: string;
+  notFound?: boolean;
+  unavailable?: boolean;
+  crossOriginOff?: boolean;
+}
 
-  const listLimit = Math.max(options.maxOutput, WEBMCP_LIST_FLOOR);
-  const { cdp, tab, dialogs } = options;
-  const watcher = cdp && tab ? watchJsDialogs(platform, cdp, tab) : undefined;
-  const watch = watcher ? reportWatch(tab!, watcher) : undefined;
-  const live = createLiveFrames(platform, options);
-  const remember = (mark: Mark, entry: CacheEntry) => {
-    if (live.keep(mark)) cache = entry;
-  };
+interface ListRawResult {
+  tools: WebMcpTool[];
+  error?: string;
+  notFound?: boolean;
+  unavailable?: boolean;
+  crossOriginOff?: boolean;
+}
 
-  async function listRaw(fresh = false): Promise<{
-    tools: WebMcpTool[];
-    error?: string;
-    notFound?: boolean;
-    unavailable?: boolean;
-  }> {
-    const blocked = await blockedNow(watcher, tab, dialogs);
-    if (blocked) return { tools: [], error: blocked };
+function createLister(
+  platform: Platform,
+  options: WebMcpOptions,
+  baseArgs: string[],
+  listLimit: number,
+  watcher: DialogWatcher | undefined,
+  watch: Watch | undefined,
+  live: ReturnType<typeof createLiveFrames>,
+  getCache: () => CacheEntry | undefined,
+  setCache: (mark: Mark, entry: CacheEntry) => void
+) {
+  const { tab, dialogs } = options;
 
-    if (!fresh && cache && Date.now() < cache.expiresAt) {
-      return { tools: live.merged(cache.tools), unavailable: cache.unavailable };
-    }
-
-    await options.beforeList?.();
-    const now = Date.now();
-    const mark = live.mark();
-
+  async function listOnce(): Promise<ListOutcome> {
     const argv = [options.playwrightCli, 'webmcp-list', '--json', ...baseArgs];
     const result = await runProcess(
       platform,
@@ -751,47 +757,126 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
       listLimit,
       watch
     );
+    const crossOriginOff = CROSS_ORIGIN_OFF_RE.test(result.stderr);
 
     if (result.exitCode === -1) {
-      return { tools: [], error: result.stderr, notFound: true };
+      return { error: result.stderr, notFound: true };
     }
 
     if (result.blocked) {
-      return { tools: [], error: result.blocked };
+      return { error: result.blocked };
     }
 
     if (result.exitCode === 124) {
       return {
-        tools: [],
         error: timeoutMessage('webmcp-list', options.callTimeoutMs, tab, watcher),
       };
     }
 
     if (result.exitCode === 2 && UNAVAILABLE_RE.test(result.stderr)) {
-      remember(mark, { tools: [], unavailable: true, expiresAt: now + options.ttlMs });
-      return { tools: live.merged([]), unavailable: true };
+      return { tools: [], unavailable: true, crossOriginOff };
     }
 
     if (result.exitCode !== 0) {
-      return { tools: [], error: result.stderr || `webmcp-list exited ${result.exitCode}` };
+      return { error: result.stderr || `webmcp-list exited ${result.exitCode}` };
     }
 
     const parsed = parseListOutput(result, listLimit);
-    if (!Array.isArray(parsed)) return { tools: [], error: parsed.error };
+    if (!Array.isArray(parsed)) return { error: parsed.error };
 
     if (parsed.length === 0) {
       const gone = await tabGone(platform, options);
-      if (gone) return { tools: [], error: gone };
+      if (gone) return { error: gone };
+      return { tools: [], crossOriginOff };
     }
 
-    remember(mark, { tools: parsed, unavailable: false, expiresAt: now + options.ttlMs });
-    return { tools: live.merged(parsed) };
+    return { tools: parsed, crossOriginOff };
   }
 
+  return async function listRaw(fresh = false): Promise<ListRawResult> {
+    const blocked = await blockedNow(watcher, tab, dialogs);
+    if (blocked) return { tools: [], error: blocked };
+
+    const cache = getCache();
+    if (!fresh && cache && Date.now() < cache.expiresAt) {
+      return {
+        tools: live.merged(cache.tools),
+        unavailable: cache.unavailable,
+        crossOriginOff: cache.crossOriginOff,
+      };
+    }
+
+    await options.beforeList?.();
+    const now = Date.now();
+    const mark = live.mark();
+    const pollOrigins = (options.fromOrigins ?? []).length > 0;
+    const deadline = pollOrigins ? now + FROM_ORIGIN_POLL_MAX_MS : now;
+
+    let outcome = await listOnce();
+    while (
+      pollOrigins &&
+      outcome.tools?.length === 0 &&
+      !outcome.error &&
+      !outcome.notFound &&
+      !outcome.unavailable &&
+      !outcome.crossOriginOff &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, FROM_ORIGIN_POLL_MS));
+      outcome = await listOnce();
+    }
+
+    if (outcome.error || outcome.notFound) {
+      return {
+        tools: [],
+        error: outcome.error,
+        notFound: outcome.notFound,
+        crossOriginOff: outcome.crossOriginOff,
+      };
+    }
+
+    const listed = outcome.tools ?? [];
+    setCache(mark, {
+      tools: listed,
+      unavailable: outcome.unavailable === true,
+      crossOriginOff: outcome.crossOriginOff,
+      expiresAt: Date.now() + options.ttlMs,
+    });
+    return {
+      tools: live.merged(listed),
+      unavailable: outcome.unavailable,
+      crossOriginOff: outcome.crossOriginOff,
+    };
+  };
+}
+
+export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) {
+  let cache: CacheEntry | undefined;
+  const baseArgs = buildBaseArgs(options);
+
+  const listLimit = Math.max(options.maxOutput, WEBMCP_LIST_FLOOR);
+  const { cdp, tab, dialogs } = options;
+  const watcher = cdp && tab ? watchJsDialogs(platform, cdp, tab) : undefined;
+  const watch = watcher ? reportWatch(tab!, watcher) : undefined;
+  const live = createLiveFrames(platform, options);
+  const listRaw = createLister(
+    platform,
+    options,
+    baseArgs,
+    listLimit,
+    watcher,
+    watch,
+    live,
+    () => cache,
+    (mark, entry) => {
+      if (live.keep(mark)) cache = entry;
+    }
+  );
+
   async function getRpcTools(): Promise<ToolListing | null> {
-    const { tools, error, notFound, unavailable } = await listRaw();
+    const { tools, error, notFound, unavailable, crossOriginOff } = await listRaw();
     if (notFound) return null;
-    if (error) return emptyFallbackOrError(error, options.emptyHint?.(false));
+    if (error) return emptyFallbackOrError(error, options.emptyHint?.(false, crossOriginOff));
     const late = options.late?.() ?? false;
 
     const rpcTools: RpcTool[] = [];
@@ -812,7 +897,8 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
       });
     }
 
-    const hint = tools.length === 0 ? options.emptyHint?.(unavailable === true) : undefined;
+    const hint =
+      tools.length === 0 ? options.emptyHint?.(unavailable === true, crossOriginOff) : undefined;
     return hint ? { tools: rpcTools, hidden, hint } : { tools: rpcTools, hidden };
   }
 

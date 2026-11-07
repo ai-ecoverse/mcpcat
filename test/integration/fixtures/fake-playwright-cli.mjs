@@ -183,7 +183,7 @@ if (command === 'dialog-hold') {
   process.stdin.on('end', () => stop('stdin-eof', 0));
 } else if (command === 'webmcp-polyfill') {
   const reload = filtered.includes('--reload');
-  record({ command, tab, reload });
+  record({ command, tab, reload, fromOrigins });
   const mode = process.env.FAKE_PWCLI_HOLDER || 'native';
   if (mode === 'fail') {
     process.stderr.write(
@@ -250,8 +250,11 @@ if (command === 'webmcp-list') {
     process.stderr.write('webmcp-list requires --json\n');
     process.exit(2);
   }
-  record({ command, tab: usedTab(), holder: holderUp() });
+  record({ command, tab: usedTab(), holder: holderUp(), fromOrigins });
   drift();
+  if (process.env.FAKE_PWCLI_CROSS_ORIGIN_OFF && fromOrigins.length > 0) {
+    process.stderr.write('cross-origin child tools are unavailable on this guarded route\n');
+  }
   if (process.env.FAKE_PWCLI_UNAVAILABLE || (process.env.FAKE_PWCLI_NEEDS_HOLDER && !holderUp())) {
     process.stderr.write(
       'webmcp-list: WebMCP is unavailable on this page (document.modelContext is absent)\n'
@@ -269,6 +272,23 @@ if (command === 'webmcp-list') {
   } else if (liveScript) {
     process.stdout.write(`${JSON.stringify(pageTools())}\n`);
     process.exit(0);
+  } else if (process.env.FAKE_PWCLI_LIST_EMPTY_UNTIL) {
+    const until = Number(process.env.FAKE_PWCLI_LIST_EMPTY_UNTIL);
+    const lists = readFileSync(process.env.FAKE_PWCLI_LOG, 'utf8')
+      .split('\n')
+      .filter((l) => l.includes('"command":"webmcp-list"')).length;
+    if (lists < until) {
+      process.stdout.write('[]\n');
+      process.exit(0);
+    }
+    try {
+      const data = readFileSync(fixtureFile, 'utf8');
+      process.stdout.write(data);
+      process.exit(0);
+    } catch (err) {
+      process.stderr.write(`fixture not found: ${fixtureFile}\n`);
+      process.exit(2);
+    }
   } else {
     try {
       const data = readFileSync(fixtureFile, 'utf8');

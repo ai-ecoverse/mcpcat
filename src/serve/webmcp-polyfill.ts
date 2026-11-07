@@ -3,6 +3,7 @@ import { sanitizeTerminal } from '../render/sanitize.ts';
 
 export const POLYFILL_MIN_VERSION = '1.32.0';
 export const TOOLS_CHANGED_MIN_VERSION = '1.40.0';
+export const FROM_ORIGIN_MIN_VERSION = '1.46.7';
 export const HOLDER_RESTART_MIN_MS = 500;
 export const HOLDER_RESTART_MAX_MS = 30_000;
 export const HOLDER_STABLE_MS = 30_000;
@@ -18,6 +19,7 @@ export interface HolderOptions {
   reload: boolean;
   readyTimeoutMs: number;
   watch?: boolean;
+  fromOrigins?: string[];
   report(line: string): Promise<void> | void;
 }
 
@@ -131,6 +133,17 @@ function parseEvent(line: string): HolderEvent | undefined {
   }
 }
 
+function holderArgv(options: HolderOptions, reload: boolean): string[] {
+  const argv = [options.playwrightCli];
+  if (options.cdp) argv.push('--cdp', options.cdp);
+  argv.push('webmcp-polyfill', '--tab', options.tab);
+  if (reload) argv.push('--reload');
+  for (const origin of options.fromOrigins ?? []) {
+    argv.push('--from-origin', origin);
+  }
+  return argv;
+}
+
 export function startHolder(platform: Platform, options: HolderOptions): Holder {
   const state: HolderStatus = { late: false, native: false };
   const listeners: (() => void)[] = [];
@@ -190,10 +203,7 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
   };
 
   const spawn = async () => {
-    const argv = [options.playwrightCli];
-    if (options.cdp) argv.push('--cdp', options.cdp);
-    argv.push('webmcp-polyfill', '--tab', options.tab);
-    if (options.reload && first) argv.push('--reload');
+    const argv = holderArgv(options, Boolean(options.reload && first));
     first = false;
     waitedOut = false;
     pending = new Promise<void>((resolve) => {

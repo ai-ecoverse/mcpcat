@@ -82,7 +82,7 @@ function env(dirs, extra = {}) {
     FAKE_PWCLI_LOG: dirs.log,
     FAKE_PWCLI_HOLDER_FILE: dirs.holder,
     FAKE_PWCLI_HOLDER: 'polyfill',
-    FAKE_PWCLI_VERSION: '1.40.0',
+    FAKE_PWCLI_VERSION: '1.46.7',
     FAKE_PWCLI_LIVE: dirs.script,
     ...extra,
   };
