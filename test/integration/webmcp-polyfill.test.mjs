@@ -386,7 +386,7 @@ describe('serve --webmcp polyfill', () => {
     assert.ok(!readLog(dirs.log).some((e) => e.command === 'webmcp-polyfill'));
   });
 
-  it('passes --webmcp-from-origin to webmcp-list and webmcp-call', async () => {
+  it('passes --webmcp-from-origin to the holder, webmcp-list and webmcp-call', async () => {
     const dirs = scratch();
     const input = `${[INIT, rpc('tools/call', { name: 'get_inbox_state', arguments: {} }, 2)].join('\n')}\n`;
     const r = await run(
@@ -400,27 +400,95 @@ describe('serve --webmcp polyfill', () => {
         '--webmcp-from-origin',
         'https://pay.example.com',
       ],
-      baseEnv(dirs),
+      baseEnv(dirs, { FAKE_PWCLI_VERSION: '1.46.7' }),
       input
     );
     assert.equal(r.status, 0, r.stderr);
     const log = readLog(dirs.log);
-    for (const command of ['webmcp-list', 'webmcp-call']) {
+    for (const command of ['webmcp-polyfill', 'webmcp-list', 'webmcp-call']) {
       const entry = log.find((e) => e.command === command);
       assert.ok(entry, command);
       const argv = entry.argv.join(' ');
       assert.match(argv, /--from-origin https:\/\/widgets\.example\.com/);
       assert.match(argv, /--from-origin https:\/\/pay\.example\.com/);
     }
-    assert.ok(!log.find((e) => e.command === 'webmcp-polyfill').argv.includes('--from-origin'));
+  });
+
+  it('refuses --webmcp-from-origin on playwright-cli older than 1.46.7', async () => {
+    const dirs = scratch();
+    const r = await stdioServe(
+      ['--webmcp-from-origin', 'https://widgets.example.com'],
+      baseEnv(dirs, { FAKE_PWCLI_VERSION: '1.46.6' })
+    );
+    assert.equal(r.status, 2, r.stderr);
+    assert.match(
+      r.stderr,
+      /--webmcp-from-origin needs playwright-cli 1\.46\.7 or newer \(found 1\.46\.6\)/
+    );
+    assert.ok(!readLog(dirs.log).some((e) => e.command === 'webmcp-polyfill'));
+  });
+
+  it('polls webmcp-list --from-origin until tools appear', async () => {
+    const dirs = scratch();
+    const r = await stdioServe(
+      ['--webmcp-from-origin', 'https://widgets.example.com'],
+      baseEnv(dirs, {
+        FAKE_PWCLI_VERSION: '1.46.7',
+        FAKE_PWCLI_LIST_EMPTY_UNTIL: '3',
+      })
+    );
+    assert.equal(r.status, 0, r.stderr);
+    const lists = readLog(dirs.log).filter((e) => e.command === 'webmcp-list');
+    assert.ok(lists.length >= 3, `expected ≥3 lists, got ${lists.length}`);
+    assert.ok(listResult(r.stdout).result.tools.length > 0);
+  });
+
+  it('does not poll webmcp-list when no --webmcp-from-origin', async () => {
+    const dirs = scratch();
+    const r = await stdioServe(
+      [],
+      baseEnv(dirs, {
+        FAKE_PWCLI_VERSION: '1.46.7',
+        FAKE_PWCLI_LIST_EMPTY_UNTIL: '3',
+      })
+    );
+    assert.equal(r.status, 0, r.stderr);
+    const lists = readLog(dirs.log).filter((e) => e.command === 'webmcp-list');
+    assert.equal(lists.length, 1);
+    assert.deepEqual(listResult(r.stdout).result.tools, []);
+  });
+
+  it('surfaces the guarded-route cross-origin stderr as the empty-tools hint', async () => {
+    const dirs = scratch();
+    const emptyFixture = join(fixturesDir, 'webmcp-tools-empty.json');
+    const r = await stdioServe(
+      ['--webmcp-from-origin', 'https://widgets.example.com'],
+      baseEnv(dirs, {
+        FAKE_PWCLI_VERSION: '1.46.7',
+        FAKE_PWCLI_FIXTURE: emptyFixture,
+        FAKE_PWCLI_CROSS_ORIGIN_OFF: '1',
+        FAKE_PWCLI_HOLDER_EMPTY: '1',
+      })
+    );
+    assert.equal(r.status, 0, r.stderr);
+    const resp = listResult(r.stdout);
+    assert.deepEqual(resp.result.tools, []);
+    assert.equal(
+      resp.result._meta['io.mcpcat/hint'],
+      'cross-origin child tools are unavailable on this guarded route'
+    );
+    assert.match(r.stderr, /cross-origin child tools are unavailable on this guarded route/);
+    assert.equal(readLog(dirs.log).filter((e) => e.command === 'webmcp-list').length, 1);
   });
 
   it('rejects a bad --webmcp-polyfill, --webmcp-reload with off, and a non-origin', async () => {
-    const env = baseEnv(scratch());
+    const env = baseEnv(scratch(), { FAKE_PWCLI_VERSION: '1.46.7' });
     for (const extra of [
       ['--webmcp-polyfill', 'always'],
       ['--webmcp-polyfill', 'off', '--webmcp-reload'],
       ['--webmcp-from-origin', 'https://pay.example.com/path'],
+      ['--webmcp-from-origin', 'https://user:pass@pay.example.com'],
+      ['--webmcp-from-origin', 'https://*.example.com'],
     ]) {
       const r = await stdioServe(extra, env);
       assert.equal(r.status, 2, `${extra.join(' ')}: ${r.stderr}`);

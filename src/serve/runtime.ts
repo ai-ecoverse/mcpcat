@@ -52,7 +52,12 @@ import {
   isLoopbackBind,
 } from './origin.ts';
 import { createProxyHandler } from './proxy.ts';
-import { createWebMcpHandler, playwrightCliVersion, resolveWebMcpTab } from './webmcp.ts';
+import {
+  CROSS_ORIGIN_OFF_HINT,
+  createWebMcpHandler,
+  playwrightCliVersion,
+  resolveWebMcpTab,
+} from './webmcp.ts';
 import {
   DIALOG_HOLD_MIN_VERSION,
   DIALOG_MODES,
@@ -62,6 +67,7 @@ import {
 import {
   compareVersions,
   FALLBACK_UNVERIFIED,
+  FROM_ORIGIN_MIN_VERSION,
   HOLDER_READY_MS,
   type Holder,
   POLYFILL_MIN_VERSION,
@@ -1362,15 +1368,30 @@ async function runWebMcpServe(
     tab = resolved.tab;
   }
 
-  const cliVersion =
-    options.webmcpPolyfill === 'off' && options.webmcpDialog === 'report'
-      ? undefined
-      : parseCliVersion(
-          await playwrightCliVersion(platform, {
-            playwrightCli: cliPath,
-            callTimeoutMs: options.callTimeout,
-          })
-        );
+  const wantsOrigins = options.webmcpFromOrigins.length > 0;
+  const needVersion = wantsOrigins
+    ? true
+    : options.webmcpPolyfill !== 'off' || options.webmcpDialog !== 'report';
+  const cliVersion = needVersion
+    ? parseCliVersion(
+        await playwrightCliVersion(platform, {
+          playwrightCli: cliPath,
+          callTimeoutMs: options.callTimeout,
+        })
+      )
+    : undefined;
+  if (wantsOrigins) {
+    const found = cliVersion ?? '0.0.0';
+    if (compareVersions(found, FROM_ORIGIN_MIN_VERSION) < 0) {
+      await platform.write(
+        2,
+        sanitizeTerminal(
+          `mcpcat serve --webmcp: --webmcp-from-origin needs playwright-cli ${FROM_ORIGIN_MIN_VERSION} or newer (found ${cliVersion ?? 'unknown'}); update with: curl -fsSL https://get.sliccy.ai/playwright-cli | sh\n`
+        )
+      );
+      return 2;
+    }
+  }
   const polyfill = startPolyfill(platform, options, cliPath, cdp, tab, cliVersion);
   if (polyfill.oldVersion) {
     await platform.write(
@@ -1395,7 +1416,8 @@ async function runWebMcpServe(
     dialogs,
     beforeList: holder ? () => holder.ready() : undefined,
     late: () => isLate(holder),
-    emptyHint: (unavailable) => emptyToolsHint(options, polyfill, unavailable),
+    emptyHint: (unavailable, crossOriginOff) =>
+      emptyToolsHint(options, polyfill, unavailable, crossOriginOff),
     topLoader: () => holder?.status().loaderId,
     onChange: notifier ? () => notifier.notify() : undefined,
   });
@@ -1469,7 +1491,13 @@ function webmcpUsageError(options: ServeOptions): string | undefined {
     try {
       parsed = new URL(origin);
     } catch {}
-    if (!parsed || !/^https?:$/.test(parsed.protocol) || parsed.origin !== origin) {
+    if (
+      !parsed ||
+      !/^https?:$/.test(parsed.protocol) ||
+      parsed.origin !== origin ||
+      !parsed.hostname ||
+      parsed.hostname.includes('*')
+    ) {
       return `--webmcp-from-origin takes an origin such as https://example.com, not ${origin}`;
     }
   }
@@ -1502,6 +1530,7 @@ function startPolyfill(
     reload: options.webmcpReload,
     readyTimeoutMs: Math.min(options.callTimeout, HOLDER_READY_MS),
     watch: live,
+    fromOrigins: options.webmcpFromOrigins,
     report: (line) => platform.write(2, line),
   });
   return { holder, live };
@@ -1515,8 +1544,10 @@ function isLate(holder: Holder | undefined): boolean {
 function emptyToolsHint(
   options: ServeOptions,
   polyfill: PolyfillState,
-  unavailable: boolean
+  unavailable: boolean,
+  crossOriginOff?: boolean
 ): string | undefined {
+  if (crossOriginOff) return CROSS_ORIGIN_OFF_HINT;
   if (options.webmcpPolyfill === 'off') {
     return unavailable
       ? 'WebMCP is not enabled in this browser and --webmcp-polyfill is off; drop --webmcp-polyfill off to inject the WebMCP polyfill'
