@@ -1,3 +1,4 @@
+import { warnUnsentHeaders } from '../client/kernel-headers.ts';
 import { addServer, removeServer, setExposure, updateServer } from '../config/edit.ts';
 import { importFile } from '../config/import.ts';
 import { MergedConfigSource } from '../config/index.ts';
@@ -167,6 +168,16 @@ function buildHttpConfig(urlStr: string, flags: AddFlags): McpHttpServerConfig |
   return config;
 }
 
+async function warnUnsent(
+  platform: Platform,
+  verb: string,
+  config: McpServerConfig
+): Promise<void> {
+  if ('headers' in config && config.headers) {
+    await warnUnsentHeaders(platform, verb, Object.keys(config.headers));
+  }
+}
+
 export async function runAdd(platform: Platform, args: string[], probe?: ProbeFn): Promise<number> {
   const flags = parseAddFlags(args);
   if (typeof flags === 'string') {
@@ -230,6 +241,7 @@ export async function runAdd(platform: Platform, args: string[], probe?: ProbeFn
   for (const w of warnings) {
     await platform.write(2, `mcpcat add: warning: ${w.message}; ${w.advice}\n`);
   }
+  await warnUnsent(platform, 'mcpcat add', config);
 
   await platform.write(1, `${replaced ? 'replaced' : 'added'} ${name} in ${path}\n`);
   await noteAgentConfig(platform, 'add', path);
@@ -490,6 +502,7 @@ export async function runImport(platform: Platform, args: string[]): Promise<num
     }
     const { replaced } = await addServer(platform.fs, destPath, name, config);
     await platform.write(1, `${replaced ? 'replaced' : 'imported'} ${name}\n`);
+    await warnUnsent(platform, 'mcpcat import', validation);
     if (destPath !== `${AGENT_CONFIG_DIR}/mcp.json`) continue;
     for (const w of checkAgentWarnings(name, validation)) {
       await platform.write(
