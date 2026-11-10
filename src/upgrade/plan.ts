@@ -1,5 +1,6 @@
 export const UPGRADE_REPO = 'ai-ecoverse/mcpcat';
 export const UPGRADE_API_ENV = 'MCPCAT_UPDATE_API_BASE';
+export const UPGRADE_WEB_ENV = 'MCPCAT_UPDATE_WEB_BASE';
 export const SUMS = 'SHA256SUMS';
 export const INSTALLER = 'curl -fsSL https://get.sliccy.ai/mcpcat | sh';
 

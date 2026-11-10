@@ -72,18 +72,38 @@ function fakeGitHub() {
       assetUrl: null,
       sumsUrl: null,
       status: 200,
+      rateLimited: false,
+      noWeb: false,
       downloads: 0,
       requests: [],
     });
   reset();
   const server = createServer((req, res) => {
-    state.requests.push({ url: req.url, agent: req.headers['user-agent'] });
+    state.requests.push({
+      url: req.url,
+      agent: req.headers['user-agent'],
+      auth: req.headers.authorization,
+    });
     if (state.status !== 200) {
-      res.writeHead(state.status).end('unavailable');
+      const limit = state.rateLimited && req.url.startsWith('/repos/');
+      res.writeHead(state.status, limit ? { 'x-ratelimit-remaining': '0' } : {}).end('unavailable');
       return;
     }
     const base = `http://127.0.0.1:${server.address().port}`;
     const asset = `mcpcat-${state.tag.slice(1)}.tgz`;
+    const web = '/ai-ecoverse/mcpcat/releases';
+    if (req.url === `${web}/latest` && !state.noWeb) {
+      res.writeHead(302, { location: `${base}${web}/tag/${state.tag}` }).end();
+      return;
+    }
+    if (req.url === `${web}/download/${state.tag}/${asset}`) {
+      res.writeHead(302, { location: `/objects/${asset}` }).end();
+      return;
+    }
+    if (req.url === `${web}/download/${state.tag}/SHA256SUMS`) {
+      res.writeHead(302, { location: '/dl/SHA256SUMS' }).end();
+      return;
+    }
     if (req.url === '/repos/ai-ecoverse/mcpcat/releases/latest') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
@@ -154,6 +174,9 @@ function run(cmd, args, base, extra = {}) {
   return new Promise((resolve, reject) => {
     const env = { ...process.env, MCPCAT_UPDATE_API_BASE: base };
     delete env.INSTALL_DIR;
+    delete env.GH_TOKEN;
+    delete env.GITHUB_TOKEN;
+    delete env.MCPCAT_UPDATE_WEB_BASE;
     if (base === null) delete env.MCPCAT_UPDATE_API_BASE;
     Object.assign(env, extra);
     const child = spawn(cmd, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -573,6 +596,108 @@ test('mcpcat upgrade replaces an install.sh install with the verified latest rel
     const result = await go(inst, ['upgrade', '--check']);
     assert.equal(result.code, 1);
     assert.equal(after(result), 'mcpcat upgrade: asking GitHub for the latest release: HTTP 403\n');
+    untouched(inst);
+  });
+
+  const both = (command) =>
+    `${notice(command)}mcpcat ${command}: MCPCAT_UPDATE_WEB_BASE overrides github.com with ${fake.base}\n`;
+  const viaWeb = (inst, args, extra = {}) =>
+    go(inst, args, fake.base, { MCPCAT_UPDATE_WEB_BASE: fake.base, ...extra });
+  const api = () => fake.state.requests.filter((r) => r.url.startsWith('/repos/'));
+
+  await t.test('the latest release comes from github.com, without the API', async () => {
+    fake.reset();
+    const inst = install();
+    const check = await viaWeb(inst, ['upgrade', '--check']);
+    assert.equal(check.code, 0, check.stderr);
+    assert.equal(check.stderr, both('upgrade'));
+    assert.match(check.stdout, /9\.9\.9/);
+    const result = await viaWeb(inst, ['update', '--force']);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(
+      result.stdout,
+      `upgrading mcpcat ${version} to 9.9.9\nupgraded ${inst.launcher} to mcpcat 9.9.9 (SHA256SUMS verified)\n`
+    );
+    assert.equal(readlinkSync(join(inst.data, 'current')), '9.9.9');
+    assert.ok(
+      fake.state.requests.some(
+        (r) => r.url === '/ai-ecoverse/mcpcat/releases/download/v9.9.9/mcpcat-9.9.9.tgz'
+      )
+    );
+    assert.deepEqual(api(), []);
+  });
+
+  await t.test('the API is the fallback when github.com names no release', async () => {
+    fake.reset();
+    fake.state.noWeb = true;
+    const inst = install();
+    const result = await viaWeb(inst, ['upgrade', '--force']);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(readlinkSync(join(inst.data, 'current')), '9.9.9');
+    assert.equal(api().length, 1);
+  });
+
+  await t.test('a redirect that names no release tag falls back to the API', async () => {
+    fake.reset();
+    fake.state.tag = 'nightly';
+    const inst = install();
+    const result = await viaWeb(inst, ['upgrade', '--check']);
+    assert.equal(result.code, 1);
+    assert.equal(
+      result.stderr.slice(both('upgrade').length),
+      `mcpcat upgrade: the latest release has an unexpected tag "nightly" (and ${fake.base}/ai-ecoverse/mcpcat/releases/latest: the latest release has an unexpected tag "nightly")\n`
+    );
+    untouched(inst);
+  });
+
+  await t.test('a failure on both names both', async () => {
+    fake.reset();
+    fake.state.status = 403;
+    const inst = install();
+    const result = await viaWeb(inst, ['upgrade', '--check']);
+    assert.equal(result.code, 1);
+    assert.equal(
+      result.stderr.slice(both('upgrade').length),
+      `mcpcat upgrade: asking GitHub for the latest release: HTTP 403 (and ${fake.base}/ai-ecoverse/mcpcat/releases/latest: HTTP 403)\n`
+    );
+    untouched(inst);
+  });
+
+  await t.test('GH_TOKEN or GITHUB_TOKEN goes to the API only', async () => {
+    for (const key of ['GH_TOKEN', 'GITHUB_TOKEN']) {
+      fake.reset();
+      fake.state.noWeb = true;
+      const inst = install();
+      const result = await viaWeb(inst, ['upgrade', '--force'], { [key]: 'fake-token-0001' });
+      assert.equal(result.code, 0, result.stderr);
+      assert.ok(fake.state.requests.length > 2);
+      for (const r of fake.state.requests) {
+        const want = r.url.startsWith('/repos/') ? 'Bearer fake-token-0001' : undefined;
+        assert.equal(r.auth, want, `${key} ${r.url}`);
+      }
+      assert.equal(api().length, 1);
+      assert.doesNotMatch(result.stdout + result.stderr, /fake-token/);
+    }
+  });
+
+  await t.test('a used-up API rate limit is named', async () => {
+    fake.reset();
+    fake.state.status = 403;
+    fake.state.rateLimited = true;
+    const inst = install();
+    const bare = await go(inst, ['upgrade', '--check']);
+    assert.equal(bare.code, 1);
+    assert.equal(
+      after(bare),
+      "mcpcat upgrade: asking GitHub for the latest release: HTTP 403 (GitHub's API rate limit is used up; set GH_TOKEN or GITHUB_TOKEN for a higher one)\n"
+    );
+    const token = await go(inst, ['upgrade', '--check'], fake.base, {
+      GH_TOKEN: 'fake-token-0001',
+    });
+    assert.equal(
+      after(token),
+      "mcpcat upgrade: asking GitHub for the latest release: HTTP 403 (GitHub's API rate limit is used up)\n"
+    );
     untouched(inst);
   });
 
