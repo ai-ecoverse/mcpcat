@@ -31,10 +31,13 @@ import {
   SUMS,
   UPGRADE_API_ENV,
   UPGRADE_REPO,
+  UPGRADE_WEB_ENV,
   type UpgradeRequest,
 } from './plan.ts';
 
 const DEFAULT_API = 'https://api.github.com';
+const DEFAULT_WEB = 'https://github.com';
+const TAG_PATH = '/releases/tag/';
 const MAX_JSON = 4 << 20;
 const MAX_SUMS = 1 << 20;
 const MAX_TARBALL = 256 << 20;
@@ -62,6 +65,11 @@ interface Install {
 interface Launcher {
   path: string;
   node: string;
+}
+
+interface Api {
+  base: string;
+  token?: string;
 }
 
 export interface UpgradeOptions {
@@ -102,13 +110,16 @@ async function get(
   agent: string,
   accept: string | undefined,
   cap: number,
-  ms: number
+  ms: number,
+  api?: Api
 ): Promise<Uint8Array> {
   let current = url;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     const from = allowedUrl(current);
     const headers: Record<string, string> = { 'user-agent': agent };
     if (accept) headers.accept = accept;
+    const toApi = api !== undefined && current.startsWith(`${api.base}/repos/`);
+    if (toApi && api.token) headers.authorization = `Bearer ${api.token}`;
     let res: Response;
     try {
       res = await platform.fetch(current, {
@@ -121,6 +132,14 @@ async function get(
     }
     if (res.status === 200) return readCapped(res, cap);
     await Promise.allSettled([res.body?.cancel()]);
+    if (
+      toApi &&
+      (res.status === 403 || res.status === 429) &&
+      res.headers.get('x-ratelimit-remaining') === '0'
+    ) {
+      const hint = api.token ? '' : '; set GH_TOKEN or GITHUB_TOKEN for a higher one';
+      throw new UpgradeError(`HTTP ${res.status} (GitHub's API rate limit is used up${hint})`);
+    }
     if (!REDIRECTS.has(res.status)) throw new UpgradeError(`HTTP ${res.status}`);
     const location = res.headers.get('location');
     if (!location) throw new UpgradeError(`HTTP ${res.status} without a Location`);
@@ -146,16 +165,79 @@ interface GithubRelease {
   assets?: { name?: unknown; browser_download_url?: unknown }[];
 }
 
-async function latest(platform: Platform, base: string, agent: string): Promise<Release> {
+async function latest(
+  platform: Platform,
+  web: string | undefined,
+  api: Api,
+  agent: string
+): Promise<Release> {
+  if (web === undefined) return fromApi(platform, api, agent);
+  let webErr: string;
+  try {
+    return await fromWeb(platform, web, agent);
+  } catch (err) {
+    webErr = (err as Error).message;
+  }
+  try {
+    return await fromApi(platform, api, agent);
+  } catch (err) {
+    throw new UpgradeError(
+      `${(err as Error).message} (and ${web}/${UPGRADE_REPO}/releases/latest: ${webErr})`
+    );
+  }
+}
+
+async function fromWeb(platform: Platform, web: string, agent: string): Promise<Release> {
+  const releases = `${web}/${UPGRADE_REPO}/releases`;
+  const url = `${releases}/latest`;
+  allowedUrl(url);
+  let res: Response;
+  try {
+    res = await platform.fetch(url, {
+      redirect: 'manual',
+      headers: { 'user-agent': agent },
+      signal: AbortSignal.timeout(60_000),
+    });
+  } catch (err) {
+    throw new UpgradeError(causeOf(err));
+  }
+  await Promise.allSettled([res.body?.cancel()]);
+  const location = res.headers.get('location');
+  if (!REDIRECTS.has(res.status) || !location) throw new UpgradeError(`HTTP ${res.status}`);
+  const next = new URL(location, url);
+  const at = next.pathname.lastIndexOf(TAG_PATH);
+  if (at < 0) {
+    throw new UpgradeError(`redirected to ${next.origin}${next.pathname}, not to a release tag`);
+  }
+  const tag = next.pathname.slice(at + TAG_PATH.length);
+  if (!isReleaseVersion(tag)) {
+    throw new UpgradeError(`the latest release has an unexpected tag ${JSON.stringify(tag)}`);
+  }
+  const version = normalizeVersion(tag);
+  const asset = `mcpcat-${version}.tgz`;
+  const download = `${releases}/download/${tag}`;
+  return { version, asset, assetUrl: `${download}/${asset}`, sumsUrl: `${download}/${SUMS}` };
+}
+
+function tokenOf(env: Record<string, string | undefined>): string | undefined {
+  for (const key of ['GH_TOKEN', 'GITHUB_TOKEN']) {
+    const token = env[key]?.trim();
+    if (token) return token;
+  }
+  return undefined;
+}
+
+async function fromApi(platform: Platform, api: Api, agent: string): Promise<Release> {
   const label = 'asking GitHub for the latest release';
   const body = await step(label, () =>
     get(
       platform,
-      `${base}/repos/${UPGRADE_REPO}/releases/latest`,
+      `${api.base}/repos/${UPGRADE_REPO}/releases/latest`,
       agent,
       'application/vnd.github+json',
       MAX_JSON,
-      60_000
+      60_000,
+      api
     )
   );
   const json = await step(label, async () => JSON.parse(new TextDecoder().decode(body)));
@@ -410,12 +492,23 @@ export async function runUpgrade(
       `${prefix}: ${UPGRADE_API_ENV} overrides the GitHub API with ${override}\n`
     );
   }
+  const webOverride = platform.env[UPGRADE_WEB_ENV];
+  if (webOverride) {
+    await platform.write(
+      2,
+      `${prefix}: ${UPGRADE_WEB_ENV} overrides github.com with ${webOverride}\n`
+    );
+  }
   try {
     const entry = options.entry ?? (await realpath(fileURLToPath(import.meta.url)));
     const install = await locate(entry, request.version);
     const agent = `mcpcat/${normalizeVersion(request.version)}`;
-    const base = (override || DEFAULT_API).replace(/\/+$/, '');
-    const release = await latest(platform, base, agent);
+    const api = {
+      base: (override || DEFAULT_API).replace(/\/+$/, ''),
+      token: tokenOf(platform.env),
+    };
+    const web = webOverride ? webOverride.replace(/\/+$/, '') : override ? undefined : DEFAULT_WEB;
+    const release = await latest(platform, web, api, agent);
     const next = plan(request.version, release.version, request.check, request.force);
     if (next.kind === 'report') {
       await platform.write(1, next.text);

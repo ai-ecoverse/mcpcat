@@ -16,7 +16,7 @@ curl -fsSL https://github.com/ai-ecoverse/mcpcat/releases/latest/download/instal
 
 Options pass through, for example `curl -fsSL https://get.sliccy.ai/mcpcat | sh -s -- --help`.
 
-`mcpcat upgrade` (alias `update`) replaces an installer install with the latest release, after checking it against the release's `SHA256SUMS`; `mcpcat upgrade --check` only reports.
+`mcpcat upgrade` (alias `update`) replaces an installer install with the latest release, after checking it against the release's `SHA256SUMS`; `mcpcat upgrade --check` only reports. It reads the latest release from github.com's `releases/latest` redirect, so GitHub's API rate limit doesn't stop it, and falls back to the API (with `GH_TOKEN` or `GITHUB_TOKEN` when set) only when that fails (see [Upgrade](docs/spec.html#upgrade)).
 
 Or via npm:
 
