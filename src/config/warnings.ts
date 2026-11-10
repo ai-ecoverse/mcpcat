@@ -6,10 +6,16 @@ const SECRET_HEADER = /authorization|cookie|token|key|secret|password|session/i;
 const PLACEHOLDER = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 const SCHEME = /^\s*(?:bearer|basic|token|apikey|api-key)\s+/i;
 const SECRET_PARAM = /token|key|secret|password|signature|sig|auth|code/i;
+const COOKIE_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+=(?=\$\{)/;
+
+function leftover(value: string): string {
+  return value.replace(PLACEHOLDER, '').replace(SCHEME, '').trim();
+}
 
 export function literalSecret(header: string, value: string): boolean {
   if (!SECRET_HEADER.test(header)) return false;
-  return value.replace(PLACEHOLDER, '').replace(SCHEME, '').trim() !== '';
+  if (header.trim().toLowerCase() !== 'cookie') return leftover(value) !== '';
+  return value.split(';').some((pair) => leftover(pair.trim().replace(COOKIE_NAME, '')) !== '');
 }
 
 export function urlHasSecret(url: string): string | undefined {

@@ -4,6 +4,7 @@ import { kernelAuthAdvice } from '../auth/placeholder-auth.ts';
 import type { VerboseLogger } from '../cli/verbose.ts';
 import type { Platform } from '../platform/types.ts';
 import type { McpConnection } from './connection.ts';
+import { dropUnsentHeaders } from './kernel-headers.ts';
 import { createPiConnection } from './pi-connection.ts';
 import {
   createStatelessConnection,
@@ -32,7 +33,8 @@ export interface ConnectOptions {
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: protocol negotiation requires many branches
-export async function connect(platform: Platform, options: ConnectOptions): Promise<McpConnection> {
+export async function connect(platform: Platform, given: ConnectOptions): Promise<McpConnection> {
+  const options = { ...given, headers: await dropUnsentHeaders(platform, given.headers) };
   const authAdvice = kernelAuthAdvice(platform, options.headers);
   const shared = {
     version: options.version,
