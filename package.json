@@ -65,7 +65,7 @@
     "@ai-ecoverse/slicc-vault": "1.24.0",
     "@biomejs/biome": "2.6.4",
     "@earendil-works/pi-codemode": "1.5.0",
-    "@earendil-works/pi-mcp": "1.4.0",
+    "@earendil-works/pi-mcp": "1.5.0",
     "@types/node": "26.6.6",
     "esbuild": "0.28.2",
     "lefthook": "2.2.2",
