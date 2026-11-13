@@ -62,7 +62,7 @@
   "devDependencies": {
     "@ai-ecoverse/slicc-kernel": "1.184.2",
     "@ai-ecoverse/slicc-shared-web": "2.14.2",
-    "@ai-ecoverse/slicc-vault": "1.25.5",
+    "@ai-ecoverse/slicc-vault": "1.26.0",
     "@biomejs/biome": "2.6.5",
     "@earendil-works/pi-codemode": "1.5.0",
     "@earendil-works/pi-mcp": "1.5.0",
