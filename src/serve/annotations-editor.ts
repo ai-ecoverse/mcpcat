@@ -117,7 +117,8 @@ export function annotationEditor(channel: string, send: Send, guarded = true): v
   const containerOf = (element: Element) =>
     element.closest('[oai-annotation-container],[oai-annotation-container-text]');
   const isField = (element: Element) =>
-    element.closest('input, textarea, [contenteditable=""], [contenteditable="true"]') !== null;
+    element.closest('input, textarea') !== null ||
+    (element as HTMLElement).isContentEditable === true;
   const inTextContainer = (element: Element) =>
     containerOf(element)?.hasAttribute('oai-annotation-container-text') ?? false;
 
