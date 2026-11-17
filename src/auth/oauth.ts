@@ -50,6 +50,12 @@ export function isLoopbackHostname(hostname: string): boolean {
   return address === 'localhost' || address === '::1' || /^127(?:\.\d{1,3}){3}$/.test(address);
 }
 
+export function hasExplicitPort(raw: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/?#]*@)?(?:\[[^\]]*\]|[^:/?#]*):\d+(?:[/?#]|$)/i.test(
+    raw.trim()
+  );
+}
+
 export function webCallbackUrl(oauth: McpOAuthConfig | undefined): string | undefined {
   if (!oauth?.callbackUrl || nonzeroPort(oauth.callbackPort) !== undefined) return undefined;
   let url: URL;
@@ -58,7 +64,7 @@ export function webCallbackUrl(oauth: McpOAuthConfig | undefined): string | unde
   } catch {
     return undefined;
   }
-  if (url.port || isLoopbackHostname(url.hostname)) return undefined;
+  if (hasExplicitPort(oauth.callbackUrl) || isLoopbackHostname(url.hostname)) return undefined;
   return oauth.callbackUrl;
 }
 

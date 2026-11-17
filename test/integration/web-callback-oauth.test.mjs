@@ -291,6 +291,32 @@ describe('web callbackUrl with callbackPort keeps the listener', () => {
   });
 });
 
+describe('web callbackUrl with an explicit default port keeps the listener', () => {
+  let ctx;
+
+  before(async () => {
+    ctx = await setup(
+      'web-callback-default-port',
+      { clientId: CLIENT, callbackUrl: 'https://www.sliccy.ai:443/oauth/mcp-callback' },
+      { MCPCAT_NO_JERK: '1' }
+    );
+  });
+
+  after(() => ctx?.as.child.kill('SIGTERM'));
+
+  it('tries to listen on the callbackUrl host instead of asking for a paste', async () => {
+    const child = launch(['login', 'svc', '--no-browser'], { env: ctx.env });
+    const r = await finish(child);
+    assert.equal(r.status, 4, r.err);
+    assert.doesNotMatch(r.err, /Paste the full URL of that page/);
+    const calls = listens(ctx.env);
+    assert.ok(
+      calls.some((args) => args[1] === 'www.sliccy.ai'),
+      JSON.stringify(calls)
+    );
+  });
+});
+
 describe('loopback callbackUrl is unchanged', () => {
   const cases = [
     {
