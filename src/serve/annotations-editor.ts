@@ -41,7 +41,7 @@ interface Live {
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: injected into the page as one self-contained function
-export function annotationEditor(channel: string, send: Send): void {
+export function annotationEditor(channel: string, send: Send, guarded = true): void {
   const flag = `__mcpcat_annotations_${channel}`;
   const scope = globalThis as unknown as Record<string, unknown>;
   if (scope[flag]) return;
@@ -162,6 +162,37 @@ export function annotationEditor(channel: string, send: Send): void {
   const pop = document.createElement('div');
   pop.className = 'pop';
   root.append(style, highlight, selected, pop, bar);
+  const PRIVATE_EVENTS = [
+    'keydown',
+    'keyup',
+    'keypress',
+    'beforeinput',
+    'input',
+    'change',
+    'textInput',
+    'compositionstart',
+    'compositionupdate',
+    'compositionend',
+    'paste',
+    'copy',
+    'cut',
+    'select',
+    'selectionchange',
+  ];
+  const handlers = new WeakMap<EventTarget, Map<string, (event: Event) => void>>();
+  const ui = (element: EventTarget, type: string, handler: (event: Event) => void) => {
+    const map = handlers.get(element) ?? new Map<string, (event: Event) => void>();
+    map.set(type, handler);
+    handlers.set(element, map);
+  };
+  const shield = (event: Event) => {
+    if (!event.composedPath().includes(host)) return;
+    event.stopImmediatePropagation();
+    const focused = root.activeElement;
+    if (focused) handlers.get(focused)?.get(event.type)?.(event);
+    if (event.type === 'keydown') onKey(event as KeyboardEvent);
+  };
+  for (const type of PRIVATE_EVENTS) addEventListener(type, shield, true);
   const mount = () => {
     const parent = document.body ?? document.documentElement;
     if (parent && !host.isConnected) parent.append(host);
@@ -268,10 +299,15 @@ export function annotationEditor(channel: string, send: Send): void {
   const setActive = (next: boolean) => {
     if (next === active) return;
     active = next;
-    if (!active) {
+    if (active) {
+      for (const s of saved)
+        for (const c of changed(s.live))
+          change(s.live, c, s.live.values.get(c.callback) ?? null, 'preview');
+    } else {
       stay = false;
       closeEditor(true);
       place(highlight, undefined);
+      for (const s of saved) resetLive(s.live);
     }
     renderBar();
     emit(document, 'mode', { active });
@@ -303,6 +339,7 @@ export function annotationEditor(channel: string, send: Send): void {
       });
     live = undefined;
     pop.style.display = 'none';
+    (root.activeElement as HTMLElement | null)?.blur();
     place(selected, undefined);
   };
 
@@ -334,7 +371,7 @@ export function annotationEditor(channel: string, send: Send): void {
       range.value = String(value);
       const out = document.createElement('span');
       out.textContent = ` ${value}`;
-      range.addEventListener('input', () => {
+      ui(range, 'input', () => {
         out.textContent = ` ${range.value}`;
         update(Number(range.value));
       });
@@ -347,13 +384,13 @@ export function annotationEditor(channel: string, send: Send): void {
         String(value).length === 4
           ? `#${String(value).slice(1).replace(/./g, '$&$&')}`
           : String(value).slice(0, 7);
-      color.addEventListener('input', () => update(color.value));
+      ui(color, 'input', () => update(color.value));
       input = color;
     } else if (control.type === 'toggle') {
       const box = document.createElement('input');
       box.type = 'checkbox';
       box.checked = value === true;
-      box.addEventListener('change', () => update(box.checked));
+      ui(box, 'change', () => update(box.checked));
       input = box;
     } else {
       const select = document.createElement('select');
@@ -364,7 +401,7 @@ export function annotationEditor(channel: string, send: Send): void {
         select.append(o);
       }
       select.value = String(value);
-      select.addEventListener('change', () => update(select.value));
+      ui(select, 'change', () => update(select.value));
       input = select;
     }
     row.append(label, input);
@@ -450,10 +487,10 @@ export function annotationEditor(channel: string, send: Send): void {
     refreshSave = () => {
       save.disabled = !area.value.trim() && changed(l).length === 0;
     };
-    area.addEventListener('input', refreshSave);
-    area.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !save.disabled)
-        saveLive(area.value);
+    ui(area, 'input', refreshSave);
+    ui(area, 'keydown', (event) => {
+      const k = event as KeyboardEvent;
+      if (k.key === 'Enter' && (k.metaKey || k.ctrlKey) && !save.disabled) saveLive(area.value);
     });
     const actions = document.createElement('div');
     actions.className = 'actions';
@@ -461,6 +498,13 @@ export function annotationEditor(channel: string, send: Send): void {
       button('Cancel', () => closeEditor(true)),
       save
     );
+    if (!guarded) {
+      const warn = document.createElement('div');
+      warn.className = 'kind';
+      warn.textContent =
+        'This page started before the annotation editor, so it may see what you type here.';
+      pop.append(warn);
+    }
     pop.append(area, actions);
     refreshSave();
 
@@ -525,6 +569,7 @@ export function annotationEditor(channel: string, send: Send): void {
     send({ type: 'annotation', annotation });
     live = undefined;
     pop.style.display = 'none';
+    (root.activeElement as HTMLElement | null)?.blur();
     place(selected, undefined);
     if (pick.kind === 'virtual')
       emit(pick.element, 'render', {
@@ -699,22 +744,18 @@ export function annotationEditor(channel: string, send: Send): void {
     true
   );
 
-  addEventListener(
-    'keydown',
-    (event) => {
-      if (!active) return;
-      const editing = fromUi(event);
-      if (event.key === 'Escape') {
-        event.stopImmediatePropagation();
-        if (live) closeEditor(true);
-        else if (!stay) setActive(false);
-      } else if (event.key === ' ' && !editing && !space) {
-        space = true;
-        place(highlight, undefined);
-      }
-    },
-    true
-  );
+  const onKey = (event: KeyboardEvent) => {
+    if (!active) return;
+    if (event.key === 'Escape') {
+      event.stopImmediatePropagation();
+      if (live) closeEditor(true);
+      else if (!stay) setActive(false);
+    } else if (event.key === ' ' && !fromUi(event) && !space) {
+      space = true;
+      place(highlight, undefined);
+    }
+  };
+  addEventListener('keydown', onKey, true);
   addEventListener(
     'keyup',
     (event) => {

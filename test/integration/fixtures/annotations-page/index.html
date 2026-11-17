@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>annotations</title>
+  </head>
+  <body>
+    <script>
+    window.seen = [];
+    for (const type of [
+      'keydown',
+      'keyup',
+      'keypress',
+      'beforeinput',
+      'input',
+      'compositionend',
+      'paste',
+      'change',
+    ]) {
+      window.addEventListener(type, (e) => seen.push(`${type}:${e.key ?? e.data ?? ''}`), true);
+      document.addEventListener(
+        type,
+        (e) => seen.push(`doc-${type}:${e.key ?? e.data ?? ''}`),
+        true
+      );
+    }
+    window.previews = [];
+    </script>
+    <p id="target" style="margin:40px">Feedback target</p>
+    <p id="control" style="margin:40px">Control target</p>
+    <script>
+    document.addEventListener('oaiannotationcontrolchange', (e) =>
+      previews.push(`${e.detail.action}:${e.detail.value}`)
+    );
+    document.oai.annotation.registerControls({
+      targets: document.getElementById('control'),
+      controls: [
+        {
+          type: 'range',
+          label: 'Pad',
+          callback: 'pad',
+          min: 0,
+          max: 40,
+          step: 10,
+          currentValue: 10,
+        },
+      ],
+    });
+    document.title = 'ready';
+    </script>
+  </body>
+</html>

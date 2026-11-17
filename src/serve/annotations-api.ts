@@ -273,7 +273,9 @@ export function annotationApi(channel: string): void {
     const controller = new AbortController();
     surface.inflight = controller;
     surface.busy = true;
+    const timer = setTimeout(() => controller.abort(), 250);
     const settle = (value: unknown) => {
+      clearTimeout(timer);
       surface.busy = false;
       return value;
     };
@@ -294,6 +296,7 @@ export function annotationApi(channel: string): void {
   on('hit', (target, data) => {
     const surface = surfaces.get(String(data.surfaceId));
     const reply = (result: unknown) => emit(target, 'hit:reply', { seq: data.seq, result });
+    if (surface?.busy) surface.inflight?.abort();
     if (!surface || surface.busy) return reply({ fallback: true });
     void runHitTest(surface, data).then(reply);
   });

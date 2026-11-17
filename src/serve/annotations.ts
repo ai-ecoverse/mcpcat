@@ -41,11 +41,11 @@ function hexToken(bytes: number): string {
   ).join('');
 }
 
-export function pageScripts(channel: string): { api: string; editor: string } {
+export function pageScripts(channel: string, early = false): { api: string; editor: string } {
   const literal = JSON.stringify(channel);
   return {
     api: `(${annotationApi.toString()})(${literal});\n`,
-    editor: `(${annotationEditor.toString()})(${literal}, send);\n`,
+    editor: `(${annotationEditor.toString()})(${literal}, send, ${early});\n`,
   };
 }
 
@@ -130,7 +130,7 @@ export function acceptAnnotation(payload: unknown): Record<string, unknown> | un
   if (typeof record.id !== 'string' || record.id.length === 0 || record.id.length > 64)
     return undefined;
   if (!['element', 'page', 'text', 'virtual'].includes(String(record.kind))) return undefined;
-  if (JSON.stringify(record).length > ANNOTATION_BYTES) return undefined;
+  if (new TextEncoder().encode(JSON.stringify(record)).length > ANNOTATION_BYTES) return undefined;
   return record;
 }
 
@@ -203,24 +203,34 @@ function createStore() {
       2
     );
 
+  let closed = false;
+  const pause = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        waiters = waiters.filter((w) => w !== done);
+        resolve();
+      }, ms);
+      const done = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      waiters.push(done);
+    });
   const waitSubmitted = async (ms: number) => {
-    if (!stored.some((e) => e.submitted)) {
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-          waiters = waiters.filter((w) => w !== done);
-          resolve();
-        }, ms);
-        const done = () => {
-          clearTimeout(timer);
-          resolve();
-        };
-        waiters.push(done);
-      });
+    const deadline = Date.now() + ms;
+    for (;;) {
+      const sent = take((e) => e.submitted);
+      const left = deadline - Date.now();
+      if (sent.length || left <= 0 || closed) return sent;
+      await pause(left);
     }
-    return take((e) => e.submitted);
+  };
+  const close = () => {
+    closed = true;
+    wake();
   };
 
-  return { stored, state, onEvent, take, listing, waitSubmitted, wake };
+  return { stored, state, onEvent, take, listing, waitSubmitted, close };
 }
 
 const untrusted = (text: string): ToolRunResult => ({
@@ -282,7 +292,7 @@ async function startPageAttachments(
 ): Promise<{ attachments: Attachment[]; problem?: string }> {
   try {
     await platform.fs.mkdirExclusive(dir);
-    const scripts = pageScripts(channel);
+    const scripts = pageScripts(channel, options.early === true);
     await platform.fs.writeFile(`${dir}/api.js`, scripts.api, { mode: 0o600 });
     await platform.fs.writeFile(`${dir}/editor.js`, scripts.editor, { mode: 0o600 });
   } catch (err) {
@@ -317,6 +327,7 @@ async function startPageAttachments(
     session: `${session}-editor`,
     file: `${dir}/editor.js`,
     world: 'isolated',
+    early: options.early,
     label: `${LABEL} (editor)`,
   });
   editor.onEvent(onEvent);
@@ -349,8 +360,9 @@ export function createAnnotationsHandler(platform: Platform, options: Annotation
   }
 
   async function wait(args: Record<string, unknown>): Promise<ToolRunResult> {
-    const seconds =
-      typeof args.timeout_seconds === 'number' ? args.timeout_seconds : WAIT_DEFAULT_S;
+    const seconds = Number.isFinite(args.timeout_seconds)
+      ? (args.timeout_seconds as number)
+      : WAIT_DEFAULT_S;
     const sent = await store.waitSubmitted(Math.max(0, Math.min(seconds, WAIT_MAX_S)) * 1000);
     if (sent.length === 0)
       return untrusted(JSON.stringify({ mode: store.state.mode, timedOut: true, annotations: [] }));
@@ -398,7 +410,7 @@ export function createAnnotationsHandler(platform: Platform, options: Annotation
   }
 
   async function close(): Promise<void> {
-    store.wake();
+    store.close();
     await Promise.all(attachments.map((a) => a.stop()));
     if (platform.fs.unlink) {
       for (const file of ['api.js', 'editor.js'])

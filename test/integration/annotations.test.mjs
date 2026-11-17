@@ -320,12 +320,12 @@ describe('serve --annotations', () => {
     await stopped(s.child);
   });
 
-  it('installs the page API early with playwright-cli 1.52.0 and the editor late', async () => {
+  it('installs the page API and the editor early with playwright-cli 1.52.0', async () => {
     const dir = scratch();
     const s = await serve(dir, ['--tab', 'TAB1'], { FAKE_ATTACH_VERSION: '1.52.0' });
     const attaches = readLog(dir).filter((e) => e.command === 'eval-attach');
     const byWorld = Object.fromEntries(attaches.map((e) => [e.world, e.argv.includes('--early')]));
-    assert.deepEqual(byWorld, { main: true, isolated: false });
+    assert.deepEqual(byWorld, { main: true, isolated: true });
     assert.doesNotMatch(s.stderr(), /misses it/);
     s.child.kill('SIGTERM');
     await stopped(s.child);
