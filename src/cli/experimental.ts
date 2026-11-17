@@ -8,6 +8,11 @@ export const EXPERIMENTAL_FEATURES: Record<string, Feature> = {
     summary: 'MCP Events client, poll and push (SEP-3415)',
     revision: 'SEP-3415 at modelcontextprotocol/modelcontextprotocol@b0efd116faca',
   },
+  annotations: {
+    summary: 'serve --annotations: Browser Annotation API polyfill over eval-attach',
+    revision:
+      'learn.chatgpt.com/docs/annotations-extensibility (DevDay 2026), playwright-cli 1.51.0',
+  },
 };
 
 const KNOWN = Object.keys(EXPERIMENTAL_FEATURES).join(', ');

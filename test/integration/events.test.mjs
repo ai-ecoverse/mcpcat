@@ -596,11 +596,11 @@ describe('host: events extension', () => {
   });
 
   for (const [args, message] of [
-    [['--experimental'], /--experimental needs a feature name \(known: events\)/],
+    [['--experimental'], /--experimental needs a feature name \(known: events, annotations\)/],
     [['--experimental', '--json', 'info', 'x'], /--experimental needs a feature name/],
     [
       ['--experimental', 'nope', 'info', 'x'],
-      /unknown experimental feature 'nope' \(known: events\)/,
+      /unknown experimental feature 'nope' \(known: events, annotations\)/,
     ],
     [['--experimental=events,', 'info', 'x'], /needs a feature name/],
     [['x', ...X, '--list-events', '--subscribe', 'tick'], /do not combine/],
