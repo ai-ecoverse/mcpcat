@@ -38,6 +38,7 @@ interface Live {
   controls: Control[];
   heading?: string;
   values: Map<string, Json>;
+  previewed: Set<string>;
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: injected into the page as one self-contained function
@@ -206,7 +207,7 @@ export function annotationEditor(channel: string, send: Send, guarded = true): v
   let space = false;
   let live: Live | undefined;
   let hitSeq = 0;
-  const saved: { annotation: Record<string, unknown>; live: Live }[] = [];
+  const saved: { annotation: Record<string, unknown>; live: Live; shown: boolean }[] = [];
 
   const place = (box: HTMLElement, rect: Rect | undefined) => {
     if (!rect) {
@@ -252,10 +253,40 @@ export function annotationEditor(channel: string, send: Send, guarded = true): v
     l.controls.filter(
       (c) => c.currentValue === undefined || l.values.get(c.callback) !== c.currentValue
     );
-  const resetLive = (l: Live) => {
-    for (const control of l.controls)
-      if (l.values.get(control.callback) !== original(control))
-        change(l, control, original(control), 'reset');
+  const elementIds = new WeakMap<Element, number>();
+  let elementSeq = 0;
+  const keyOf = (l: Live, control: Control) => {
+    let id = elementIds.get(l.pick.element);
+    if (id === undefined) {
+      id = ++elementSeq;
+      elementIds.set(l.pick.element, id);
+    }
+    return JSON.stringify([id, control.callback, l.pick.surfaceId, l.pick.targetId]);
+  };
+  const applied = new Map<string, { l: Live; control: Control; value: Json; base: Json }>();
+  const sync = () => {
+    const wanted = new Map<string, { l: Live; control: Control; value: Json }>();
+    const layers = saved.filter((s) => s.shown).map((s) => s.live);
+    if (live) layers.push(live);
+    for (const l of layers)
+      for (const control of l.controls)
+        if (l.previewed.has(control.callback))
+          wanted.set(keyOf(l, control), {
+            l,
+            control,
+            value: l.values.get(control.callback) as Json,
+          });
+    for (const [key, entry] of applied) {
+      if (wanted.has(key)) continue;
+      applied.delete(key);
+      change(entry.l, entry.control, entry.base, 'reset');
+    }
+    for (const [key, want] of wanted) {
+      const entry = applied.get(key);
+      if (entry?.value === want.value) continue;
+      applied.set(key, { ...want, base: entry ? entry.base : original(want.control) });
+      change(want.l, want.control, want.value, 'preview');
+    }
   };
 
   const renderBar = () => {
@@ -269,15 +300,12 @@ export function annotationEditor(channel: string, send: Send, guarded = true): v
     const label = document.createElement('span');
     label.textContent = ` Annotating · ${saved.length} `;
     const compare = button('Hold to compare', () => {});
-    compare.disabled = !saved.some((s) => changed(s.live).length);
+    compare.disabled = applied.size === 0;
     compare.addEventListener('pointerdown', () => {
-      for (const s of saved)
-        for (const c of changed(s.live)) change(s.live, c, original(c), 'preview-original');
+      for (const e of applied.values()) change(e.l, e.control, e.base, 'preview-original');
     });
     compare.addEventListener('pointerup', () => {
-      for (const s of saved)
-        for (const c of changed(s.live))
-          change(s.live, c, s.live.values.get(c.callback) ?? null, 'preview');
+      for (const e of applied.values()) change(e.l, e.control, e.value, 'preview');
     });
     const sendAll = button(
       saved.length ? `Send ${saved.length} to agent` : 'Send to agent',
@@ -300,24 +328,23 @@ export function annotationEditor(channel: string, send: Send, guarded = true): v
     if (next === active) return;
     active = next;
     if (active) {
-      for (const s of saved)
-        for (const c of changed(s.live))
-          change(s.live, c, s.live.values.get(c.callback) ?? null, 'preview');
+      for (const s of saved) s.shown = true;
     } else {
       stay = false;
       closeEditor(true);
       place(highlight, undefined);
-      for (const s of saved) resetLive(s.live);
+      for (const s of saved) s.shown = false;
     }
+    sync();
     renderBar();
     emit(document, 'mode', { active });
     send({ type: 'mode', active });
   };
 
   const clearSaved = (reason: 'discard' | 'submit') => {
-    for (const s of saved) resetLive(s.live);
     const ids = saved.map((s) => s.annotation.id);
     saved.length = 0;
+    sync();
     send({ type: reason, ids });
     renderBar();
   };
@@ -330,7 +357,6 @@ export function annotationEditor(channel: string, send: Send, guarded = true): v
 
   const closeEditor = (cancel: boolean) => {
     if (!live) return;
-    if (cancel) resetLive(live);
     if (live.pick.kind === 'virtual')
       emit(live.pick.element, 'render', {
         surfaceId: live.pick.surfaceId,
@@ -338,6 +364,7 @@ export function annotationEditor(channel: string, send: Send, guarded = true): v
         selectedId: null,
       });
     live = undefined;
+    if (cancel) sync();
     pop.style.display = 'none';
     (root.activeElement as HTMLElement | null)?.blur();
     place(selected, undefined);
@@ -357,7 +384,8 @@ export function annotationEditor(channel: string, send: Send, guarded = true): v
     const value = l.values.get(control.callback);
     const update = (next: Json) => {
       l.values.set(control.callback, next);
-      change(l, control, next, 'preview');
+      l.previewed.add(control.callback);
+      sync();
       refreshSave();
     };
     let input: HTMLElement;
@@ -471,11 +499,19 @@ export function annotationEditor(channel: string, send: Send, guarded = true): v
             | null
             | undefined);
     const controls = Array.isArray(info?.controls) ? info.controls : [];
-    const l: Live = { pick, controls, heading: info?.heading, values: new Map() };
-    for (const control of controls) l.values.set(control.callback, start(control));
+    const l: Live = {
+      pick,
+      controls,
+      heading: info?.heading,
+      values: new Map(),
+      previewed: new Set(),
+    };
+    for (const control of controls) {
+      l.values.set(control.callback, start(control));
+      if (start(control) !== original(control)) l.previewed.add(control.callback);
+    }
     live = l;
-    for (const control of controls)
-      if (start(control) !== original(control)) change(l, control, start(control), 'preview');
+    sync();
 
     pop.replaceChildren(...headerNodes(pick));
     if (controls.length) pop.append(controlsNode(l));
@@ -565,7 +601,7 @@ export function annotationEditor(channel: string, send: Send, guarded = true): v
       })),
       createdAt: new Date().toISOString(),
     };
-    saved.push({ annotation, live: l });
+    saved.push({ annotation, live: l, shown: true });
     send({ type: 'annotation', annotation });
     live = undefined;
     pop.style.display = 'none';

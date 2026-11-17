@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>previews</title>
+  </head>
+  <body>
+    <p id="pad" style="margin:40px">Single control</p>
+    <p id="multi" style="margin:40px">Several controls</p>
+    <p id="gone" style="margin:40px">Unregistered control</p>
+    <script>
+    window.previews = [];
+    document.addEventListener('oaiannotationcontrolchange', (e) =>
+      previews.push(`${e.target.id}:${e.detail.callback}:${e.detail.action}:${e.detail.value}`)
+    );
+    const range = (callback, extra) => ({
+      type: 'range',
+      label: callback,
+      callback,
+      min: 0,
+      max: 40,
+      step: 10,
+      ...extra,
+    });
+    document.oai.annotation.registerControls({
+      targets: document.getElementById('pad'),
+      controls: [range('pad', { currentValue: 10 })],
+    });
+    document.oai.annotation.registerControls({
+      targets: document.getElementById('multi'),
+      controls: [
+        range('wide', { currentValue: 10 }),
+        range('tall', { currentValue: 10 }),
+        range('gap'),
+      ],
+    });
+    const gone = document.oai.annotation.registerControls({
+      targets: document.getElementById('gone'),
+      controls: [range('size', { currentValue: 10 })],
+    });
+    window.unregister = () => gone.dispose();
+    document.title = 'ready';
+    </script>
+  </body>
+</html>
