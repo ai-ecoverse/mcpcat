@@ -252,11 +252,11 @@ WebMCP (serve --webmcp, see serve --help):
   --allow-consequential      Show and allow tools with consequentialHint
   --webmcp-ttl <s>           Cache the tool list for <s> seconds (default 5; live
                              updates with playwright-cli 1.40.0 or newer)
-  --webmcp-polyfill auto|off Inject playwright-cli's WebMCP polyfill when the
-                             browser lacks WebMCP (default auto)
+  --webmcp-polyfill auto|off Inject mcpcat's WebMCP shim before page scripts via
+                             eval-attach --early on playwright-cli 1.52+ (default auto)
   --webmcp-reload            Reload the tab once so its load-time check sees the polyfill
   --webmcp-from-origin <o>   Also list tools a cross-origin iframe exposes (repeatable;
-                             needs playwright-cli 1.46.7+)
+                             needs playwright-cli 1.46.7+; uses the legacy WebMCP verbs)
   --webmcp-dialog <mode>     report (default), dismiss or accept JavaScript dialogs a
                              tool call opens (accept needs --allow-consequential)
   --playwright-cli <path>    playwright-cli binary (default: from PATH)
@@ -303,19 +303,22 @@ WebMCP:
   --allow-consequential      Show and allow tools the page marks consequentialHint
                              (hidden by default; advisory, the page sets the hint)
   --webmcp-ttl <s>           Cache the page's tool list for <s> seconds (default 5);
-                             with playwright-cli 1.40.0 or newer the polyfill holder's
-                             tools-changed events update it at once and clients get
+                             attachment messages (legacy holder on 1.40+) update it
+                             at once and clients get
                              notifications/tools/list_changed (stdio, the GET /mcp
                              stream or subscriptions/listen)
   --webmcp-polyfill auto|off auto (default): when the browser has no native WebMCP,
-                             keep playwright-cli webmcp-polyfill running on the tab
-                             (needs playwright-cli 1.32.0 or newer); off: never
+                             attach mcpcat's shim in the main world before page scripts
+                             (playwright-cli 1.52+); missed documents need a reload, with
+                             no late fallback. Older clients use the legacy WebMCP verbs.
+                             off: observe the page API without installing a shim
   --webmcp-reload            Reload the tab once after injecting the polyfill, for
                              pages that check for WebMCP only at load (reloads your tab)
   --webmcp-from-origin <o>   Also list and call tools a cross-origin iframe exposes
                              to the page (repeatable origin only, e.g. https://a.example;
-                             needs playwright-cli 1.46.7+; passed as --from-origin to the
-                             polyfill holder, webmcp-list and webmcp-call; never installs
+                             needs playwright-cli 1.46.7+; keeps the legacy polyfill holder,
+                             webmcp-list and webmcp-call because eval-attach is top-frame
+                             only; never installs
                              into protected origins; WASI and guarded routes keep them off)
   --webmcp-dialog <mode>     report (default): name a JavaScript dialog that blocks the
                              page; dismiss or accept: answer dialogs a tool call opens

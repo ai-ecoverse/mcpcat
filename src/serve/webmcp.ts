@@ -1,6 +1,7 @@
 import type { Platform, SpawnResult, WebSocketChannel } from '../platform/types.ts';
 import type { JsonObjectSchema } from './catalog.ts';
 import type { RpcTool, ToolListing, ToolRunResult } from './jsonrpc.ts';
+import type { AttachedPage } from './webmcp-attach.ts';
 import { DIALOG_CLAIM_MS, type DialogHolder } from './webmcp-dialog.ts';
 import { FALLBACK_UNVERIFIED, type ToolsChanged } from './webmcp-polyfill.ts';
 
@@ -31,6 +32,7 @@ export interface WebMcpOptions {
   maxOutput: number;
   fromOrigins?: string[];
   dialogs?: DialogHolder;
+  page?: AttachedPage;
   beforeList?: () => Promise<void>;
   late?: () => boolean;
   emptyHint?: (unavailable: boolean, crossOriginOff?: boolean) => string | undefined;
@@ -734,6 +736,19 @@ interface ListRawResult {
   crossOriginOff?: boolean;
 }
 
+async function listPage(
+  platform: Platform,
+  options: WebMcpOptions,
+  watch: Watch | undefined
+): Promise<ListOutcome> {
+  const listed = await options.page!.list(watch);
+  if (!listed.error && listed.tools.length === 0) {
+    const gone = await tabGone(platform, options);
+    if (gone) return { error: gone };
+  }
+  return listed;
+}
+
 function createLister(
   platform: Platform,
   options: WebMcpOptions,
@@ -748,6 +763,7 @@ function createLister(
   const { tab, dialogs } = options;
 
   async function listOnce(): Promise<ListOutcome> {
+    if (options.page) return listPage(platform, options, watch);
     const argv = [options.playwrightCli, 'webmcp-list', '--json', ...baseArgs];
     const result = await runProcess(
       platform,
@@ -850,6 +866,81 @@ function createLister(
   };
 }
 
+function webMcpInvocation(
+  options: WebMcpOptions,
+  tool: WebMcpTool,
+  args: unknown,
+  baseArgs: string[]
+) {
+  if (options.page)
+    return {
+      argv: [
+        options.playwrightCli,
+        'eval',
+        options.page.callExpression(tool.name, args, options.allowConsequential, tool.origin),
+        ...baseArgs,
+      ],
+      stdin: undefined,
+    };
+  const argv = [options.playwrightCli, 'webmcp-call', tool.name, '-', ...baseArgs];
+  if (options.allowConsequential) argv.push('--allow-consequential');
+  return { argv, stdin: JSON.stringify(args ?? {}) };
+}
+
+function refuseLegacyCall(
+  options: WebMcpOptions,
+  result: { exitCode: number; stderr: string }
+): void {
+  if (result.exitCode === 2 && !options.page) throw new Error(result.stderr || 'webmcp-call error');
+}
+
+function capPageText(text: string, limit: number): string {
+  const collected = capCollector(limit);
+  collected.push(new TextEncoder().encode(text));
+  return collected.finish().text;
+}
+
+function pageCallResult(
+  result: { stdout: string; stderr: string },
+  name: string,
+  meta: Record<string, unknown>,
+  limit: number
+): ToolRunResult {
+  let value: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(result.stdout);
+    value =
+      parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {};
+  } catch {
+    return {
+      stdout: '',
+      stderr: wrapUntrusted(
+        capPageText(result.stderr || result.stdout || 'WebMCP eval returned invalid JSON', limit)
+      ),
+      exitCode: 1,
+      meta,
+    };
+  }
+  if (typeof value.__webmcp_result === 'string') {
+    return {
+      stdout: wrapUntrusted(capPageText(value.__webmcp_result, limit)),
+      stderr: '',
+      exitCode: 0,
+      meta,
+    };
+  }
+  const error = value.__webmcp_error;
+  const message =
+    error === 'consequential'
+      ? hiddenToolMessage(name)
+      : error === 'threw'
+        ? String(value.message ?? 'unknown error')
+        : `WebMCP call failed: ${String(error ?? 'unexpected evaluation result')}`;
+  return { stdout: '', stderr: wrapUntrusted(capPageText(message, limit)), exitCode: 1, meta };
+}
+
 export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) {
   let cache: CacheEntry | undefined;
   const baseArgs = buildBaseArgs(options);
@@ -918,19 +1009,18 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
     }
     const { tool } = match;
 
-    const argv = [options.playwrightCli, 'webmcp-call', tool.name, '-', ...baseArgs];
-    if (options.allowConsequential) {
-      argv.push('--allow-consequential');
+    if (tool.annotations?.consequentialHint && !options.allowConsequential) {
+      return { stdout: '', stderr: hiddenToolMessage(name), exitCode: 2 };
     }
+    const invocation = webMcpInvocation(options, tool, args, baseArgs);
 
-    const stdinData = JSON.stringify(args ?? {});
     const disarm = dialogs?.arm();
     const result = await runProcess(
       platform,
-      argv,
-      stdinData,
+      invocation.argv,
+      invocation.stdin,
       options.callTimeoutMs,
-      options.maxOutput,
+      options.page ? Math.max(options.maxOutput, 397312) : options.maxOutput,
       dialogs ? answeringWatch(tab!, dialogs, watcher) : watch
     ).finally(disarm);
 
@@ -946,16 +1036,14 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
       throw new Error(timeoutMessage('webmcp-call', options.callTimeoutMs, tab, watcher));
     }
 
-    if (result.exitCode === 2) {
-      throw new Error(result.stderr || 'webmcp-call error');
-    }
+    refuseLegacyCall(options, result);
 
     const meta: Record<string, unknown> = {
       'io.mcpcat/untrusted': true,
       origin: tool.origin,
     };
 
-    if (result.exitCode === 1) {
+    if (result.exitCode !== 0) {
       return {
         stdout: '',
         stderr: wrapUntrusted(result.stderr || result.stdout),
@@ -964,6 +1052,7 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
       };
     }
 
+    if (options.page) return pageCallResult(result, name, meta, options.maxOutput);
     const text = wrapUntrusted(result.stdout);
     return { stdout: text, stderr: result.stderr, exitCode: 0, meta };
   }

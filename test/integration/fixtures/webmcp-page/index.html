@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+  <head>
+    <script>
+    window.parseTimeWebMcp = Boolean(document.modelContext);
+    if (document.modelContext)
+      document.modelContext.registerTool({
+        name: 'head_tool',
+        description: 'Registered by the first inline head script',
+        inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
+        annotations: { readOnly: true },
+        execute: (input) => ({ echoed: input.value, atParseTime: window.parseTimeWebMcp }),
+      });
+    document.title = 'ready';
+    </script>
+  </head>
+  <body>
+    <input id="warm" autofocus>
+  </body>
+</html>

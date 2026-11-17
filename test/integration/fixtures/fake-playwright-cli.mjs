@@ -7,6 +7,11 @@ import { fileURLToPath } from 'node:url';
 const dir = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
 
+if (args.includes('eval-attach') || args.includes('eval')) {
+  await import('./fake-webmcp-attach.mjs');
+  process.exit(0);
+}
+
 const listedBefore = () =>
   Boolean(process.env.FAKE_PWCLI_LOG) &&
   existsSync(process.env.FAKE_PWCLI_LOG) &&
