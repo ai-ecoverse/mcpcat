@@ -182,6 +182,7 @@ Configuration verbs:
 Server and code verbs:
   serve [--stdio|--http] …   Expose commands or proxy upstream as MCP server
   serve --webmcp …           Expose a browser tab's WebMCP tools via playwright-cli
+  serve --annotations …      Collect in-page annotations from a tab (experimental)
   code [-e src|file.js]      Run a codemode script
   grep <pattern> [target…]   Search tools by name or description
   discover <url>             Find MCP servers at a URL
@@ -268,6 +269,8 @@ function serveHelpText(version: string): string {
 Usage: mcpcat serve [--stdio | --http [host:]port] [options] <cmd>…
        mcpcat serve --proxy <target> [--stdio | --http [host:]port] [options]
        mcpcat serve --webmcp [--cdp <url>] [--tab <targetId>] [--http [host:]port] [options]
+       mcpcat --experimental annotations serve --annotations [--tab <targetId> |
+         --annotations-host <pattern>… | --annotations-match <glob>…] [options]
 
 Transport:
   --stdio                    Serve over stdio (default)
@@ -320,6 +323,18 @@ WebMCP:
                              1.39.0 or newer); accept needs --allow-consequential
   --playwright-cli <path>    playwright-cli binary (default: playwright-cli on PATH)
 
+Annotations (--experimental annotations; can change in any minor release):
+  --annotations              Attach a Browser Annotation API polyfill
+                             (document.oai.annotation, with an in-page editor and
+                             toolbar) through playwright-cli eval-attach (1.51.0+),
+                             and serve annotations_wait, annotations_list,
+                             annotations_take, annotation_mode, annotation_request
+  --tab <targetId>           Attach to one tab (default: the current tab)
+  --annotations-host <p>     Attach to every top-frame document on a host, exact or
+                             *.example.com (repeatable)
+  --annotations-match <glob> Attach to URLs matching scheme://host/path* (repeatable)
+  --cdp <url>, --playwright-cli <path>  As for --webmcp
+
 Events (--experimental events; can change in any minor release):
   --event '<name>: <cmd>'    Serve an event type: each stdout line of cmd is one event
                              (a JSON object is its data, {"data", "eventId"?,
@@ -339,6 +354,7 @@ Examples:
   mcpcat serve --http 8808 ./scripts/jira.jsh
   mcpcat serve --proxy https://mcp.example.com/mcp --http 8811 --bearer '\${LOCAL}'
   mcpcat serve --webmcp --cdp http://127.0.0.1:9333 --http 8812 --no-auth
+  mcpcat --experimental annotations serve --annotations --annotations-host localhost
 `;
 }
 
@@ -1420,6 +1436,17 @@ async function dispatchServeVerb(
     );
     return 2;
   }
+  if (serveOptions.annotations && !features.has('annotations')) {
+    await platform.write(2, 'mcpcat serve: --annotations needs --experimental annotations\n');
+    return 2;
+  }
+  if (serveOptions.annotations && (serveOptions.proxy || serveOptions.webmcp || events)) {
+    await platform.write(
+      2,
+      'mcpcat serve: --annotations does not combine with --proxy, --webmcp or --event\n'
+    );
+    return 2;
+  }
   if (events && (serveOptions.proxy || serveOptions.webmcp)) {
     await platform.write(2, 'mcpcat serve: --event does not combine with --proxy or --webmcp\n');
     return 2;
@@ -1427,6 +1454,7 @@ async function dispatchServeVerb(
   if (
     !serveOptions.proxy &&
     !serveOptions.webmcp &&
+    !serveOptions.annotations &&
     !events &&
     serveOptions.commands.length === 0 &&
     serveOptions.toolTemplates.length === 0

@@ -12,6 +12,12 @@ import { MergedConfigSource } from '../config/index.ts';
 import { stateDir } from '../config/paths.ts';
 import type { Listener, Platform, SpawnResult } from '../platform/types.ts';
 import { sanitizeTerminal } from '../render/sanitize.ts';
+import { createAnnotationsHandler } from './annotations.ts';
+import {
+  type AttachScope,
+  EVAL_ATTACH_EARLY_MIN_VERSION,
+  EVAL_ATTACH_MIN_VERSION,
+} from './attach.ts';
 import {
   argvForCommand,
   attachGlobalFlags,
@@ -111,6 +117,9 @@ export interface ServeOptions {
   webmcpReload: boolean;
   webmcpFromOrigins: string[];
   webmcpDialog: string;
+  annotations: boolean;
+  annotationHosts: string[];
+  annotationMatches: string[];
   events: string[];
   eventBuffer: number;
   eventHeartbeatMs: number;
@@ -168,6 +177,9 @@ function parseSingleFlag(
     webmcpReload: boolean;
     webmcpFromOrigins: string[];
     webmcpDialog: string;
+    annotations?: boolean;
+    annotationHosts: string[];
+    annotationMatches: string[];
     events: string[];
     eventBuffer: number;
     eventHeartbeatMs: number;
@@ -195,6 +207,8 @@ function parseSingleFlag(
     opts.webmcpAllowConsequential = true;
   } else if (arg === '--webmcp-reload') {
     opts.webmcpReload = true;
+  } else if (arg === '--annotations') {
+    opts.annotations = true;
   } else if (!arg.startsWith('-')) {
     opts.commands.push(parseCommandTarget(arg));
   } else {
@@ -225,6 +239,9 @@ function parseValueFlag(
     webmcpPolyfill: string;
     webmcpFromOrigins: string[];
     webmcpDialog: string;
+    annotations?: boolean;
+    annotationHosts: string[];
+    annotationMatches: string[];
     events: string[];
     eventBuffer: number;
     eventHeartbeatMs: number;
@@ -287,6 +304,12 @@ function parseValueFlag(
       break;
     case '--webmcp-dialog':
       opts.webmcpDialog = args[++i];
+      break;
+    case '--annotations-host':
+      opts.annotationHosts.push(args[++i]);
+      break;
+    case '--annotations-match':
+      opts.annotationMatches.push(args[++i]);
       break;
     case '-H':
     case '--header': {
@@ -358,6 +381,9 @@ export function parseServeFlags(args: string[]): ServeOptions {
     webmcpReload: false,
     webmcpFromOrigins: [] as string[],
     webmcpDialog: 'report',
+    annotations: false,
+    annotationHosts: [] as string[],
+    annotationMatches: [] as string[],
     events: [] as string[],
     eventBuffer: 1000,
     eventHeartbeatMs: 15_000,
@@ -990,6 +1016,10 @@ export async function runServe(
     return runWebMcpServe(platform, options, version, resolvedBearer, generatedBearer);
   }
 
+  if (options.annotations) {
+    return runAnnotationsServe(platform, options, version, resolvedBearer, generatedBearer);
+  }
+
   const serveCwd = options.cwd ?? platform.cwd;
   const childEnv = buildChildEnv(platform, options.envAllow);
 
@@ -1574,6 +1604,134 @@ function emptyToolsHint(
   return 'WebMCP is unavailable on this page (the WebMCP polyfill skips protected and unverified documents)';
 }
 
+async function annotationScope(
+  platform: Platform,
+  options: ServeOptions,
+  cliPath: string,
+  cdp: string | undefined
+): Promise<{ scope?: AttachScope; error?: string; exit: number }> {
+  const kinds = [
+    options.webmcpTab !== undefined,
+    options.annotationHosts.length > 0,
+    options.annotationMatches.length > 0,
+  ].filter(Boolean).length;
+  if (kinds > 1)
+    return {
+      error: 'choose one of --tab, --annotations-host or --annotations-match',
+      exit: 2,
+    };
+  if (options.annotationHosts.length) return { scope: { hosts: options.annotationHosts }, exit: 0 };
+  if (options.annotationMatches.length)
+    return { scope: { matches: options.annotationMatches }, exit: 0 };
+  if (options.webmcpTab) return { scope: { tab: options.webmcpTab }, exit: 0 };
+  const resolved = await resolveWebMcpTab(platform, {
+    playwrightCli: cliPath,
+    cdp,
+    callTimeoutMs: options.callTimeout,
+  });
+  if (resolved.notFound)
+    return {
+      error:
+        'playwright-cli not found. Install it with: curl -fsSL https://get.sliccy.ai/playwright-cli | sh',
+      exit: 3,
+    };
+  if (!resolved.tab) return { error: resolved.error, exit: 3 };
+  return { scope: { tab: resolved.tab }, exit: 0 };
+}
+
+async function runAnnotationsServe(
+  platform: Platform,
+  options: ServeOptions,
+  version: string,
+  resolvedBearer: string | undefined,
+  generatedBearer: boolean
+): Promise<number> {
+  const label = 'mcpcat serve --annotations';
+  const cliPath = await resolvePlaywrightCli(platform, options.webmcpPlaywrightCli);
+  if (!cliPath) {
+    await platform.write(
+      2,
+      `${label}: playwright-cli not found on PATH. Install it with: curl -fsSL https://get.sliccy.ai/playwright-cli | sh\n`
+    );
+    return 3;
+  }
+  const cdp = options.webmcpCdp ?? platform.env.SLICC_CDP_URL;
+  const found = parseCliVersion(
+    await playwrightCliVersion(platform, {
+      playwrightCli: cliPath,
+      callTimeoutMs: options.callTimeout,
+    })
+  );
+  if (compareVersions(found ?? '0.0.0', EVAL_ATTACH_MIN_VERSION) < 0) {
+    await platform.write(
+      2,
+      sanitizeTerminal(
+        `${label}: needs playwright-cli ${EVAL_ATTACH_MIN_VERSION} or newer for eval-attach (found ${found ?? 'unknown'}); update with: playwright-cli update\n`
+      )
+    );
+    return 2;
+  }
+  const resolved = await annotationScope(platform, options, cliPath, cdp);
+  if (!resolved.scope) {
+    await platform.write(2, sanitizeTerminal(`${label}: ${resolved.error}\n`));
+    return resolved.exit;
+  }
+  const early = compareVersions(found ?? '0.0.0', EVAL_ATTACH_EARLY_MIN_VERSION) >= 0;
+  const handler = createAnnotationsHandler(platform, {
+    playwrightCli: cliPath,
+    cdp,
+    scope: resolved.scope,
+    early,
+    callTimeoutMs: options.callTimeout,
+    maxOutput: options.maxOutput,
+    report: (line) => platform.write(2, line),
+  });
+  try {
+    const problem = await handler.start();
+    if (problem) {
+      await platform.write(2, sanitizeTerminal(`${label}: ${problem}\n`));
+      return 3;
+    }
+    const where =
+      'tab' in resolved.scope
+        ? `tab ${resolved.scope.tab}`
+        : 'hosts' in resolved.scope
+          ? `hosts ${resolved.scope.hosts.join(', ')}`
+          : `URLs ${resolved.scope.matches.join(', ')}`;
+    await platform.write(
+      2,
+      sanitizeTerminal(
+        `${label}: document.oai.annotation attached to ${where}; use the page's "Annotate" button, then "Send to agent"${early ? '' : `. playwright-cli ${found} installs it after page scripts start, so a page that checks for it while loading misses it; ${EVAL_ATTACH_EARLY_MIN_VERSION} or newer installs it first`}\n`
+      )
+    );
+    const getTools = () => handler.getTools();
+    const callTool = (name: string, args: unknown) => handler.callTool(name, args);
+    if (options.transport === 'stdio') {
+      return await runWebMcpStdio(
+        platform,
+        getTools,
+        callTool,
+        'mcpcat-annotations',
+        version,
+        undefined
+      );
+    }
+    return await runWebMcpHttp(
+      platform,
+      options,
+      getTools,
+      callTool,
+      'mcpcat-annotations',
+      version,
+      resolvedBearer,
+      generatedBearer,
+      undefined
+    );
+  } finally {
+    await handler.close();
+  }
+}
+
 async function serveWebMcpHandler(
   platform: Platform,
   options: ServeOptions,
@@ -1713,8 +1871,9 @@ async function runWebMcpHttp(
   generatedBearer: boolean,
   notifier: Notifier | undefined
 ): Promise<number> {
+  const label = `mcpcat serve --${serverName.slice('mcpcat-'.length)}`;
   if (!platform.listen) {
-    await platform.write(2, 'mcpcat serve --webmcp: HTTP transport requires platform.listen\n');
+    await platform.write(2, `${label}: HTTP transport requires platform.listen\n`);
     return 3;
   }
 
@@ -1728,7 +1887,7 @@ async function runWebMcpHttp(
   }
 
   const allowedOrigins = new Set(options.allowOrigins);
-  const listener = await listenOrReport(platform, options, 'mcpcat serve --webmcp');
+  const listener = await listenOrReport(platform, options, label);
   if (typeof listener === 'number') return listener;
   const actualPort = listener.port;
 
@@ -1770,7 +1929,7 @@ async function runWebMcpHttp(
   }
 
   if (!shutdownRequested) {
-    await platform.write(2, `mcpcat serve --webmcp: listening on ${listenUrl}\n`);
+    await platform.write(2, `${label}: listening on ${listenUrl}\n`);
     if (options.onListening) {
       await options.onListening(actualPort);
     }

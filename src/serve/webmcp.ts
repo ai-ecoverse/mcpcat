@@ -87,7 +87,7 @@ function generateNonce(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function wrapUntrusted(content: string): string {
+export function wrapUntrusted(content: string): string {
   const nonce = generateNonce();
   const openTag = `<<untrusted-page-content id=${nonce}>>`;
   const closeTag = `<<end id=${nonce}>>`;
@@ -361,7 +361,7 @@ function timeoutMessage(
   return head;
 }
 
-async function runProcess(
+export async function runProcess(
   platform: Platform,
   argv: string[],
   stdin: string | undefined,
