@@ -8,6 +8,15 @@ an https URL. On the host, named entries that a new enough jerk lists use
 jerk create; otherwise tokens go to pi's mcp-auth.json. Login is not available
 in seven.
 
+mcpcat listens for the redirect on 127.0.0.1, or on oauth.callbackUrl when
+that is a loopback URL (localhost, 127.0.0.1, [::1]). An oauth.callbackUrl on
+any other host without a port, such as https://app.example.com/oauth/callback,
+is a web redirect: it is sent verbatim as redirect_uri, nothing listens, and
+you paste the URL of the page you land on after signing in (the browser still
+opens unless --no-browser). Web redirects always use mcpcat's own sign-in.
+oauth.callbackPort with a web callbackUrl keeps a listener: the port is added
+to the URL and mcpcat listens on that host.
+
 Options:
   --no-browser               Print the authorize URL; paste the redirect URL back
   --no-jerk                  Skip slicc-jerk; always use mcpcat's own sign-in

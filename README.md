@@ -38,6 +38,19 @@ mcpcat weather get-forecast --lat 51.5 --lon -0.12
 mcpcat serve --http 8808 ./scripts/jira.jsh
 ```
 
+## Sign-in
+
+`mcpcat login <server>` signs in with OAuth and receives the redirect on a loopback listener (`http://127.0.0.1/callback`, or `oauth.callbackUrl` when that is a loopback URL). For an authorization server that only accepts a registered web redirect, set `oauth.callbackUrl` to that URL, on a non-loopback host and without a port:
+
+```json
+"example": {
+  "url": "https://mcp.example.com/mcp",
+  "oauth": { "clientId": "…", "callbackUrl": "https://app.example.com/oauth/callback" }
+}
+```
+
+mcpcat then sends it verbatim as `redirect_uri`, binds no listener, and asks you to paste the URL of the page you land on after signing in; it checks `state` and `iss` as for `--no-browser`. Such entries always use mcpcat's own sign-in. Adding `oauth.callbackPort` opts back into a local listener: mcpcat adds the port to the URL and listens on that host. See `mcpcat login --help` and [the spec](docs/spec.html).
+
 ## Agent skill
 
 The package ships an [Agent Skill](https://agentskills.io/specification) that teaches an agent mcpcat in one file: `dist/skills/mcpcat/SKILL.md`, built from [`src/skill/SKILL.txt`](src/skill/SKILL.txt) (the repo keeps no Markdown besides README.md and AGENTS.md). It covers targets, listing and calling tools, `mcp.json`, exit codes, and the secrets rule: `${NAME}` placeholders in single quotes, never a value in a command, a file or the conversation, and never a token in `mcp.json`. `mcpcat help --skill` prints the copy that matches the installed version. `package.json` declares it as a pi package skill (`"pi": { "skills": ["dist/skills"] }`). In seven, bios links it into `/usr/share/skills` for the catalog install.

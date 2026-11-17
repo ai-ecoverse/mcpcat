@@ -1,7 +1,12 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 
-const clients = new Map();
+const clients = new Map(
+  JSON.parse(process.env.PRECLIENTS || '[]').map((c) => [
+    c.client_id,
+    { token_endpoint_auth_method: 'none', ...c },
+  ])
+);
 const codes = new Map();
 const access = new Map();
 const refresh = new Map();

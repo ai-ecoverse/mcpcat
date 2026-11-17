@@ -18,7 +18,7 @@ import {
   noJerkEnv,
   runJerk,
 } from '../auth/jerk-token-source.ts';
-import { SignInCancelledError, signIn } from '../auth/oauth.ts';
+import { SignInCancelledError, signIn, webCallbackUrl } from '../auth/oauth.ts';
 import { PiFileTokenSource } from '../auth/pi-store.ts';
 import { PiThenJerkTokenSource } from '../auth/pi-then-jerk.ts';
 import type { TokenSource } from '../auth/token-source.ts';
@@ -253,6 +253,8 @@ export async function runLogin(
     ownReason = args.includes('--no-jerk')
       ? 'skipping jerk (--no-jerk); using own sign-in'
       : 'skipping jerk (MCPCAT_NO_JERK); using own sign-in';
+  } else if (webCallbackUrl(resolved.oauth) !== undefined) {
+    ownReason = 'oauth.callbackUrl is a web redirect; using own sign-in';
   } else if (await jerkAvailable(platform)) {
     knownVersion = await jerkDetectedVersion(platform);
     if (await jerkMeetsLoginMin(platform)) {
@@ -292,17 +294,25 @@ export async function runLogin(
       oauth: resolved.oauth,
       platform,
       prompt: {
-        showAuthorizationUrl(url: URL) {
+        showAuthorizationUrl(url: URL, pasteOnly: boolean) {
           if (!noBrowser && platform.openUrl) {
             platform.openUrl(url.href).catch(() => {});
           }
           void platform.write(2, `Open this URL to sign in:\n${url.href}\n`);
-          if (noBrowser || !platform.openUrl) {
+          if (pasteOnly) {
+            void platform.write(
+              2,
+              `\nAfter you sign in, the browser lands on a page at ${url.searchParams.get('redirect_uri')}\nPaste the full URL of that page from the address bar here:\n`
+            );
+          } else if (noBrowser || !platform.openUrl) {
             void platform.write(2, '\nPaste the redirect URL from your browser address bar:\n');
           }
         },
-        async promptForRedirectUrl(signal: AbortSignal): Promise<string | undefined> {
-          if (!noBrowser && platform.openUrl) {
+        async promptForRedirectUrl(
+          signal: AbortSignal,
+          pasteOnly: boolean
+        ): Promise<string | undefined> {
+          if (!pasteOnly && !noBrowser && platform.openUrl) {
             return new Promise((_resolve, reject) => {
               signal.addEventListener('abort', () => reject(new SignInCancelledError()));
             });
