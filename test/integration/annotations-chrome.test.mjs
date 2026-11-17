@@ -38,6 +38,19 @@ async function open(t) {
 }
 
 describe('annotations in Chrome', () => {
+  it('warms up keyboard input on a first page', async (t) => {
+    const page = await chrome.page(t);
+    await page.goto('/warm.html');
+    await page.until(() => document.title === 'ready');
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      await page.press('a');
+      if (await page.evaluate(() => document.getElementById('warm').value.length > 0)) return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.fail('keyboard input never reached the warm-up page');
+  });
+
   it('keeps what the user types in the editor from page key and input listeners', async (t) => {
     const { page, sent } = await open(t);
     const accepted = await page.evaluate(() => {
