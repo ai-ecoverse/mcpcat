@@ -72,9 +72,10 @@ function listens(env) {
     .map((line) => JSON.parse(line));
 }
 
-async function setup(tag, oauth, extra = {}) {
+async function setup(tag, oauth, extra = {}, asEnv = {}) {
   const as = await startFixture('exact-redirect-oauth-as.mjs', {
     PRECLIENTS: JSON.stringify([{ client_id: CLIENT, redirect_uris: [WEB] }]),
+    ...asEnv,
   });
   const home = scratchHome(tag);
   const binDir = join(home, 'bin');
@@ -210,6 +211,58 @@ describe('web callbackUrl with DCR', () => {
     const log = await (await fetch(`${ctx.as.base}/log`)).json();
     assert.deepEqual(log.clients.at(-1).redirect_uris, [WEB]);
     assert.deepEqual(listens(ctx.env), []);
+  });
+});
+
+describe('web callbackUrl with a CIMD-capable server', () => {
+  let auto;
+  let cimd;
+
+  before(async () => {
+    auto = await setup('web-callback-cimd-auto', { callbackUrl: WEB }, {}, { CIMD: '1' });
+    cimd = await setup(
+      'web-callback-cimd-explicit',
+      { callbackUrl: WEB, clientRegistration: 'cimd' },
+      {},
+      { CIMD: '1' }
+    );
+  });
+
+  after(() => {
+    auto?.as.child.kill('SIGTERM');
+    cimd?.as.child.kill('SIGTERM');
+  });
+
+  it('registers with DCR instead of offering the loopback-only CIMD document', async () => {
+    const child = launch(['login', 'svc', '--no-browser'], { env: auto.env });
+    const m = await waitFor(child, AUTHORIZE);
+    assert.ok(m, child.err + child.out);
+    const authUrl = new URL(m[1]);
+    assert.equal(authUrl.searchParams.get('redirect_uri'), WEB);
+    assert.doesNotMatch(authUrl.searchParams.get('client_id'), /^https:/);
+    child.stdin.write(`${await authorize(m[1])}\n`);
+    const r = await finish(child);
+    assert.equal(r.status, 0, r.err);
+    const log = await (await fetch(`${auto.as.base}/log`)).json();
+    assert.deepEqual(log.clients.at(-1).redirect_uris, [WEB]);
+    assert.deepEqual(log.flags, []);
+  });
+
+  it('honours an explicit clientRegistration cimd', async () => {
+    const child = launch(['login', 'svc', '--no-browser'], { env: cimd.env });
+    const m = await waitFor(child, AUTHORIZE);
+    assert.ok(m, child.err + child.out);
+    const authUrl = new URL(m[1]);
+    assert.equal(
+      authUrl.searchParams.get('client_id'),
+      'https://mcpcat.sliccy.ai/oauth/client.json'
+    );
+    assert.equal(authUrl.searchParams.get('redirect_uri'), WEB);
+    child.kill('SIGKILL');
+    await child.done;
+    const log = await (await fetch(`${cimd.as.base}/log`)).json();
+    assert.equal(log.clients.length, 1);
+    assert.deepEqual(listens(cimd.env), []);
   });
 });
 
