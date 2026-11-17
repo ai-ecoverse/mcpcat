@@ -1,7 +1,7 @@
 import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -356,6 +356,43 @@ describe('serve --annotations', () => {
       s.stderr(),
       /installs it after page scripts start.*1\.52\.0 or newer installs it first/
     );
+    s.child.kill('SIGTERM');
+    await stopped(s.child);
+  });
+
+  it('pages a batch larger than the result cap without losing annotations', async () => {
+    const dir = scratch();
+    const big = Array.from({ length: 20 }, (_, i) => ({
+      ...ANNOTATION,
+      id: `big${i}`,
+      comment: 'x'.repeat(60_000),
+    }));
+    const messages = [
+      ...big.map((annotation) => ({ type: 'annotation', annotation })),
+      { type: 'submit', ids: big.map((a) => a.id) },
+    ];
+    const file = join(dir, 'messages.json');
+    writeFileSync(file, JSON.stringify(messages));
+    const s = await serve(dir, ['--tab', 'TAB1'], { FAKE_ATTACH_MESSAGES_FILE: file });
+    await new Promise((r) => setTimeout(r, 500));
+    const listed = await s.tool('annotations_list');
+    assert.ok(listed.json.more > 0);
+    assert.equal(listed.json.annotations.length + listed.json.more, 20);
+    const seen = [];
+    for (let i = 0; i < 5 && seen.length < 20; i++) {
+      const page = await s.tool(i % 2 ? 'annotations_take' : 'annotations_wait', {
+        timeout_seconds: 1,
+      });
+      assert.ok(page.text.length < 1_048_576, 'response under the result cap');
+      assert.ok(page.json.annotations.length > 0);
+      seen.push(...page.json.annotations.map((a) => a.id));
+      assert.equal(page.json.more ?? 0, 20 - seen.length);
+    }
+    assert.deepEqual(
+      seen,
+      big.map((a) => a.id)
+    );
+    assert.equal((await s.tool('annotations_list')).json.annotations.length, 0);
     s.child.kill('SIGTERM');
     await stopped(s.child);
   });

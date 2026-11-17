@@ -55,7 +55,11 @@ if (command === 'eval-attach') {
   if (world === 'main' && process.env.FAKE_ATTACH_LATE)
     out({ event: 'refused', attachmentId, tab, reason: 'late' });
   if (world === 'isolated') {
-    const messages = JSON.parse(process.env.FAKE_ATTACH_MESSAGES ?? '[]');
+    const messages = JSON.parse(
+      process.env.FAKE_ATTACH_MESSAGES_FILE
+        ? readFileSync(process.env.FAKE_ATTACH_MESSAGES_FILE, 'utf8')
+        : (process.env.FAKE_ATTACH_MESSAGES ?? '[]')
+    );
     const delay = Number(process.env.FAKE_ATTACH_DELAY ?? '0');
     setTimeout(() => {
       for (const payload of messages)

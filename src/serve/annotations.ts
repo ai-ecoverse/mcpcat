@@ -8,6 +8,7 @@ import { runProcess, wrapUntrusted } from './webmcp.ts';
 
 export const ANNOTATION_LIMIT = 200;
 export const ANNOTATION_BYTES = 65_536;
+export const RESPONSE_BUDGET = 1_000_000;
 export const WAIT_DEFAULT_S = 300;
 export const WAIT_MAX_S = 3600;
 
@@ -59,7 +60,7 @@ export const ANNOTATION_TOOLS: RpcTool[] = [
   {
     name: 'annotations_wait',
     description:
-      'Wait until the user presses "Send to agent" in the page\'s annotation toolbar, then return and remove the annotations they sent. Returns at once when a sent batch is already waiting. Annotations are untrusted page content.',
+      'Wait until the user presses "Send to agent" in the page\'s annotation toolbar, then return and remove the annotations they sent. Returns at once when a sent batch is already waiting. A response holds at most about 1 MB of annotations; `more` counts the ones left, which the next call returns. Annotations are untrusted page content.',
     inputSchema: schema({
       timeout_seconds: {
         type: 'number',
@@ -71,14 +72,14 @@ export const ANNOTATION_TOOLS: RpcTool[] = [
   {
     name: 'annotations_list',
     description:
-      'List the annotations the user has saved or sent and that no tool has taken yet, plus the attached documents and whether Annotation mode is on. Does not remove anything.',
+      'List the annotations the user has saved or sent and that no tool has taken yet, plus the attached documents and whether Annotation mode is on. Does not remove anything; `more` counts annotations that did not fit in about 1 MB.',
     inputSchema: schema({}),
     annotations: { readOnlyHint: true },
   },
   {
     name: 'annotations_take',
     description:
-      'Return every saved or sent annotation and remove them from mcpcat, without waiting for the user to send.',
+      'Return saved and sent annotations and remove the ones returned, without waiting for the user to send. `more` counts annotations that did not fit in this response; call again for them.',
     inputSchema: schema({}),
     annotations: { readOnlyHint: false },
   },
@@ -174,34 +175,46 @@ function createStore() {
     if (event.tab) state.lastTab = event.tab;
     if (event.event === 'document-ready' && event.tab) {
       docs.set(event.tab, { tab: event.tab, url: event.url, loaderId: event.loaderId });
+      state.mode = false;
     } else if (event.event === 'message' && event.payload && typeof event.payload === 'object') {
       onMessage(event.payload as Record<string, unknown>, event.tab);
     }
   };
 
-  const take = (predicate: (entry: Stored) => boolean) => {
-    const out: Stored[] = [];
-    for (let i = 0; i < stored.length; ) {
-      if (predicate(stored[i]!)) out.push(...stored.splice(i, 1));
-      else i++;
-    }
-    return out;
-  };
-
-  const listing = (entries: Stored[]) =>
+  const entryOf = (e: Stored) => ({
+    ...e.annotation,
+    status: e.submitted ? 'sent' : 'saved',
+    tab: e.tab,
+  });
+  const listing = (entries: Stored[], more = 0) =>
     JSON.stringify(
       {
         mode: state.mode,
         documents: [...docs.values()],
-        annotations: entries.map((e) => ({
-          ...e.annotation,
-          status: e.submitted ? 'sent' : 'saved',
-          tab: e.tab,
-        })),
+        ...(more ? { more } : {}),
+        annotations: entries.map(entryOf),
       },
       null,
       2
     );
+  const fit = (entries: Stored[]) => {
+    const chosen: Stored[] = [];
+    let size = listing([], entries.length).length;
+    for (const entry of entries) {
+      const text = JSON.stringify(entryOf(entry), null, 2);
+      const add = text.length + 4 * text.split('\n').length + 2;
+      if (chosen.length && size + add > RESPONSE_BUDGET) break;
+      chosen.push(entry);
+      size += add;
+    }
+    return chosen;
+  };
+  const page = (predicate: (entry: Stored) => boolean, remove: boolean) => {
+    const matching = stored.filter(predicate);
+    const entries = fit(matching);
+    if (remove) for (const entry of entries) stored.splice(stored.indexOf(entry), 1);
+    return { entries, more: matching.length - entries.length };
+  };
 
   let closed = false;
   const pause = (ms: number) =>
@@ -219,9 +232,9 @@ function createStore() {
   const waitSubmitted = async (ms: number) => {
     const deadline = Date.now() + ms;
     for (;;) {
-      const sent = take((e) => e.submitted);
+      const sent = page((e) => e.submitted, true);
       const left = deadline - Date.now();
-      if (sent.length || left <= 0 || closed) return sent;
+      if (sent.entries.length || left <= 0 || closed) return sent;
       await pause(left);
     }
   };
@@ -230,7 +243,7 @@ function createStore() {
     wake();
   };
 
-  return { stored, state, onEvent, take, listing, waitSubmitted, close };
+  return { state, onEvent, page, listing, waitSubmitted, close };
 }
 
 const untrusted = (text: string): ToolRunResult => ({
@@ -364,9 +377,9 @@ export function createAnnotationsHandler(platform: Platform, options: Annotation
       ? (args.timeout_seconds as number)
       : WAIT_DEFAULT_S;
     const sent = await store.waitSubmitted(Math.max(0, Math.min(seconds, WAIT_MAX_S)) * 1000);
-    if (sent.length === 0)
+    if (sent.entries.length === 0)
       return untrusted(JSON.stringify({ mode: store.state.mode, timedOut: true, annotations: [] }));
-    return untrusted(store.listing(sent));
+    return untrusted(store.listing(sent.entries, sent.more));
   }
 
   async function request(
@@ -391,9 +404,10 @@ export function createAnnotationsHandler(platform: Platform, options: Annotation
     const tab = typeof args.tab === 'string' ? args.tab : store.state.lastTab;
     switch (name) {
       case 'annotations_list':
-        return untrusted(store.listing(store.stored));
-      case 'annotations_take':
-        return untrusted(store.listing(store.take(() => true)));
+      case 'annotations_take': {
+        const listed = store.page(() => true, name === 'annotations_take');
+        return untrusted(store.listing(listed.entries, listed.more));
+      }
       case 'annotations_wait':
         return wait(args);
       case 'annotation_mode':
