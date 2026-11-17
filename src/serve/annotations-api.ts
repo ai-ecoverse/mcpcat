@@ -209,8 +209,12 @@ export function annotationApi(channel: string): void {
     return controls.length ? { mode, heading: title, controls } : null;
   };
 
+  let queued: (() => void) | undefined;
   on('hello', () => {
     editor = true;
+    const replay = queued;
+    queued = undefined;
+    replay?.();
   });
   const editorReady = () => {
     if (!editor) emit(document, 'ping', {});
@@ -349,8 +353,17 @@ export function annotationApi(channel: string): void {
     });
     return { accepted: true };
   };
-  const request = (target: unknown, options: Record<string, unknown> = {}) => {
-    if (!editorReady()) return { accepted: false };
+  const request = (
+    target: unknown,
+    options: Record<string, unknown> = {}
+  ): { accepted: boolean } => {
+    if (!editorReady()) {
+      const queueable =
+        target instanceof Range || (target instanceof HTMLElement && target.isConnected);
+      if (queued || !queueable) return { accepted: false };
+      queued = () => request(target, options);
+      return { accepted: true };
+    }
     const common = {
       comment:
         typeof options.initialComment === 'string'

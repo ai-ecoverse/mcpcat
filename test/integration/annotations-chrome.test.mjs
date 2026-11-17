@@ -21,7 +21,7 @@ before(async () => {
 
 after(() => chrome?.close());
 
-async function open(t) {
+async function open(t, path = '/') {
   const page = await chrome.page(t);
   const sent = [];
   await page.expose('__mcpcatSend', (message) => sent.push(message));
@@ -32,7 +32,7 @@ async function open(t) {
     worldName: WORLD,
     runImmediately: true,
   });
-  await page.goto('/');
+  await page.goto(path);
   await page.until(() => document.title === 'ready');
   return { page, sent };
 }
@@ -72,6 +72,56 @@ describe('annotations in Chrome', () => {
     assert.equal(saved?.annotation.comment, 'PRIVATE secret');
     await page.type('x');
     assert.ok((await page.evaluate(() => window.seen)).includes('keydown:x'));
+  });
+
+  it('holds a request the page makes before the editor attaches', async (t) => {
+    const { page, sent } = await open(t, '/?startup');
+    assert.deepEqual(await page.evaluate(() => window.early), { accepted: true });
+    await page.until(() => document.activeElement?.localName === 'mcpcat-annotations');
+    await page.press('Enter', 'ctrl');
+    const deadline = Date.now() + 5000;
+    while (!sent.some((m) => m.type === 'annotation') && Date.now() < deadline)
+      await new Promise((r) => setTimeout(r, 50));
+    const saved = sent.find((m) => m.type === 'annotation');
+    assert.equal(saved?.annotation.comment, 'from startup');
+    assert.equal(saved?.annotation.target.selector, 'p#target');
+  });
+
+  it('keeps text fields selectable in Annotation mode', async (t) => {
+    const { page } = await open(t);
+    await page.evaluate(() => document.oai.annotation.toggle(true));
+    await page.until(() => document.oai.annotation.isActive());
+    const box = await page.evaluate(() => {
+      const r = document.getElementById('field').getBoundingClientRect();
+      return { x: r.left + 4, y: r.top + r.height / 2, end: r.right - 4 };
+    });
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y });
+    await page.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: box.x,
+      y: box.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    await page.send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: box.end,
+      y: box.y,
+      button: 'left',
+    });
+    await page.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: box.end,
+      y: box.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    const state = await page.evaluate(() => {
+      const f = document.getElementById('field');
+      return { focused: document.activeElement === f, selected: f.selectionEnd - f.selectionStart };
+    });
+    assert.equal(state.focused, true);
+    assert.ok(state.selected > 0);
   });
 
   it('resets saved control previews on exit and reapplies them on re-entry', async (t) => {
