@@ -1,7 +1,12 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 
-const clients = new Map();
+const clients = new Map(
+  JSON.parse(process.env.PRECLIENTS || '[]').map((c) => [
+    c.client_id,
+    { token_endpoint_auth_method: 'none', ...c },
+  ])
+);
 const codes = new Map();
 const access = new Map();
 const refresh = new Map();
@@ -109,6 +114,12 @@ const server = createServer((req, res) => {
         code_challenge_methods_supported: ['S256'],
         token_endpoint_auth_methods_supported: ['none'],
         scopes_supported: ['mcp:access', 'openid', 'profile', 'email'],
+        ...(process.env.CIMD
+          ? {
+              client_id_metadata_document_supported: true,
+              authorization_response_iss_parameter_supported: true,
+            }
+          : {}),
       });
     }
     if (p === '/register' && req.method === 'POST') {
@@ -134,8 +145,12 @@ const server = createServer((req, res) => {
     }
     if (p === '/authorize') {
       const q = u.searchParams;
-      const c = clients.get(q.get('client_id'));
       const ru = q.get('redirect_uri');
+      if (/^https:/.test(q.get('client_id') || '')) {
+        flags.push({ authorize: 'cimd', client_id: q.get('client_id'), sent: ru });
+        return json(res, 400, { error: 'invalid_client' });
+      }
+      const c = clients.get(q.get('client_id'));
       if (!c?.redirect_uris?.includes(ru)) {
         flags.push({ authorize: 'invalid_redirect_uri', registered: c?.redirect_uris, sent: ru });
         return json(res, 400, { error: 'invalid_redirect_uri' });
@@ -156,7 +171,7 @@ const server = createServer((req, res) => {
         scope: q.get('scope'),
       });
       res.writeHead(302, {
-        location: `${ru}${ru.includes('?') ? '&' : '?'}code=${code}&state=${encodeURIComponent(q.get('state') || '')}`,
+        location: `${ru}${ru.includes('?') ? '&' : '?'}code=${code}&state=${encodeURIComponent(q.get('state') || '')}${process.env.CIMD ? `&iss=${encodeURIComponent(base)}` : ''}`,
       });
       res.end();
       return;

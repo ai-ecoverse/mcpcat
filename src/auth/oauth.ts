@@ -45,16 +45,51 @@ export function preferredPortFromRegistration(
   return nonzeroPort(Number(new URL(registered[0]).port));
 }
 
+export function isLoopbackHostname(hostname: string): boolean {
+  const address = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return address === 'localhost' || address === '::1' || /^127(?:\.\d{1,3}){3}$/.test(address);
+}
+
+export function hasExplicitPort(raw: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/?#]*@)?(?:\[[^\]]*\]|[^:/?#]*):\d+(?:[/?#]|$)/i.test(
+    raw.trim()
+  );
+}
+
+export function webCallbackUrl(oauth: McpOAuthConfig | undefined): string | undefined {
+  if (!oauth?.callbackUrl || nonzeroPort(oauth.callbackPort) !== undefined) return undefined;
+  let url: URL;
+  try {
+    url = new URL(oauth.callbackUrl);
+  } catch {
+    return undefined;
+  }
+  if (hasExplicitPort(oauth.callbackUrl) || isLoopbackHostname(url.hostname)) return undefined;
+  return oauth.callbackUrl;
+}
+
 export function callbackSettings(oauth: McpOAuthConfig | undefined): {
   host: string;
   redirectHost: string;
   port: number | undefined;
   path: string;
   fixedRedirectUrl: string | undefined;
+  pasteOnly: boolean;
 } {
   const raw = oauth?.callbackUrl ?? `http://${CALLBACK_HOST}${CALLBACK_PATH}`;
   const url = new URL(raw);
   const address = url.hostname.replace(/^\[|\]$/g, '');
+  const web = webCallbackUrl(oauth);
+  if (web !== undefined) {
+    return {
+      host: address,
+      redirectHost: address,
+      port: undefined,
+      path: url.pathname,
+      fixedRedirectUrl: web,
+      pasteOnly: true,
+    };
+  }
   const port = nonzeroPort(url.port ? Number(url.port) : oauth?.callbackPort);
   let fixedRedirectUrl: string | undefined;
   if (nonzeroPort(url.port ? Number(url.port) : undefined) !== undefined && oauth?.callbackUrl) {
@@ -69,6 +104,7 @@ export function callbackSettings(oauth: McpOAuthConfig | undefined): {
     port,
     path: url.pathname,
     fixedRedirectUrl,
+    pasteOnly: false,
   };
 }
 
@@ -114,12 +150,14 @@ function cimdForServer(
 
 function buildClientMetadataDocumentFn(
   oauth: McpOAuthConfig | undefined,
-  redirectUrl: string
+  redirectUrl: string,
+  pasteOnly: boolean
 ):
   | ((metadata: AuthorizationServerMetadata | undefined) => OAuthClientMetadataDocument | undefined)
   | undefined {
   if (oauth?.clientRegistration === 'dcr') return undefined;
   if (oauth?.clientId) return undefined;
+  if (pasteOnly && oauth?.clientRegistration !== 'cimd') return undefined;
   return (metadata) => {
     if (oauth?.clientRegistration === 'cimd') {
       if (
@@ -140,9 +178,10 @@ function createProvider(
   store: McpOAuthStateStore,
   oauth: McpOAuthConfig | undefined,
   redirectUrl: string,
+  pasteOnly: boolean,
   onRedirect: (url: URL) => void
 ): McpOAuthProvider {
-  const cimdFn = buildClientMetadataDocumentFn(oauth, redirectUrl);
+  const cimdFn = buildClientMetadataDocumentFn(oauth, redirectUrl, pasteOnly);
   return new McpOAuthProvider({
     serverUrl,
     redirectUrl,
@@ -176,8 +215,8 @@ class SourceBackedStateStore implements McpOAuthStateStore {
 }
 
 export interface SignInPrompt {
-  showAuthorizationUrl(url: URL): void;
-  promptForRedirectUrl(signal: AbortSignal): Promise<string | undefined>;
+  showAuthorizationUrl(url: URL, pasteOnly: boolean): void;
+  promptForRedirectUrl(signal: AbortSignal, pasteOnly: boolean): Promise<string | undefined>;
 }
 
 export class SignInCancelledError extends Error {
@@ -212,7 +251,7 @@ function responseFromRedirectUrl(
 }
 
 async function waitForAuthorizationResponse(
-  callback: OAuthCallbackServer,
+  callback: OAuthCallbackServer | undefined,
   state: string,
   redirectUrl: URL,
   prompt: SignInPrompt,
@@ -220,16 +259,16 @@ async function waitForAuthorizationResponse(
 ): Promise<Pick<OAuthCallback, 'code' | 'iss'>> {
   const controller = new AbortController();
   const promptSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
-  const fromBrowser = callback.waitForCallback(state, redirectUrl.pathname);
-  const fromUser = prompt.promptForRedirectUrl(promptSignal).then((input) => {
+  const fromUser = prompt.promptForRedirectUrl(promptSignal, !callback).then((input) => {
     if (!input?.trim()) throw new SignInCancelledError();
     return responseFromRedirectUrl(input, state, redirectUrl);
   });
+  const fromBrowser = callback?.waitForCallback(state, redirectUrl.pathname);
   try {
-    return await Promise.race([fromBrowser, fromUser]);
+    return await (fromBrowser ? Promise.race([fromBrowser, fromUser]) : fromUser);
   } finally {
     controller.abort();
-    fromBrowser.catch(() => undefined);
+    fromBrowser?.catch(() => undefined);
     fromUser.catch(() => undefined);
   }
 }
@@ -262,8 +301,10 @@ export async function signIn(options: {
       : [];
   const preferredPort = preferredPortFromRegistration(cbSettings.port, registered);
 
-  const callback = await listenCallback(cbSettings, preferredPort);
-  const redirectUrl = cbSettings.fixedRedirectUrl ?? callback.redirectUrl;
+  const callback = cbSettings.pasteOnly
+    ? undefined
+    : await listenCallback(cbSettings, preferredPort);
+  const redirectUrl = cbSettings.fixedRedirectUrl ?? (callback as OAuthCallbackServer).redirectUrl;
 
   try {
     if (stored) {
@@ -278,9 +319,16 @@ export async function signIn(options: {
     }
 
     let authorizationUrl: URL | undefined;
-    const provider = createProvider(serverUrl, store, oauth, redirectUrl, (url) => {
-      authorizationUrl = url;
-    });
+    const provider = createProvider(
+      serverUrl,
+      store,
+      oauth,
+      redirectUrl,
+      cbSettings.pasteOnly,
+      (url) => {
+        authorizationUrl = url;
+      }
+    );
 
     const flow = {
       serverUrl,
@@ -303,7 +351,7 @@ export async function signIn(options: {
     const authRedirectUrl = new URL(
       authorizationUrl.searchParams.get('redirect_uri') ?? redirectUrl
     );
-    prompt.showAuthorizationUrl(authorizationUrl);
+    prompt.showAuthorizationUrl(authorizationUrl, cbSettings.pasteOnly);
     const { code, iss } = await waitForAuthorizationResponse(
       callback,
       state,
@@ -316,7 +364,7 @@ export async function signIn(options: {
     if (signal?.aborted) throw new SignInCancelledError();
     throw err;
   } finally {
-    await callback.close();
+    await callback?.close();
   }
 }
 
