@@ -45,6 +45,7 @@ describe('annotations in Chrome', () => {
       return document.oai.annotation.request(el, { initialComment: '' }).accepted;
     });
     assert.equal(accepted, true);
+    await page.until(() => document.activeElement?.localName === 'mcpcat-annotations');
     await page.type('PRIVATE');
     await page.insert(' secret');
     const seen = await page.evaluate(() => window.seen);
@@ -69,6 +70,7 @@ describe('annotations in Chrome', () => {
       return Boolean(host);
     });
     assert.equal(ok, true);
+    await page.until(() => document.activeElement?.localName === 'mcpcat-annotations');
     await page.press('Tab', 'shift');
     await page.press('ArrowRight');
     await page.press('Tab');
