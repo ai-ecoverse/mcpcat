@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+  <head>
+    <script>
+    const tool = {
+      name: 'child_tool',
+      origin: location.origin,
+      window,
+      inputSchema: { type: 'object' },
+      annotations: { readOnlyHint: true },
+    };
+    document.modelContext = {
+      getTools: async () => [tool],
+      executeTool: async (_, input) => {
+        const value = typeof input === 'string' ? JSON.parse(input) : input;
+        return JSON.stringify({ child: value.message });
+      },
+    };
+    window.childReady = true;
+    </script>
+  </head>
+  <body>
+    Same-origin tool provider
+  </body>
+</html>

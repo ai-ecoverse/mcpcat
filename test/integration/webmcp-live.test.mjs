@@ -251,7 +251,7 @@ describe('serve --webmcp live tool updates', () => {
       out += chunk.toString();
     });
     assert.equal(await stopped(child), 0);
-    assert.match(out, /playwright-cli 1\.40\.0 or newer the polyfill holder's/);
+    assert.match(out, /attachment messages \(legacy holder on 1\.40\+\) update it/);
     assert.match(out, /notifications\/tools\/list_changed/);
   });
 

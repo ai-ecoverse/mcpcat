@@ -2,5 +2,17 @@
   "extends": ["@ai-ecoverse/slicc-shared-web/biome"],
   "files": {
     "includes": ["**", "!docs/spec.html"]
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["src/serve/webmcp-api.ts"],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveLinesPerFunction": "off"
+          }
+        }
+      }
+    }
+  ]
 }

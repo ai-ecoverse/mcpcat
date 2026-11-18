@@ -64,6 +64,7 @@ import {
   playwrightCliVersion,
   resolveWebMcpTab,
 } from './webmcp.ts';
+import { type AttachedPage, attachWebMcp } from './webmcp-attach.ts';
 import {
   DIALOG_HOLD_MIN_VERSION,
   DIALOG_MODES,
@@ -1399,17 +1400,12 @@ async function runWebMcpServe(
   }
 
   const wantsOrigins = options.webmcpFromOrigins.length > 0;
-  const needVersion = wantsOrigins
-    ? true
-    : options.webmcpPolyfill !== 'off' || options.webmcpDialog !== 'report';
-  const cliVersion = needVersion
-    ? parseCliVersion(
-        await playwrightCliVersion(platform, {
-          playwrightCli: cliPath,
-          callTimeoutMs: options.callTimeout,
-        })
-      )
-    : undefined;
+  const cliVersion = parseCliVersion(
+    await playwrightCliVersion(platform, {
+      playwrightCli: cliPath,
+      callTimeoutMs: options.callTimeout,
+    })
+  );
   if (wantsOrigins) {
     const found = cliVersion ?? '0.0.0';
     if (compareVersions(found, FROM_ORIGIN_MIN_VERSION) < 0) {
@@ -1422,7 +1418,7 @@ async function runWebMcpServe(
       return 2;
     }
   }
-  const polyfill = startPolyfill(platform, options, cliPath, cdp, tab, cliVersion);
+  const polyfill = await startPolyfill(platform, options, cliPath, cdp, tab, cliVersion);
   if (polyfill.oldVersion) {
     await platform.write(
       2,
@@ -1444,6 +1440,7 @@ async function runWebMcpServe(
     maxOutput: options.maxOutput,
     fromOrigins: options.webmcpFromOrigins,
     dialogs,
+    page: polyfill.page,
     beforeList: holder ? () => holder.ready() : undefined,
     late: () => isLate(holder),
     emptyHint: (unavailable, crossOriginOff) =>
@@ -1538,16 +1535,37 @@ interface PolyfillState {
   holder?: Holder;
   oldVersion?: string;
   live?: boolean;
+  page?: AttachedPage;
 }
 
-function startPolyfill(
+async function startPolyfill(
   platform: Platform,
   options: ServeOptions,
   playwrightCli: string,
   cdp: string | undefined,
   tab: string,
   found: string | undefined
-): PolyfillState {
+): Promise<PolyfillState> {
+  if (
+    found &&
+    compareVersions(found, EVAL_ATTACH_EARLY_MIN_VERSION) >= 0 &&
+    options.webmcpFromOrigins.length === 0
+  ) {
+    const page = await attachWebMcp(
+      platform,
+      {
+        playwrightCli,
+        cdp,
+        tab,
+        reload: options.webmcpReload,
+        callTimeoutMs: options.callTimeout,
+        readyTimeoutMs: Math.min(options.callTimeout, HOLDER_READY_MS),
+        report: (line) => platform.write(2, line),
+      },
+      options.webmcpPolyfill !== 'off'
+    );
+    return { holder: page, page, live: true };
+  }
   if (options.webmcpPolyfill === 'off') return {};
   if (found && compareVersions(found, POLYFILL_MIN_VERSION) < 0) {
     return { oldVersion: found };
@@ -1587,6 +1605,10 @@ function emptyToolsHint(
     return `the page shows no WebMCP tools, and the WebMCP polyfill needs playwright-cli ${POLYFILL_MIN_VERSION} or newer (found ${polyfill.oldVersion})`;
   }
   const status = polyfill.holder?.status();
+  if (polyfill.page && status?.late)
+    return 'the page ran its first script before the WebMCP polyfill could be installed early; reload the tab, or restart with --webmcp-reload (it reloads the tab); no late fallback is used';
+  if (polyfill.page && status?.refused)
+    return `WebMCP tools are unavailable: eval-attach refused this document (${status.error})`;
   if (status?.refused && status.fallbackUnavailable) return FALLBACK_UNVERIFIED;
   if (isLate(polyfill.holder)) {
     return 'the page may check for WebMCP only when it loads, before the polyfill was injected; reload the tab, or restart with --webmcp-reload (it reloads the tab)';

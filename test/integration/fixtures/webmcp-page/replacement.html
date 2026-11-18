@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+  <head>
+    <script>
+    if (document.modelContext)
+      document.modelContext.registerTool({ name: 'detached', execute: () => 'detached registry' });
+    const api = new EventTarget();
+    api.getTools = async () => {
+      window.webMcpReads = (window.webMcpReads ?? 0) + 1;
+      return [{ name: 'replacement', inputSchema: { type: 'object' } }];
+    };
+    api.executeTool = async () => 'current API';
+    document.modelContext = api;
+    document.title = 'ready';
+    </script>
+  </head>
+  <body>
+    Replacement API
+  </body>
+</html>
