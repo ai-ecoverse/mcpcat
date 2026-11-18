@@ -61,9 +61,20 @@ export function createWebMcpFrames(
     argv.push('eval', expression, '--tab', options.tab, ...selectors(event));
     return runProcess(platform, argv, undefined, timeout, 1_048_576, watch);
   };
+  const cancel = (frame: Frame) => {
+    frame.tools = [];
+    for (const request of requests.values()) if (request.frame === frame) request.resolve();
+  };
+  const clear = () => {
+    for (const frame of frames.values()) cancel(frame);
+    frames.clear();
+  };
   const remove = (frameId: string | undefined) => {
     for (const [id, frame] of frames)
-      if (id === frameId || descendant(frame.event, frameId)) frames.delete(id);
+      if (id === frameId || descendant(frame.event, frameId)) {
+        cancel(frame);
+        frames.delete(id);
+      }
   };
   const message = (event: AttachEvent) => {
     const frame = event.frameId && frames.get(event.frameId);
@@ -134,10 +145,10 @@ export function createWebMcpFrames(
     attachment(id: string | undefined) {
       state.crossOriginOff = false;
       attachmentId = id;
-      frames.clear();
+      clear();
     },
     reset() {
-      frames.clear();
+      clear();
     },
     event(event: AttachEvent) {
       if (event.event === 'document-ready' && event.frameId) {
