@@ -96,7 +96,13 @@ if (command === 'eval-attach') {
       `${JSON.stringify({ tab, attachmentId: 'A1', frameId: tab, loaderId: 'L1', ...event })}\n`
     );
   const installed = new Map();
+  const afterLists = Number(process.env.FAKE_PWCLI_FRAMES_AFTER_LISTS || '0');
+  const countFile = join(work, 'list-count');
+  let framesReleased = false;
   const frames = () => {
+    const count = existsSync(countFile) ? Number(readFileSync(countFile, 'utf8')) : 0;
+    if (count < afterLists) return;
+    framesReleased = true;
     for (const frame of frameRecords()) {
       const document = evidence(frame);
       if (installed.get(frame.frameId) !== document.loaderId) {
@@ -112,6 +118,7 @@ if (command === 'eval-attach') {
   };
   const document = (loaderId = 'L1') => {
     installed.clear();
+    framesReleased = false;
     emit({ event: 'document-ready', loaderId, early: args.includes('--early') });
     emit({ event: 'message', loaderId, payload: { type: 'tools-changed', origin, ...snapshot() } });
     frames();
@@ -136,6 +143,7 @@ if (command === 'eval-attach') {
   else armed();
   let next = 0;
   setInterval(() => {
+    if (afterLists && !framesReleased) frames();
     if (stateFile && existsSync(stateFile) && readFileSync(stateFile, 'utf8') === 'reload') {
       writeFileSync(stateFile, 'loaded');
       document('L2');
@@ -219,6 +227,11 @@ if (command === 'eval-attach') {
     );
     process.stdout.write('{}');
   } else if (expression.includes('bridge.refresh()')) {
+    if (process.env.FAKE_PWCLI_FRAMES_AFTER_LISTS) {
+      const file = join(work, 'list-count');
+      const count = existsSync(file) ? Number(readFileSync(file, 'utf8')) : 0;
+      writeFileSync(file, String(count + 1));
+    }
     if (process.env.FAKE_PWCLI_HANG_LIST) {
       if (process.env.FAKE_PWCLI_DIALOG_URL) await fetch(process.env.FAKE_PWCLI_DIALOG_URL);
       setInterval(() => {}, 1000);

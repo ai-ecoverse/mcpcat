@@ -608,6 +608,7 @@ export function hiddenToolMessage(name: string): string {
 }
 
 interface ListOutcome {
+  pendingChildren?: boolean;
   tools?: WebMcpTool[];
   error?: string;
   notFound?: boolean;
@@ -675,7 +676,7 @@ function createLister(
       outcome.tools?.length === 0 &&
       !outcome.error &&
       !outcome.notFound &&
-      !outcome.unavailable &&
+      (!outcome.unavailable || outcome.pendingChildren) &&
       !outcome.crossOriginOff &&
       Date.now() < deadline
     ) {

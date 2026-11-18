@@ -22,6 +22,7 @@ export interface AttachedPage extends Holder {
     unavailable?: boolean;
     error?: string;
     crossOriginOff?: boolean;
+    pendingChildren?: boolean;
   }>;
   callFile(
     name: string,
@@ -167,7 +168,7 @@ export async function attachWebMcp(
     },
     async list(watch) {
       await frames.refresh(watch);
-      if (state.refused) return frameListing(frames, state);
+      if (state.refused) return frameListing(frames, state, Boolean(options.fromOrigins?.length));
       const result = await evaluate(
         `(async () => { const bridge = globalThis[${JSON.stringify(key)}]; return bridge ? await bridge.refresh() : { tools: [], unavailable: true }; })()`,
         watch
@@ -183,6 +184,7 @@ export async function attachWebMcp(
         if (typeof value.error === 'string') value.error = wrapUntrusted(value.error);
         value.tools = [...value.tools, ...frames.tools()];
         value.crossOriginOff = state.crossOriginOff;
+        value.pendingChildren = Boolean(options.fromOrigins?.length);
         return value;
       } catch {
         return { tools: [], error: 'WebMCP eval returned an invalid tool list' };
@@ -264,7 +266,16 @@ function documentTracker(timeout: number) {
   };
 }
 
-function frameListing(frames: ReturnType<typeof createWebMcpFrames>, state: HolderStatus) {
+function frameListing(
+  frames: ReturnType<typeof createWebMcpFrames>,
+  state: HolderStatus,
+  childrenRequested: boolean
+) {
   const tools = frames.tools();
-  return { tools, unavailable: tools.length === 0, crossOriginOff: state.crossOriginOff };
+  return {
+    tools,
+    unavailable: tools.length === 0,
+    crossOriginOff: state.crossOriginOff,
+    pendingChildren: childrenRequested && state.late,
+  };
 }

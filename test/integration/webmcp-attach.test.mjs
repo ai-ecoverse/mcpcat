@@ -556,3 +556,49 @@ it('lists and calls admitted child tools when only the top observer is refused a
   assert.equal(call.argv[call.argv.indexOf('--loader') + 1], 'LC');
   await s.stop();
 });
+
+it('waits for requested children on the first list when the top API is absent', async (t) => {
+  const frames = join(scratch, `pending-child-${++next}.json`);
+  writeFileSync(
+    frames,
+    JSON.stringify([
+      {
+        frameId: 'CHILD',
+        origin: 'https://bank.example.com',
+        tools: [
+          {
+            name: 'pending_child',
+            exposedTo: ['https://shop.example.com'],
+            inputSchema: { type: 'object' },
+          },
+        ],
+      },
+    ])
+  );
+  const s = await serve(
+    t,
+    [
+      '--webmcp-from-origin',
+      'https://bank.example.com',
+      '--webmcp-polyfill',
+      'off',
+      '--webmcp-ttl',
+      '60',
+    ],
+    {
+      FAKE_PWCLI_VERSION: '1.54.0',
+      FAKE_PWCLI_UNAVAILABLE: '1',
+      FAKE_PWCLI_FRAMES: frames,
+      FAKE_PWCLI_FRAMES_AFTER_LISTS: '2',
+    }
+  );
+  const listed = await s.rpc('tools/list');
+  assert.deepEqual(
+    listed.result.tools.map((tool) => tool.name),
+    ['pending_child']
+  );
+  assert.ok(
+    s.entries().filter((entry) => entry.expression?.includes('bridge.refresh()')).length >= 2
+  );
+  await s.stop();
+});
