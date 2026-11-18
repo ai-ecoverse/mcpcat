@@ -8,20 +8,23 @@ export interface PageSnapshot {
 }
 
 export interface PageBridge {
-  refresh(): Promise<PageSnapshot>;
+  refresh(requestId?: string): Promise<PageSnapshot>;
   dispose(): void;
   call(
     name: string,
     input: object,
     allow: boolean,
-    origin: string
+    origin: string,
+    topOrigin?: string
   ): Promise<Record<string, unknown>>;
 }
 
 export function webMcpPage(
   send: (payload: unknown) => void,
   key: string,
-  bridge: WebMcpBridge | undefined
+  bridge: WebMcpBridge | undefined,
+  localOnly = false,
+  metadata = webMcpMetadata
 ): void {
   const doc = document as Document & {
     modelContext?: ModelContext;
@@ -53,25 +56,6 @@ export function webMcpPage(
     const policy = doc.permissionsPolicy ?? doc.featurePolicy;
     return policy?.features().includes('tools') ? policy.allowsFeature('tools') : undefined;
   };
-  const metadata = (tool: PageTool): PageTool => {
-    const annotations = { ...tool.annotations };
-    for (const [source, target] of [
-      ['readOnly', 'readOnlyHint'],
-      ['consequential', 'consequentialHint'],
-      ['untrustedContent', 'untrustedContentHint'],
-    ]) {
-      if (annotations[source!] !== undefined) annotations[target!] = annotations[source!]!;
-    }
-    return {
-      name: tool.name,
-      title: tool.title ?? null,
-      description: tool.description ?? '',
-      inputSchema: tool.inputSchema ?? { type: 'object' },
-      origin: tool.origin ?? ownOrigin,
-      annotations,
-      policy: permitted() === true ? 'allowed' : 'unknown',
-    };
-  };
   const snapshot = async (): Promise<PageSnapshot> => {
     const api = doc.modelContext;
     const native = 'modelContext' in Document.prototype;
@@ -82,10 +66,17 @@ export function webMcpPage(
       listening = api;
       if (api instanceof Target) apply(add, api, ['toolchange', changed]);
     }
-    const list = await api.getTools();
+    const local = bridge?.list();
+    const list =
+      localOnly && local?.toolsJson && !local.replaced
+        ? (parse(local.toolsJson) as PageTool[])
+        : await api.getTools();
     const tools = list
-      .filter((tool) => !tool.window || tool.window === window || tool.origin === ownOrigin)
-      .map(metadata);
+      .filter(
+        (tool) =>
+          !tool.window || tool.window === window || (!localOnly && tool.origin === ownOrigin)
+      )
+      .map((tool) => metadata(tool, ownOrigin, permitted()));
     if (stringify(tools).length > 65536)
       throw new Error('WebMCP tool list exceeds 65536 characters');
     return { tools, mode };
@@ -107,12 +98,17 @@ export function webMcpPage(
     }
     return value;
   };
-  const refresh = (changed = true): Promise<PageSnapshot> => {
+  const refresh = (changed: boolean | string = true): Promise<PageSnapshot> => {
     if (stopped) return Promise.resolve({ tools: [], unavailable: true });
     if (changed) dirty = true;
     inflight ??= readSnapshot().finally(() => {
       inflight = undefined;
     });
+    if (typeof changed === 'string')
+      return inflight.then((value) => {
+        send({ type: 'tools-changed', origin: ownOrigin, ...value, requestId: changed });
+        return value;
+      });
     return inflight;
   };
   const encodeResult = (result: unknown): string =>
@@ -127,7 +123,39 @@ export function webMcpPage(
       ? input
       : stringify(input);
   };
-  const call = async (name: string, input: object, allow: boolean, origin: string) => {
+  const toolDenied = (
+    tool: PageTool,
+    origin: string,
+    topOrigin: string | undefined,
+    allow: boolean
+  ) => {
+    if (tool.origin && tool.origin !== origin) return { __webmcp_error: 'document changed' };
+    if (
+      topOrigin &&
+      topOrigin !== ownOrigin &&
+      !tool.exposedTo?.some((value) => value === '*' || value === topOrigin)
+    )
+      return { __webmcp_error: 'tool is not exposed to the top origin' };
+    if (!allow && consequential(tool))
+      return { __webmcp_error: 'consequential', description: tool.description ?? '' };
+    return undefined;
+  };
+  const localMatches = (list: PageTool[], name: string) =>
+    list.filter(
+      (tool) => tool.name === name && (!localOnly || !tool.window || tool.window === window)
+    );
+  const localRegistry = () => {
+    if (!localOnly) return;
+    const local = bridge?.list();
+    return local?.toolsJson && !local.replaced ? local : undefined;
+  };
+  const call = async (
+    name: string,
+    input: object,
+    allow: boolean,
+    origin: string,
+    topOrigin?: string
+  ) => {
     try {
       if (stopped) return { __webmcp_error: 'absent' };
       if (permitted() === false) return { __webmcp_error: 'tools permission policy denies access' };
@@ -135,13 +163,15 @@ export function webMcpPage(
       if (!validInput(input)) return { __webmcp_error: 'Tool input must be a JSON object' };
       const api = doc.modelContext;
       if (!api) return { __webmcp_error: 'absent' };
-      const tools = (await api.getTools()).filter((tool) => tool.name === name);
+      const local = localRegistry();
+      const list: PageTool[] = local ? parse(local.toolsJson!) : await api.getTools();
+      const tools = localMatches(list, name);
       if (tools.length > 1) return { __webmcp_error: 'ambiguous tool name' };
       const tool = tools[0];
       if (!tool) return { __webmcp_error: 'unknown' };
-      if (tool.origin && tool.origin !== origin) return { __webmcp_error: 'document changed' };
-      if (!allow && consequential(tool))
-        return { __webmcp_error: 'consequential', description: tool.description ?? '' };
+      const denied = toolDenied(tool, origin, topOrigin, allow);
+      if (denied) return denied;
+      if (local) return bridge!.call(name, input, allow);
       const result = await api.executeTool(tool, inputFor(api, input));
       return {
         __webmcp_result: encodeResult(result),
@@ -161,4 +191,29 @@ export function webMcpPage(
   const timer = setInterval(() => void refresh(false), 250);
   Object.defineProperty(root, key, { value: controller, configurable: true });
   void refresh(false);
+}
+
+export function webMcpMetadata(
+  tool: PageTool,
+  ownOrigin: string,
+  policy: boolean | undefined
+): PageTool {
+  const annotations = { ...tool.annotations };
+  for (const [source, target] of [
+    ['readOnly', 'readOnlyHint'],
+    ['consequential', 'consequentialHint'],
+    ['untrustedContent', 'untrustedContentHint'],
+  ]) {
+    if (annotations[source!] !== undefined) annotations[target!] = annotations[source!]!;
+  }
+  return {
+    name: tool.name,
+    title: tool.title ?? null,
+    description: tool.description ?? '',
+    inputSchema: tool.inputSchema ?? { type: 'object' },
+    origin: tool.origin ?? ownOrigin,
+    annotations,
+    exposedTo: tool.exposedTo,
+    policy: policy === true ? 'allowed' : 'unknown',
+  };
 }

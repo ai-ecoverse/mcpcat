@@ -53,7 +53,7 @@ function env(dirs, extra = {}) {
     FAKE_PWCLI_FIXTURE: fixture,
     FAKE_PWCLI_LOG: dirs.log,
     FAKE_PWCLI_DIALOG_DIR: dirs.dir,
-    FAKE_PWCLI_VERSION: '1.52.0',
+    FAKE_PWCLI_VERSION: '1.54.0',
     ...extra,
   };
 }
@@ -268,7 +268,7 @@ describe('serve --webmcp --webmcp-dialog', () => {
     assert.match(call.result.content[0].text, /after the dialog was dismissed/);
     const log = readLog(dirs.log);
     const holds = log.flatMap((e, i) => (e.command === 'dialog-hold' ? [i] : []));
-    const started = log.findIndex((e) => e.command === 'webmcp-call');
+    const started = log.findIndex((e) => e.command === 'eval-file');
     assert.ok(holds.length === 2 && holds[1] < started, JSON.stringify(log));
   });
 
@@ -348,7 +348,7 @@ describe('serve --webmcp --webmcp-dialog', () => {
       env(dirs, { FAKE_PWCLI_VERSION: '1.38.0' })
     );
     assert.equal(r.status, 2, r.stderr);
-    assert.match(r.stderr, /needs playwright-cli 1\.52\.0.*found 1\.38\.0.*playwright-cli update/);
+    assert.match(r.stderr, /needs playwright-cli 1\.54\.0.*found 1\.38\.0.*playwright-cli update/);
     assert.equal(readLog(dirs.log).filter((e) => e.command === 'dialog-hold').length, 0);
   });
 });

@@ -247,7 +247,7 @@ describe('serve --webmcp error reporting', () => {
     );
     assert.equal(r.status, 0, r.stderr);
     const [, call] = responses(r.stdout);
-    assert.match(call.error.message, /webmcp-call timed out after 2s; tab TAB1 does not answer/);
+    assert.match(call.error.message, /WebMCP call timed out after 2s; tab TAB1 does not answer/);
     assert.match(call.error.message, /JavaScript dialog opened before mcpcat attached/);
   });
 
@@ -261,7 +261,7 @@ describe('serve --webmcp error reporting', () => {
     );
     assert.equal(r.status, 0, r.stderr);
     const [, call] = responses(r.stdout);
-    assert.match(call.error.message, /webmcp-call timed out after 2s/);
+    assert.match(call.error.message, /WebMCP call timed out after 2s/);
     assert.match(call.error.message, /JavaScript dialog/);
     assert.match(call.error.message, /--cdp/);
   });
@@ -277,7 +277,7 @@ describe('serve --webmcp error reporting', () => {
     );
     assert.equal(r.status, 0, r.stderr);
     const [, call] = responses(r.stdout);
-    assert.equal(call.error.message, 'webmcp-call timed out after 3s');
+    assert.equal(call.error.message, 'WebMCP call timed out after 3s');
     assert.ok(cdp.seen.some((m) => m.method === 'Page.enable'));
   });
 

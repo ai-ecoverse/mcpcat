@@ -413,7 +413,7 @@ describe('serve --webmcp', () => {
       assert.equal(callResp.result.isError, true);
     });
 
-    it('maps exit code 2 to JSON-RPC error', () => {
+    it('wraps an evaluation refusal as an untrusted tool error', () => {
       const input =
         [
           rpc('initialize', {
@@ -435,8 +435,7 @@ describe('serve --webmcp', () => {
       assert.equal(result.status, 0, `stderr: ${result.stderr}`);
       const lines = result.stdout.trim().split('\n');
       const callResp = JSON.parse(lines[1]);
-      assert.ok(callResp.error, 'exit 2 should produce a JSON-RPC error');
-      assert.equal(callResp.error.code, -32000);
+      assert.equal(callResp.result.isError, true);
     });
 
     it('prefixes tool names when multiple origins', () => {
@@ -625,7 +624,7 @@ describe('serve --webmcp', () => {
           .map((l) => JSON.parse(l))
           .map((r) => [r.id, r])
       );
-      const calls = readLog(log).filter((e) => e.command === 'webmcp-call');
+      const calls = readLog(log).filter((e) => e.command === 'eval-file');
       for (const call of calls) {
         if (call.tool === 'lookup') {
           assert.fail(
@@ -674,7 +673,7 @@ describe('serve --webmcp', () => {
         .split('\n')
         .map((l) => JSON.parse(l));
       assert.ok(list.result.tools.some((t) => t.name === 'bank_example_com__lookup'));
-      const ran = readLog(log).filter((e) => e.command === 'webmcp-call');
+      const ran = readLog(log).filter((e) => e.command === 'eval-file');
       assert.deepEqual(
         ran.map((e) => e.executedOrigin),
         [],
@@ -714,8 +713,11 @@ describe('serve --webmcp', () => {
       );
       assert.equal(result.status, 0, `stderr: ${result.stderr}`);
       const entries = readLog(log).filter((e) => e.command !== 'tab-list');
-      assert.ok(entries.filter((e) => e.command === 'webmcp-list').length >= 2);
-      assert.equal(entries.filter((e) => e.command === 'webmcp-call').length, 2);
+      assert.ok(
+        entries.filter((e) => e.command === 'eval' && e.expression?.includes('bridge.refresh()'))
+          .length >= 2
+      );
+      assert.equal(entries.filter((e) => e.command === 'eval-file').length, 2);
       for (const e of entries) {
         const i = e.argv.indexOf('--tab');
         assert.ok(i >= 0, `${e.command} must pass --tab: ${e.argv.join(' ')}`);

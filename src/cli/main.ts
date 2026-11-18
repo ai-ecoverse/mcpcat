@@ -256,7 +256,7 @@ WebMCP (serve --webmcp, see serve --help):
                              eval-attach --early on playwright-cli 1.52.0+ (default auto)
   --webmcp-reload            Reload the tab once so its load-time check sees the polyfill
   --webmcp-from-origin <o>   Also list tools a cross-origin iframe exposes (repeatable;
-                             uses the legacy WebMCP verbs; same 1.52.0 minimum)
+                             eval-attach --frames; needs playwright-cli 1.54.0+)
   --webmcp-dialog <mode>     report (default), dismiss or accept JavaScript dialogs a
                              tool call opens (accept needs --allow-consequential)
   --playwright-cli <path>    playwright-cli binary (default: from PATH)
@@ -303,7 +303,7 @@ WebMCP:
   --allow-consequential      Show and allow tools the page marks consequentialHint
                              (hidden by default; advisory, the page sets the hint)
   --webmcp-ttl <s>           Cache the page's tool list for <s> seconds (default 5);
-                             attachment messages (or the origin holder) update it
+                             attachment messages update it
                              at once and clients get
                              notifications/tools/list_changed (stdio, the GET /mcp
                              stream or subscriptions/listen)
@@ -317,10 +317,11 @@ WebMCP:
                              pages that check for WebMCP only at load (reloads your tab)
   --webmcp-from-origin <o>   Also list and call tools a cross-origin iframe exposes
                              to the page (repeatable origin only, e.g. https://a.example;
-                             same 1.52.0 minimum; keeps the legacy polyfill holder,
-                             webmcp-list and webmcp-call because eval-attach is top-frame
-                             only; never installs
-                             into protected origins; WASI and guarded routes keep them off)
+                             needs playwright-cli 1.54.0+; passes eval-attach --frames.
+                             Children install late: first-script tools may need a reload.
+                             Preloaded children without native policy evidence must navigate.
+                             Requires exposedTo, tools policy and every ancestor's delegation;
+                             unknown evidence denies. WASI and guarded routes keep them off)
   --webmcp-dialog <mode>     report (default): name a JavaScript dialog that blocks the
                              page; dismiss or accept: answer dialogs a tool call opens
                              through playwright-cli dialog-hold (needs playwright-cli

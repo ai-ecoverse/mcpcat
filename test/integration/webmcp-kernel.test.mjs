@@ -110,8 +110,8 @@ describe('kernel: serve --webmcp sees a JavaScript dialog through ctx.websocket'
     assert.equal(r.status, 0, r.stderr);
     const reply = JSON.parse(r.stdout.trim().split('\n')[0]);
     assert.deepEqual(reply.result.tools, []);
-    assert.match(reply.result._meta['io.mcpcat/hint'], /the guard refused it \(Debugger\.enable/);
-    assert.equal(r.stderr.split('slicc: refused:').length - 1, 1, r.stderr);
+    assert.match(reply.result._meta['io.mcpcat/hint'], /eval-attach refused this document \(guard/);
+    assert.match(r.stderr, /eval-attach refused tab TAB1/);
     assert.doesNotMatch(r.stderr, /restarting/);
   });
   for (const found of ['1.51.0', '1.51.9', 'unknown']) {
@@ -129,6 +129,26 @@ describe('kernel: serve --webmcp sees a JavaScript dialog through ctx.websocket'
       assert.ok(r.stderr.includes(`found ${found}`), r.stderr);
       assert.match(r.stderr, /needs playwright-cli 1\.52\.0.*playwright-cli update/);
       assert.equal(r.stdout, '');
+    });
+  }
+  for (const found of ['1.52.0', '1.53.9', 'unknown']) {
+    it(`requires 1.54.0 for child origins in the kernel on ${found}`, async () => {
+      const r = await kernel.run(
+        [
+          'mcpcat',
+          'serve',
+          '--webmcp',
+          '--tab',
+          'TAB1',
+          '--webmcp-from-origin',
+          'https://widgets.example.com',
+          '--playwright-cli',
+          'kernel-pwcli',
+        ],
+        { stdout: 'pipe', stderr: 'pipe', env: { FAKE_PWCLI_VERSION: found }, stdin: '' }
+      );
+      assert.equal(r.status, 2, r.stderr);
+      assert.match(r.stderr, /needs playwright-cli 1\.54\.0.*playwright-cli update/);
     });
   }
 });
