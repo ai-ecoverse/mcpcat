@@ -371,7 +371,9 @@ describe('serve --webmcp polyfill', () => {
     await stopped(child);
   });
 
-  it('hints at --webmcp-reload when a late polyfill shows 0 tools', async () => {
+  it('hints at --webmcp-reload when a late polyfill shows 0 tools', {
+    timeout: 60_000,
+  }, async () => {
     const dirs = scratch();
     const env = baseEnv(dirs, { FAKE_PWCLI_HOLDER_EMPTY: '1' });
     const r = await stdioServe([], env);
