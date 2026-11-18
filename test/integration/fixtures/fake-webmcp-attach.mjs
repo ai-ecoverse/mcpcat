@@ -30,19 +30,9 @@ const record = (extra) => {
     );
 };
 const dir = dirname(fileURLToPath(import.meta.url));
-const listedBefore = () =>
-  process.env.FAKE_PWCLI_LOG &&
-  existsSync(process.env.FAKE_PWCLI_LOG) &&
-  readFileSync(process.env.FAKE_PWCLI_LOG, 'utf8').includes('bridge.refresh()');
-const useNext = listedBefore();
 const tools = () =>
   JSON.parse(
-    readFileSync(
-      process.env.FAKE_PWCLI_FIXTURE_NEXT && useNext
-        ? process.env.FAKE_PWCLI_FIXTURE_NEXT
-        : process.env.FAKE_PWCLI_FIXTURE || join(dir, 'webmcp-tools.json'),
-      'utf8'
-    )
+    readFileSync(process.env.FAKE_PWCLI_FIXTURE || join(dir, 'webmcp-tools.json'), 'utf8')
   );
 const live = process.env.FAKE_PWCLI_LIVE;
 const pageFile = live && `${live}.page.json`;

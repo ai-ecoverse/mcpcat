@@ -648,36 +648,27 @@ describe('serve --webmcp', () => {
       assert.equal(balanceCall?.executedOrigin, 'https://bank.example.com');
     });
 
-    it('a call to <host>__<name> is refused when another origin registers the name after tools/list', () => {
-      const log = join(scratch(), 'pw.log');
-      const input =
-        [
-          init,
-          rpc('tools/list', {}, 2),
-          rpc('tools/call', { name: 'bank_example_com__lookup', arguments: { q: 'acct-4242' } }, 3),
-        ].join('\n') + '\n';
-      const result = runHost(
-        ['serve', '--webmcp', '--webmcp-ttl', '60', '--playwright-cli', fakePwCli],
-        {
-          input,
-          env: {
-            FAKE_PWCLI_FIXTURE: bankOnlyFixture,
-            FAKE_PWCLI_FIXTURE_NEXT: sharedNameFixture,
-            FAKE_PWCLI_LOG: log,
-          },
-        }
-      );
-      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
-      const [, list, call] = result.stdout
-        .trim()
-        .split('\n')
-        .map((l) => JSON.parse(l));
-      assert.ok(list.result.tools.some((t) => t.name === 'bank_example_com__lookup'));
-      const ran = readLog(log).filter((e) => e.command === 'eval-file');
+    it('a call to <host>__<name> is refused when another origin registers the name after tools/list', async (t) => {
+      const dir = scratch();
+      const log = join(dir, 'pw.log');
+      const fixture = join(dir, 'tools.json');
+      writeFileSync(fixture, readFileSync(bankOnlyFixture));
+      const server = await startWebMcpHttp(['--webmcp-ttl', '60'], {
+        FAKE_PWCLI_FIXTURE: fixture,
+        FAKE_PWCLI_LOG: log,
+      });
+      t.after(() => server.child.kill('SIGTERM'));
+      const list = await rpcCall(server.port, 'tools/list', {});
+      assert.ok(list.result.tools.some((tool) => tool.name === 'bank_example_com__lookup'));
+      writeFileSync(fixture, readFileSync(sharedNameFixture));
+      const call = await rpcCall(server.port, 'tools/call', {
+        name: 'bank_example_com__lookup',
+        arguments: { q: 'acct-4242' },
+      });
       assert.deepEqual(
-        ran.map((e) => e.executedOrigin),
+        readLog(log).filter((entry) => entry.command === 'eval-file'),
         [],
-        'no webmcp-call may run while two origins share the name'
+        'ambiguous tools must not be evaluated'
       );
       assert.ok(call.error, JSON.stringify(call));
       assert.match(call.error.message, /ambiguous/);
