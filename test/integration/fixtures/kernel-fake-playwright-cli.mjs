@@ -14,7 +14,7 @@ export default async function main(ctx) {
   const args = ctx.argv.slice(1);
   const command = args.find((a) => !a.startsWith('-') && !/^(ws|http)/.test(a) && a !== 'TAB1');
   if (args.includes('--version')) {
-    await out('playwright-cli 1.32.0-fake\n');
+    await out(`playwright-cli ${ctx.env.FAKE_PWCLI_VERSION ?? '1.52.0'}-fake\n`);
     return 0;
   }
   const refusal = ctx.env.FAKE_PWCLI_HOLDER_REFUSAL;
@@ -24,6 +24,8 @@ export default async function main(ctx) {
       return 1;
     }
     await out('{"event":"ready","loaderId":"L1","mode":"native","tab":"TAB1","late":true}\n');
+    const reader = ctx.stdin.getReader();
+    while (!(await reader.read()).done) {}
     return 0;
   }
   if (command === 'tab-list') {

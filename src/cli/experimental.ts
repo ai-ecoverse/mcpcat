@@ -11,7 +11,7 @@ export const EXPERIMENTAL_FEATURES: Record<string, Feature> = {
   annotations: {
     summary: 'serve --annotations: Browser Annotation API polyfill over eval-attach',
     revision:
-      'learn.chatgpt.com/docs/annotations-extensibility (DevDay 2026), playwright-cli 1.51.0',
+      'learn.chatgpt.com/docs/annotations-extensibility (DevDay 2026), playwright-cli 1.52.0',
   },
 };
 

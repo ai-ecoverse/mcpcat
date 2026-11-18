@@ -1,7 +1,7 @@
 import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { startHolder } from '../../src/serve/webmcp-polyfill.ts';
+import { startHolder } from '../../src/serve/webmcp-origin.ts';
 
 const refused =
   "Debugger.setInstrumentationBreakpoint: slicc: refused: target is on seven's origin";

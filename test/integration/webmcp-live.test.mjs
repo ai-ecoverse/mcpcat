@@ -82,7 +82,7 @@ function env(dirs, extra = {}) {
     FAKE_PWCLI_LOG: dirs.log,
     FAKE_PWCLI_HOLDER_FILE: dirs.holder,
     FAKE_PWCLI_HOLDER: 'polyfill',
-    FAKE_PWCLI_VERSION: '1.46.7',
+    FAKE_PWCLI_VERSION: '1.52.0',
     FAKE_PWCLI_LIVE: dirs.script,
     ...extra,
   };
@@ -135,6 +135,8 @@ function stdioServe(extra, environment) {
   const { cmd, args } = mcpcatArgs([
     'serve',
     '--webmcp',
+    '--webmcp-from-origin',
+    'https://widgets.example.com',
     '--tab',
     'TAB1',
     '--webmcp-ttl',
@@ -175,6 +177,8 @@ async function httpServe(extra, environment) {
   const { cmd, args } = mcpcatArgs([
     'serve',
     '--webmcp',
+    '--webmcp-from-origin',
+    'https://widgets.example.com',
     '--tab',
     'TAB1',
     '--webmcp-ttl',
@@ -251,7 +255,7 @@ describe('serve --webmcp live tool updates', () => {
       out += chunk.toString();
     });
     assert.equal(await stopped(child), 0);
-    assert.match(out, /attachment messages \(legacy holder on 1\.40\+\) update it/);
+    assert.match(out, /attachment messages \(or the origin holder\) update it/);
     assert.match(out, /notifications\/tools\/list_changed/);
   });
 
@@ -425,29 +429,5 @@ describe('serve --webmcp live tool updates', () => {
     const done = await stream.box.take((m) => m.id === 7);
     assert.equal(done.result.resultType, 'complete');
     await stopped(child);
-  });
-
-  it('playwright-cli older than 1.40.0 keeps the TTL cache and sends no notifications', async () => {
-    const dirs = scratch();
-    const s = stdioServe([], env(dirs, { FAKE_PWCLI_VERSION: '1.39.3' }));
-    const init = await s.request('initialize', {
-      protocolVersion: '2025-11-25',
-      capabilities: {},
-      clientInfo: { name: 't' },
-    });
-    assert.equal(init.result.capabilities.tools.listChanged, false);
-    assert.deepEqual(names(await s.request('tools/list')), ['get_price']);
-    step(dirs, 0);
-    await until(() => readFileSync(`${dirs.script}.page.json`, 'utf8').includes('add_to_cart'));
-    await new Promise((r) => setTimeout(r, 300));
-    assert.deepEqual(names(await s.request('tools/list')), ['get_price']);
-    const listen = await s.request('subscriptions/listen', {
-      _meta: MODERN_META,
-      notifications: { toolsListChanged: true },
-    });
-    assert.equal(listen.error.code, -32601);
-    assert.equal(s.box.messages.filter(isChange).length, 0);
-    s.child.stdin.end();
-    assert.equal(await stopped(s.child), 0);
   });
 });

@@ -16,7 +16,6 @@ export interface AnnotationsOptions {
   playwrightCli: string;
   cdp?: string;
   scope: AttachScope;
-  early?: boolean;
   callTimeoutMs: number;
   maxOutput: number;
   report(line: string): Promise<void> | void;
@@ -43,11 +42,11 @@ function hexToken(bytes: number): string {
   ).join('');
 }
 
-export function pageScripts(channel: string, early = false): { api: string; editor: string } {
+export function pageScripts(channel: string): { api: string; editor: string } {
   const literal = JSON.stringify(channel);
   return {
     api: `(${annotationApi.toString()})(${literal});\n`,
-    editor: `(${annotationEditor.toString()})(${literal}, send, ${early});\n`,
+    editor: `(${annotationEditor.toString()})(${literal}, send);\n`,
   };
 }
 
@@ -317,7 +316,7 @@ async function startPageAttachments(
 ): Promise<{ attachments: Attachment[]; problem?: string }> {
   try {
     await platform.fs.mkdirExclusive(dir);
-    const scripts = pageScripts(channel, options.early === true);
+    const scripts = pageScripts(channel);
     await platform.fs.writeFile(`${dir}/api.js`, scripts.api, { mode: 0o600 });
     await platform.fs.writeFile(`${dir}/editor.js`, scripts.editor, { mode: 0o600 });
   } catch (err) {
@@ -338,7 +337,7 @@ async function startPageAttachments(
     session: `${session}-api`,
     file: `${dir}/api.js`,
     world: 'main',
-    early: options.early,
+    early: true,
     label: `${LABEL} (page API)`,
   });
   api.onEvent((event) => {
@@ -352,7 +351,7 @@ async function startPageAttachments(
     session: `${session}-editor`,
     file: `${dir}/editor.js`,
     world: 'isolated',
-    early: options.early,
+    early: true,
     label: `${LABEL} (editor)`,
   });
   editor.onEvent(onEvent);

@@ -13,11 +13,7 @@ import { stateDir } from '../config/paths.ts';
 import type { Listener, Platform, SpawnResult } from '../platform/types.ts';
 import { sanitizeTerminal } from '../render/sanitize.ts';
 import { createAnnotationsHandler } from './annotations.ts';
-import {
-  type AttachScope,
-  EVAL_ATTACH_EARLY_MIN_VERSION,
-  EVAL_ATTACH_MIN_VERSION,
-} from './attach.ts';
+import { type AttachScope, EVAL_ATTACH_MIN_VERSION } from './attach.ts';
 import {
   argvForCommand,
   attachGlobalFlags,
@@ -74,14 +70,11 @@ import {
 import {
   compareVersions,
   FALLBACK_UNVERIFIED,
-  FROM_ORIGIN_MIN_VERSION,
   HOLDER_READY_MS,
   type Holder,
-  POLYFILL_MIN_VERSION,
   parseCliVersion,
   startHolder,
-  TOOLS_CHANGED_MIN_VERSION,
-} from './webmcp-polyfill.ts';
+} from './webmcp-origin.ts';
 
 const CALL_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_DEFAULT = 1_048_576;
@@ -1399,34 +1392,23 @@ async function runWebMcpServe(
     tab = resolved.tab;
   }
 
-  const wantsOrigins = options.webmcpFromOrigins.length > 0;
   const cliVersion = parseCliVersion(
     await playwrightCliVersion(platform, {
       playwrightCli: cliPath,
       callTimeoutMs: options.callTimeout,
     })
   );
-  if (wantsOrigins) {
-    const found = cliVersion ?? '0.0.0';
-    if (compareVersions(found, FROM_ORIGIN_MIN_VERSION) < 0) {
-      await platform.write(
-        2,
-        sanitizeTerminal(
-          `mcpcat serve --webmcp: --webmcp-from-origin needs playwright-cli ${FROM_ORIGIN_MIN_VERSION} or newer (found ${cliVersion ?? 'unknown'}); update with: curl -fsSL https://get.sliccy.ai/playwright-cli | sh\n`
-        )
-      );
-      return 2;
-    }
-  }
-  const polyfill = await startPolyfill(platform, options, cliPath, cdp, tab, cliVersion);
-  if (polyfill.oldVersion) {
+  if (compareVersions(cliVersion ?? '0.0.0', EVAL_ATTACH_MIN_VERSION) < 0) {
     await platform.write(
       2,
       sanitizeTerminal(
-        `mcpcat serve --webmcp: the WebMCP polyfill needs playwright-cli ${POLYFILL_MIN_VERSION} or newer (found ${polyfill.oldVersion}); continuing without it. Update with: curl -fsSL https://get.sliccy.ai/playwright-cli | sh\n`
+        `mcpcat serve --webmcp: needs playwright-cli ${EVAL_ATTACH_MIN_VERSION} or newer (found ${cliVersion ?? 'unknown'}); update with: playwright-cli update\n`
       )
     );
+    return 2;
   }
+
+  const polyfill = await startPolyfill(platform, options, cliPath, cdp, tab);
   const dialogs = await startDialogs(platform, options, cliPath, cdp, tab, cliVersion);
   const { holder } = polyfill;
   const notifier = polyfill.live ? createNotifier() : undefined;
@@ -1533,7 +1515,6 @@ function webmcpUsageError(options: ServeOptions): string | undefined {
 
 interface PolyfillState {
   holder?: Holder;
-  oldVersion?: string;
   live?: boolean;
   page?: AttachedPage;
 }
@@ -1543,14 +1524,9 @@ async function startPolyfill(
   options: ServeOptions,
   playwrightCli: string,
   cdp: string | undefined,
-  tab: string,
-  found: string | undefined
+  tab: string
 ): Promise<PolyfillState> {
-  if (
-    found &&
-    compareVersions(found, EVAL_ATTACH_EARLY_MIN_VERSION) >= 0 &&
-    options.webmcpFromOrigins.length === 0
-  ) {
+  if (options.webmcpFromOrigins.length === 0) {
     const page = await attachWebMcp(
       platform,
       {
@@ -1567,21 +1543,16 @@ async function startPolyfill(
     return { holder: page, page, live: true };
   }
   if (options.webmcpPolyfill === 'off') return {};
-  if (found && compareVersions(found, POLYFILL_MIN_VERSION) < 0) {
-    return { oldVersion: found };
-  }
-  const live = found !== undefined && compareVersions(found, TOOLS_CHANGED_MIN_VERSION) >= 0;
   const holder = startHolder(platform, {
     playwrightCli,
     cdp,
     tab,
     reload: options.webmcpReload,
     readyTimeoutMs: Math.min(options.callTimeout, HOLDER_READY_MS),
-    watch: live,
     fromOrigins: options.webmcpFromOrigins,
     report: (line) => platform.write(2, line),
   });
-  return { holder, live };
+  return { holder, live: true };
 }
 
 function isLate(holder: Holder | undefined): boolean {
@@ -1600,9 +1571,6 @@ function emptyToolsHint(
     return unavailable
       ? 'WebMCP is not enabled in this browser and --webmcp-polyfill is off; drop --webmcp-polyfill off to inject the WebMCP polyfill'
       : undefined;
-  }
-  if (polyfill.oldVersion) {
-    return `the page shows no WebMCP tools, and the WebMCP polyfill needs playwright-cli ${POLYFILL_MIN_VERSION} or newer (found ${polyfill.oldVersion})`;
   }
   const status = polyfill.holder?.status();
   if (polyfill.page && status?.late)
@@ -1698,12 +1666,10 @@ async function runAnnotationsServe(
     await platform.write(2, sanitizeTerminal(`${label}: ${resolved.error}\n`));
     return resolved.exit;
   }
-  const early = compareVersions(found ?? '0.0.0', EVAL_ATTACH_EARLY_MIN_VERSION) >= 0;
   const handler = createAnnotationsHandler(platform, {
     playwrightCli: cliPath,
     cdp,
     scope: resolved.scope,
-    early,
     callTimeoutMs: options.callTimeout,
     maxOutput: options.maxOutput,
     report: (line) => platform.write(2, line),
@@ -1723,7 +1689,7 @@ async function runAnnotationsServe(
     await platform.write(
       2,
       sanitizeTerminal(
-        `${label}: document.oai.annotation attached to ${where}; use the page's "Annotate" button, then "Send to agent"${early ? '' : `. playwright-cli ${found} installs it after page scripts start, so a page that checks for it while loading misses it; ${EVAL_ATTACH_EARLY_MIN_VERSION} or newer installs it first`}\n`
+        `${label}: document.oai.annotation attached to ${where}; use the page's "Annotate" button, then "Send to agent"\n`
       )
     );
     const getTools = () => handler.getTools();

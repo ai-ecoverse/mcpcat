@@ -42,7 +42,7 @@ interface Live {
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: injected into the page as one self-contained function
-export function annotationEditor(channel: string, send: Send, guarded = true): void {
+export function annotationEditor(channel: string, send: Send): void {
   const flag = `__mcpcat_annotations_${channel}`;
   const scope = globalThis as unknown as Record<string, unknown>;
   if (scope[flag]) return;
@@ -538,13 +538,6 @@ export function annotationEditor(channel: string, send: Send, guarded = true): v
       button('Cancel', () => closeEditor(true)),
       save
     );
-    if (!guarded) {
-      const warn = document.createElement('div');
-      warn.className = 'kind';
-      warn.textContent =
-        'This page started before the annotation editor, so it may see what you type here.';
-      pop.append(warn);
-    }
     pop.append(area, actions);
     refreshSave();
 

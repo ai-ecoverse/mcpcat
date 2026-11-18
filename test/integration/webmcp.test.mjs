@@ -39,6 +39,8 @@ function rpc(method, params, id) {
 }
 
 function runHost(args, opts = {}) {
+  if (args.includes('--webmcp'))
+    args = [...args, '--webmcp-from-origin', 'https://bank.example.com'];
   const { cmd, args: cmdArgs } = mcpcatArgs(args);
   try {
     const result = execFileSync(cmd, cmdArgs, {
@@ -62,6 +64,8 @@ async function startWebMcpHttp(extraArgs = [], extraEnv = {}) {
   const { cmd, args } = mcpcatArgs([
     'serve',
     '--webmcp',
+    '--webmcp-from-origin',
+    'https://bank.example.com',
     '--http',
     '0',
     '--no-auth',

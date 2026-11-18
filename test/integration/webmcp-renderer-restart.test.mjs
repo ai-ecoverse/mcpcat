@@ -1,7 +1,7 @@
 import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isGuardRefusal } from '../../src/serve/webmcp-polyfill.ts';
+import { isGuardRefusal } from '../../src/serve/webmcp-origin.ts';
 
 test('the exact shipped renderer crash refusal remains restartable under every recognized prefix', () => {
   for (const prefix of [

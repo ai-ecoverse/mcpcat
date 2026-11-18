@@ -60,7 +60,17 @@ describe('kernel: serve --webmcp sees a JavaScript dialog through ctx.websocket'
     const ws = `${base.replace(/^http/, 'ws')}/devtools/browser/fake`;
     const started = Date.now();
     const r = await kernel.run(
-      ['mcpcat', 'serve', '--webmcp', '--cdp', ws, '--playwright-cli', 'kernel-pwcli'],
+      [
+        'mcpcat',
+        'serve',
+        '--webmcp',
+        '--webmcp-from-origin',
+        'https://widgets.example.com',
+        '--cdp',
+        ws,
+        '--playwright-cli',
+        'kernel-pwcli',
+      ],
       {
         stdout: 'pipe',
         stderr: 'pipe',
@@ -81,7 +91,15 @@ describe('kernel: serve --webmcp sees a JavaScript dialog through ctx.websocket'
     const refusal =
       'Debugger.enable: slicc: refused: breakpoints could run in seven’s pages or the vault, so the guard doesn’t offer the Debugger domains';
     const r = await kernel.run(
-      ['mcpcat', 'serve', '--webmcp', '--playwright-cli', 'kernel-pwcli'],
+      [
+        'mcpcat',
+        'serve',
+        '--webmcp',
+        '--webmcp-from-origin',
+        'https://widgets.example.com',
+        '--playwright-cli',
+        'kernel-pwcli',
+      ],
       {
         stdout: 'pipe',
         stderr: 'pipe',
@@ -96,4 +114,21 @@ describe('kernel: serve --webmcp sees a JavaScript dialog through ctx.websocket'
     assert.equal(r.stderr.split('slicc: refused:').length - 1, 1, r.stderr);
     assert.doesNotMatch(r.stderr, /restarting/);
   });
+  for (const found of ['1.51.0', '1.51.9', 'unknown']) {
+    it(`refuses playwright-cli ${found} in the kernel before attaching`, async () => {
+      const r = await kernel.run(
+        ['mcpcat', 'serve', '--webmcp', '--tab', 'TAB1', '--playwright-cli', 'kernel-pwcli'],
+        {
+          stdout: 'pipe',
+          stderr: 'pipe',
+          env: { FAKE_PWCLI_VERSION: found },
+          stdin: '',
+        }
+      );
+      assert.equal(r.status, 2, r.stderr);
+      assert.ok(r.stderr.includes(`found ${found}`), r.stderr);
+      assert.match(r.stderr, /needs playwright-cli 1\.52\.0.*playwright-cli update/);
+      assert.equal(r.stdout, '');
+    });
+  }
 });

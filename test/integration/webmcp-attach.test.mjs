@@ -100,16 +100,39 @@ it('uses early main-world eval-attach, live lists and eval calls on 1.52.0 and c
   assert.ok(s.entries().some((entry) => entry.stopped));
 });
 
-it('keeps the legacy verbs on 1.51.1', async (t) => {
-  const s = await serve(t, [], { FAKE_PWCLI_VERSION: '1.51.1' });
-  await s.rpc('tools/list');
-  await s.rpc('tools/call', { name: 'get_price', arguments: {} });
-  const commands = s.entries().map((entry) => entry.command);
-  for (const command of ['webmcp-polyfill', 'webmcp-list', 'webmcp-call'])
-    assert.ok(commands.includes(command));
-  assert.ok(!commands.includes('eval-attach'));
-  await s.stop();
-});
+for (const version of ['1.51.1', '1.51.0', '1.40.0', 'unknown', 'fail']) {
+  for (const extra of [
+    [],
+    ['--webmcp-from-origin', 'https://bank.example.com'],
+    ['--webmcp-polyfill', 'off'],
+  ]) {
+    it(`refuses playwright-cli ${version} before attaching with ${extra.join(' ')}`, async () => {
+      const log = join(scratch, `refusal-${++next}`);
+      const bin = mcpcatArgs([
+        'serve',
+        '--webmcp',
+        '--tab',
+        'TAB1',
+        '--playwright-cli',
+        join(root, 'test/integration/fixtures/fake-playwright-cli.sh'),
+        ...extra,
+      ]);
+      const child = spawn(bin.cmd, bin.args, {
+        env: { ...process.env, FAKE_PWCLI_VERSION: version, FAKE_PWCLI_LOG: log },
+      });
+      let stderr = '';
+      child.stderr.on('data', (chunk) => {
+        stderr += chunk;
+      });
+      child.stdin.end();
+      assert.equal(await new Promise((resolve) => child.once('close', resolve)), 2, stderr);
+      const found = ['unknown', 'fail'].includes(version) ? 'unknown' : version;
+      assert.ok(stderr.includes(`found ${found}`), stderr);
+      assert.match(stderr, /needs playwright-cli 1\.52\.0.*playwright-cli update/);
+      assert.equal(existsSync(log), false);
+    });
+  }
+}
 
 it('keeps the cross-origin legacy path even on 1.52.0', async (t) => {
   const s = await serve(t, ['--webmcp-from-origin', 'https://bank.example.com']);

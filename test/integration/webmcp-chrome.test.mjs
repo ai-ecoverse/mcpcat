@@ -50,9 +50,20 @@ before(async () => {
     );
     await kernel.writeFile(
       `/node_modules/@ai-ecoverse/${name}/package.json`,
-      JSON.stringify({ name: `@ai-ecoverse/${name}`, version: '1.52.0', type: 'module', slicc })
+      JSON.stringify({
+        name: `@ai-ecoverse/${name}`,
+        version: JSON.parse(readFileSync(join(base, 'package.json'), 'utf8')).version,
+        type: 'module',
+        slicc,
+      })
     );
   }
+  const cli = await kernel.run(['playwright-cli', '--version'], { stdout: 'pipe', stderr: 'pipe' });
+  assert.equal(cli.status, 0, cli.stderr);
+  const found = /playwright-cli (\d+)\.(\d+)\.(\d+)/.exec(cli.stdout);
+  assert.ok(found, cli.stdout);
+  const [major, minor] = found.slice(1).map(Number);
+  assert.ok(major > 1 || (major === 1 && minor >= 52), cli.stdout);
 });
 
 after(async () => {

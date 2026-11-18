@@ -246,17 +246,17 @@ ${experimentalHelp()}  <target> --experimental events --list-events
                              --webhook-once, --webhook-unsubscribe
 
 WebMCP (serve --webmcp, see serve --help):
-  --webmcp                   Serve the tab's WebMCP tools
+  --webmcp                   Serve the tab's WebMCP tools (playwright-cli 1.52.0+)
   --cdp <url>                Browser DevTools endpoint for playwright-cli
   --tab <targetId>           Tab to serve (default: the current tab)
   --allow-consequential      Show and allow tools with consequentialHint
   --webmcp-ttl <s>           Cache the tool list for <s> seconds (default 5; live
-                             updates with playwright-cli 1.40.0 or newer)
+                             updates notify clients)
   --webmcp-polyfill auto|off Inject mcpcat's WebMCP shim before page scripts via
-                             eval-attach --early on playwright-cli 1.52+ (default auto)
+                             eval-attach --early on playwright-cli 1.52.0+ (default auto)
   --webmcp-reload            Reload the tab once so its load-time check sees the polyfill
   --webmcp-from-origin <o>   Also list tools a cross-origin iframe exposes (repeatable;
-                             needs playwright-cli 1.46.7+; uses the legacy WebMCP verbs)
+                             uses the legacy WebMCP verbs; same 1.52.0 minimum)
   --webmcp-dialog <mode>     report (default), dismiss or accept JavaScript dialogs a
                              tool call opens (accept needs --allow-consequential)
   --playwright-cli <path>    playwright-cli binary (default: from PATH)
@@ -303,20 +303,21 @@ WebMCP:
   --allow-consequential      Show and allow tools the page marks consequentialHint
                              (hidden by default; advisory, the page sets the hint)
   --webmcp-ttl <s>           Cache the page's tool list for <s> seconds (default 5);
-                             attachment messages (legacy holder on 1.40+) update it
+                             attachment messages (or the origin holder) update it
                              at once and clients get
                              notifications/tools/list_changed (stdio, the GET /mcp
                              stream or subscriptions/listen)
   --webmcp-polyfill auto|off auto (default): when the browser has no native WebMCP,
                              attach mcpcat's shim in the main world before page scripts
-                             (playwright-cli 1.52+); missed documents need a reload, with
-                             no late fallback. Older clients use the legacy WebMCP verbs.
+                             (playwright-cli 1.52.0+); missed documents need a reload, with
+                             no late fallback. Older or unknown versions exit 2; run
+                             playwright-cli update.
                              off: observe the page API without installing a shim
   --webmcp-reload            Reload the tab once after injecting the polyfill, for
                              pages that check for WebMCP only at load (reloads your tab)
   --webmcp-from-origin <o>   Also list and call tools a cross-origin iframe exposes
                              to the page (repeatable origin only, e.g. https://a.example;
-                             needs playwright-cli 1.46.7+; keeps the legacy polyfill holder,
+                             same 1.52.0 minimum; keeps the legacy polyfill holder,
                              webmcp-list and webmcp-call because eval-attach is top-frame
                              only; never installs
                              into protected origins; WASI and guarded routes keep them off)
@@ -329,8 +330,9 @@ WebMCP:
 Annotations (--experimental annotations; can change in any minor release):
   --annotations              Attach a Browser Annotation API polyfill
                              (document.oai.annotation, with an in-page editor and
-                             toolbar) through playwright-cli eval-attach (1.51.0+),
-                             and serve annotations_wait, annotations_list,
+                             toolbar) through playwright-cli eval-attach --early (1.52.0+),
+                             older or unknown versions exit 2; playwright-cli update.
+                             Serve annotations_wait, annotations_list,
                              annotations_take, annotation_mode, annotation_request
   --tab <targetId>           Attach to one tab (default: the current tab)
   --annotations-host <p>     Attach to every top-frame document on a host, exact or

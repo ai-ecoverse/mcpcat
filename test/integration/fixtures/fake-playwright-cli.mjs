@@ -24,7 +24,7 @@ const fixtureFile =
 
 if (args[0] === '--version' || args[0] === '-V') {
   if (process.env.FAKE_PWCLI_VERSION === 'fail') process.exit(1);
-  process.stdout.write(`playwright-cli ${process.env.FAKE_PWCLI_VERSION || '1.32.0'}-fake\n`);
+  process.stdout.write(`playwright-cli ${process.env.FAKE_PWCLI_VERSION || '1.52.0'}-fake\n`);
   process.exit(0);
 }
 

@@ -2,14 +2,14 @@ import type { Platform } from '../platform/types.ts';
 import { type AttachEvent, startAttachment } from './attach.ts';
 import { runProcess, type WebMcpTool, wrapUntrusted } from './webmcp.ts';
 import { installWebMcp } from './webmcp-api.ts';
-import { webMcpPage } from './webmcp-page.ts';
 import {
   HOLDER_STOP_GRACE_MS,
   type Holder,
   type HolderOptions,
   type HolderStatus,
   type ToolsChanged,
-} from './webmcp-polyfill.ts';
+} from './webmcp-origin.ts';
+import { webMcpPage } from './webmcp-page.ts';
 
 export function webMcpScript(key: string, install: boolean): string {
   return `(${webMcpPage.toString()})(send, ${JSON.stringify(key)}, ${install ? `(${installWebMcp.toString()})()` : 'undefined'});\n`;
