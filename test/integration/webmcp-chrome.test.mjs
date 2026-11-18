@@ -115,7 +115,7 @@ it('lists and calls a tool registered by the first inline head script through se
   assert.equal(await page.evaluate(() => window.parseTimeWebMcp), true);
 });
 
-async function servePage(t, path, messages) {
+async function servePage(t, path, messages, reload = true) {
   const page = await chrome.page(t);
   await page.goto(path);
   await page.until(() => document.title === 'ready');
@@ -126,7 +126,7 @@ async function servePage(t, path, messages) {
       'mcpcat',
       'serve',
       '--webmcp',
-      '--webmcp-reload',
+      ...(reload ? ['--webmcp-reload'] : ['--webmcp-polyfill', 'off']),
       '--webmcp-ttl',
       '0',
       '--tab',
@@ -141,10 +141,13 @@ async function servePage(t, path, messages) {
     }
   );
   assert.equal(result.status, 0, result.stderr);
-  return result.stdout
-    .trim()
-    .split('\n')
-    .map((line) => JSON.parse(line));
+  return {
+    page,
+    replies: result.stdout
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line)),
+  };
 }
 
 it('merges same-origin child tools and routes their calls in the main-world page bridge', async (t) => {
@@ -174,7 +177,7 @@ it('merges same-origin child tools and routes their calls in the main-world page
 });
 
 it('switches listings and calls to a page replacement without executing detached registrations', async (t) => {
-  const replies = await servePage(t, '/replacement.html', [
+  const { replies } = await servePage(t, '/replacement.html', [
     { method: 'tools/list', params: {} },
     { method: 'tools/call', params: { name: 'replacement', arguments: {} } },
     { method: 'tools/call', params: { name: 'detached', arguments: {} } },
@@ -185,4 +188,25 @@ it('switches listings and calls to a page replacement without executing detached
   );
   assert.match(replies[1].result.content[0].text, /current API/);
   assert.ok(replies[2].error || replies[2].result.isError);
+});
+
+it('removes the page bridge and stops polling and toolchange listeners after serve exits', async (t) => {
+  const { page } = await servePage(
+    t,
+    '/replacement.html',
+    [{ method: 'tools/list', params: {} }],
+    false
+  );
+  const observed = await page.evaluate(async () => {
+    const bridges = Object.getOwnPropertyNames(globalThis).filter((key) =>
+      key.startsWith('__mcpcat_webmcp_')
+    );
+    const before = window.webMcpReads;
+    document.modelContext.dispatchEvent(new Event('toolchange'));
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    return { bridges, before, after: window.webMcpReads };
+  });
+  assert.deepEqual(observed.bridges, []);
+  assert.ok(observed.before > 0);
+  assert.equal(observed.after, observed.before);
 });

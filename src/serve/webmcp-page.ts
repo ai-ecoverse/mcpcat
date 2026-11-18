@@ -9,6 +9,7 @@ export interface PageSnapshot {
 
 export interface PageBridge {
   refresh(): Promise<PageSnapshot>;
+  dispose(): void;
   call(
     name: string,
     input: object,
@@ -28,15 +29,26 @@ export function webMcpPage(
     featurePolicy?: { features(): string[]; allowsFeature(name: string): boolean };
   };
   const root = globalThis as unknown as Record<string, unknown>;
+  const existing = root[key] as Partial<PageBridge> | undefined;
+  if (typeof existing?.dispose === 'function') existing.dispose();
   const stringify = JSON.stringify;
   const parse = JSON.parse;
   const apply = Reflect.apply;
-  const add = EventTarget.prototype.addEventListener;
+  const Target = EventTarget;
+  const add = Target.prototype.addEventListener;
+  const remove = Target.prototype.removeEventListener;
+  const stopTimer = clearInterval;
   const ownOrigin = location.origin;
   let previous = '';
   let listening: ModelContext | undefined;
   let inflight: Promise<PageSnapshot> | undefined;
   let dirty = false;
+  let stopped = false;
+  const changed = () => void refresh(true);
+  const unlisten = () => {
+    if (listening instanceof Target) apply(remove, listening, ['toolchange', changed]);
+    listening = undefined;
+  };
   const permitted = (): boolean | undefined => {
     const policy = doc.permissionsPolicy ?? doc.featurePolicy;
     return policy?.features().includes('tools') ? policy.allowsFeature('tools') : undefined;
@@ -66,8 +78,9 @@ export function webMcpPage(
     const mode = native ? 'native' : bridge && !bridge.list().replaced ? 'polyfill' : 'page';
     if (!api || permitted() === false) return { tools: [], unavailable: true, mode };
     if (api !== listening) {
+      unlisten();
       listening = api;
-      if (api instanceof EventTarget) apply(add, api, ['toolchange', () => void refresh(true)]);
+      if (api instanceof Target) apply(add, api, ['toolchange', changed]);
     }
     const list = await api.getTools();
     const tools = list
@@ -88,13 +101,14 @@ export function webMcpPage(
       }
     } while (dirty);
     const text = stringify(value);
-    if (text !== previous) {
+    if (!stopped && text !== previous) {
       previous = text;
       send({ type: 'tools-changed', origin: ownOrigin, ...parse(text) });
     }
     return value;
   };
   const refresh = (changed = true): Promise<PageSnapshot> => {
+    if (stopped) return Promise.resolve({ tools: [], unavailable: true });
     if (changed) dirty = true;
     inflight ??= readSnapshot().finally(() => {
       inflight = undefined;
@@ -115,6 +129,7 @@ export function webMcpPage(
   };
   const call = async (name: string, input: object, allow: boolean, origin: string) => {
     try {
+      if (stopped) return { __webmcp_error: 'absent' };
       if (permitted() === false) return { __webmcp_error: 'tools permission policy denies access' };
       if (location.origin !== origin) return { __webmcp_error: 'document changed' };
       if (!validInput(input)) return { __webmcp_error: 'Tool input must be a JSON object' };
@@ -135,7 +150,15 @@ export function webMcpPage(
       return { __webmcp_error: 'threw', message: String(error).slice(0, 65536) };
     }
   };
-  Object.defineProperty(root, key, { value: { refresh, call }, configurable: true });
+  const dispose = () => {
+    stopped = true;
+    dirty = false;
+    stopTimer(timer);
+    unlisten();
+    if (root[key] === controller) delete root[key];
+  };
+  const controller = { refresh, call, dispose };
+  const timer = setInterval(() => void refresh(false), 250);
+  Object.defineProperty(root, key, { value: controller, configurable: true });
   void refresh(false);
-  setInterval(() => void refresh(false), 250);
 }

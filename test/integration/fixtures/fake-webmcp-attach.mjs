@@ -94,6 +94,8 @@ if (command === 'eval-attach') {
   } else if (expression === 'location.reload()') {
     if (stateFile) writeFileSync(stateFile, 'reload');
     process.stdout.write('null');
+  } else if (expression.includes('?.dispose()')) {
+    process.stdout.write('null');
   } else if (expression.includes('bridge.refresh()')) {
     if (process.env.FAKE_PWCLI_EVAL_INVALID) process.stdout.write('invalid');
     else process.stdout.write(JSON.stringify(snapshot()));

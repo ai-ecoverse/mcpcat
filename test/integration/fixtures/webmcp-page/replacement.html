@@ -4,10 +4,13 @@
     <script>
     if (document.modelContext)
       document.modelContext.registerTool({ name: 'detached', execute: () => 'detached registry' });
-    document.modelContext = {
-      getTools: async () => [{ name: 'replacement', inputSchema: { type: 'object' } }],
-      executeTool: async () => 'current API',
+    const api = new EventTarget();
+    api.getTools = async () => {
+      window.webMcpReads = (window.webMcpReads ?? 0) + 1;
+      return [{ name: 'replacement', inputSchema: { type: 'object' } }];
     };
+    api.executeTool = async () => 'current API';
+    document.modelContext = api;
     document.title = 'ready';
     </script>
   </head>

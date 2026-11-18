@@ -3,7 +3,13 @@ import { type AttachEvent, startAttachment } from './attach.ts';
 import { runProcess, type WebMcpTool, wrapUntrusted } from './webmcp.ts';
 import { installWebMcp } from './webmcp-api.ts';
 import { webMcpPage } from './webmcp-page.ts';
-import type { Holder, HolderOptions, HolderStatus, ToolsChanged } from './webmcp-polyfill.ts';
+import {
+  HOLDER_STOP_GRACE_MS,
+  type Holder,
+  type HolderOptions,
+  type HolderStatus,
+  type ToolsChanged,
+} from './webmcp-polyfill.ts';
 
 export function webMcpScript(key: string, install: boolean): string {
   return `(${webMcpPage.toString()})(send, ${JSON.stringify(key)}, ${install ? `(${installWebMcp.toString()})()` : 'undefined'});\n`;
@@ -37,15 +43,11 @@ export async function attachWebMcp(
     argv.push('eval', expression, '--tab', options.tab);
     return argv;
   };
-  const evaluate = (expression: string, watch?: () => string | undefined) =>
-    runProcess(
-      platform,
-      evalArgs(expression),
-      undefined,
-      options.callTimeoutMs ?? options.readyTimeoutMs,
-      1_048_576,
-      watch
-    );
+  const evaluate = (
+    expression: string,
+    watch?: () => string | undefined,
+    timeoutMs = options.callTimeoutMs ?? options.readyTimeoutMs
+  ) => runProcess(platform, evalArgs(expression), undefined, timeoutMs, 1_048_576, watch);
   const native = await evaluate("'modelContext' in Document.prototype");
   let documentRevision = 0;
   const documentWaiters = new Set<() => void>();
@@ -133,7 +135,6 @@ export async function attachWebMcp(
   attachment.onEvent(onEvent);
   let reload: Promise<void> | undefined;
   const reloadOnce = async () => {
-    await waitDocument(0);
     if (documentRevision === 0 || (state.refused && !state.late)) return;
     const revision = documentRevision;
     const result = await evaluate('location.reload()');
@@ -147,6 +148,7 @@ export async function attachWebMcp(
         state.error = 'playwright-cli eval-attach did not report ready';
         return;
       }
+      await waitDocument(0);
       if (options.reload) await (reload ??= reloadOnce());
     },
     status: () => ({ ...state }),
@@ -180,6 +182,11 @@ export async function attachWebMcp(
     releaseCall: calls.releaseCall,
     async stop() {
       await attachment.stop();
+      await evaluate(
+        `globalThis[${JSON.stringify(key)}]?.dispose()`,
+        undefined,
+        Math.min(options.readyTimeoutMs, HOLDER_STOP_GRACE_MS)
+      ).catch(() => {});
       await calls.close();
       if (platform.fs.unlink) {
         await platform.fs.unlink(file).catch(() => {});
