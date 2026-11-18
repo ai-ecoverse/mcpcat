@@ -176,7 +176,7 @@ export async function attachWebMcp(
       changes.push(listener);
     },
     async list(watch) {
-      if (state.refused) return snapshot;
+      if (state.refused) return { ...snapshot, crossOriginOff: state.crossOriginOff };
       await frames.refresh(watch);
       const result = await evaluate(
         `(async () => { const bridge = globalThis[${JSON.stringify(key)}]; return bridge ? await bridge.refresh() : { tools: [], unavailable: true }; })()`,

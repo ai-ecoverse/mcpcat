@@ -457,6 +457,7 @@ it('preserves cross-origin-unavailable hints from attachment refusals', async (t
   const s = await serve(t, ['--webmcp-from-origin', 'https://bank.example.com'], {
     FAKE_PWCLI_VERSION: '1.54.0',
     FAKE_PWCLI_CROSS_ORIGIN_OFF: '1',
+    FAKE_PWCLI_ATTACH_LATE: '1',
     FAKE_PWCLI_UNAVAILABLE: '1',
   });
   const listed = await s.rpc('tools/list');
