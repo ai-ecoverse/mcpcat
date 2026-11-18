@@ -68,17 +68,12 @@ export async function attachWebMcp(
   const state: HolderStatus = { late: false, native: false };
   const documents: (() => void)[] = [];
   const changes: ((event: ToolsChanged) => void)[] = [];
-  let snapshot: { tools: WebMcpTool[]; unavailable?: boolean; error?: string } = {
-    tools: [],
-    unavailable: true,
-  };
   let attachmentId: string | undefined;
   const frames = createWebMcpFrames(platform, options, state, session, key, () => {
     for (const listener of changes) listener({});
   });
   const reset = () => {
     frames.reset();
-    snapshot = { tools: [], unavailable: true };
     for (const listener of documents) listener();
   };
   const onMessage = (event: AttachEvent) => {
@@ -88,11 +83,6 @@ export async function attachWebMcp(
     if (payload.type !== 'tools-changed' || !Array.isArray(payload.tools)) return;
     state.mode = typeof payload.mode === 'string' ? payload.mode : undefined;
     state.native = state.mode === 'native';
-    snapshot = {
-      tools: payload.tools as WebMcpTool[],
-      unavailable: payload.unavailable === true,
-      error: typeof payload.error === 'string' ? payload.error : undefined,
-    };
     for (const listener of changes)
       listener({
         frameId: options.tab,
@@ -176,8 +166,8 @@ export async function attachWebMcp(
       changes.push(listener);
     },
     async list(watch) {
-      if (state.refused) return { ...snapshot, crossOriginOff: state.crossOriginOff };
       await frames.refresh(watch);
+      if (state.refused) return frameListing(frames, state);
       const result = await evaluate(
         `(async () => { const bridge = globalThis[${JSON.stringify(key)}]; return bridge ? await bridge.refresh() : { tools: [], unavailable: true }; })()`,
         watch
@@ -272,4 +262,9 @@ function documentTracker(timeout: number) {
       });
     },
   };
+}
+
+function frameListing(frames: ReturnType<typeof createWebMcpFrames>, state: HolderStatus) {
+  const tools = frames.tools();
+  return { tools, unavailable: tools.length === 0, crossOriginOff: state.crossOriginOff };
 }

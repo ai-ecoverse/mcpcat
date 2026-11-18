@@ -508,3 +508,51 @@ it('does not wait for readiness again after a terminal attachment exit', async (
   assert.equal(s.entries().filter((entry) => entry.command === 'eval-attach').length, 1);
   await s.stop();
 });
+
+it('lists and calls admitted child tools when only the top observer is refused as late', async (t) => {
+  const frames = join(scratch, `late-child-${++next}.json`);
+  writeFileSync(
+    frames,
+    JSON.stringify([
+      {
+        frameId: 'CHILD',
+        origin: 'https://bank.example.com',
+        tools: [
+          {
+            name: 'available_child',
+            exposedTo: ['https://shop.example.com'],
+            inputSchema: { type: 'object' },
+          },
+        ],
+      },
+      {
+        frameId: 'DENIED',
+        origin: 'https://bank.example.com',
+        evidence: { permissionsPolicy: 'tools=()' },
+        tools: [{ name: 'denied_child', exposedTo: ['*'], inputSchema: { type: 'object' } }],
+      },
+    ])
+  );
+  const s = await serve(t, ['--webmcp-from-origin', 'https://bank.example.com'], {
+    FAKE_PWCLI_VERSION: '1.54.0',
+    FAKE_PWCLI_ATTACH_LATE: '1',
+    FAKE_PWCLI_FRAMES: frames,
+  });
+  const listed = await waitForListing(s, (reply) =>
+    reply.result?.tools?.some((tool) => tool.name === 'available_child')
+  );
+  assert.deepEqual(
+    listed.result.tools.map((tool) => tool.name),
+    ['available_child']
+  );
+  const called = await s.rpc('tools/call', {
+    name: 'available_child',
+    arguments: { value: 'child survives top refusal' },
+  });
+  assert.equal(called.result.isError, false, JSON.stringify(called));
+  assert.match(called.result.content[0].text, /child survives top refusal/);
+  const call = s.entries().find((entry) => entry.command === 'eval-file');
+  assert.equal(call.argv[call.argv.indexOf('--frame') + 1], 'CHILD');
+  assert.equal(call.argv[call.argv.indexOf('--loader') + 1], 'LC');
+  await s.stop();
+});

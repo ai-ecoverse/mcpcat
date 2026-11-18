@@ -19,7 +19,10 @@ function descendant(event: AttachEvent, frameId: string | undefined): boolean {
 function admitted(event: AttachEvent, options: HolderOptions, state: HolderStatus): boolean {
   const top = Array.isArray(event.ancestors) ? event.ancestors[0] : undefined;
   return (
-    top?.loaderId === state.loaderId &&
+    top?.frameId === options.tab &&
+    typeof top.loaderId === 'string' &&
+    top.loaderId.length > 0 &&
+    (state.loaderId ? top.loaderId === state.loaderId : state.refused === true) &&
     (event.origin === top?.origin || Boolean(options.fromOrigins?.includes(event.origin ?? '')))
   );
 }

@@ -119,9 +119,10 @@ if (command === 'eval-attach') {
   emit({ event: 'ready', early: args.includes('--early') });
   const armed = () => {
     if (stateFile) writeFileSync(stateFile, 'armed');
-    if (process.env.FAKE_PWCLI_ATTACH_LATE || process.env.FAKE_PWCLI_ATTACH_ARM_DELAY)
+    if (process.env.FAKE_PWCLI_ATTACH_LATE || process.env.FAKE_PWCLI_ATTACH_ARM_DELAY) {
       emit({ event: 'refused', reason: 'late' });
-    else document();
+      frames();
+    } else document();
     if (process.env.FAKE_PWCLI_CROSS_ORIGIN_OFF)
       emit({
         event: 'refused',
