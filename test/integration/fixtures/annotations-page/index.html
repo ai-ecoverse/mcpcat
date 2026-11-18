@@ -27,6 +27,7 @@
     window.previews = [];
     </script>
     <p id="target" style="margin:40px">Feedback target</p>
+    <input id="field" value="select me please" style="margin:40px">
     <p id="control" style="margin:40px">Control target</p>
     <script>
     document.addEventListener('oaiannotationcontrolchange', (e) =>
@@ -46,6 +47,10 @@
         },
       ],
     });
+    if (location.search === '?startup')
+      window.early = document.oai.annotation.request(document.getElementById('target'), {
+        initialComment: 'from startup',
+      });
     document.title = 'ready';
     </script>
   </body>

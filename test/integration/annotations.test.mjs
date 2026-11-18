@@ -286,7 +286,7 @@ describe('serve --annotations', () => {
       ]
     );
     assert.deepEqual(listed.json.documents, [
-      { tab: 'TAB1', url: 'http://localhost:4789/', loaderId: 'L1' },
+      { tab: 'TAB1', url: 'http://localhost:4789/', loaderId: 'L1', active: true },
     ]);
     const empty = await s.tool('annotations_wait', { timeout_seconds: 0.2 });
     assert.equal(empty.json.timedOut, true);
@@ -355,6 +355,47 @@ describe('serve --annotations', () => {
     assert.match(
       s.stderr(),
       /installs it after page scripts start.*1\.52\.0 or newer installs it first/
+    );
+    s.child.kill('SIGTERM');
+    await stopped(s.child);
+  });
+
+  it('tracks Annotation mode per tab and resets it when a tab loads a new document', async () => {
+    const dir = scratch();
+    const events = [
+      {
+        event: 'document-ready',
+        tab: 'TAB2',
+        frameId: 'TAB2',
+        loaderId: 'M1',
+        url: 'http://localhost:4789/b',
+        world: 'isolated',
+        early: false,
+      },
+      { event: 'message', tab: 'TAB2', payload: { type: 'mode', active: true } },
+      {
+        event: 'document-ready',
+        tab: 'TAB1',
+        frameId: 'TAB1',
+        loaderId: 'L2',
+        url: 'http://localhost:4789/next',
+        world: 'isolated',
+        early: false,
+      },
+    ];
+    const s = await serve(dir, ['--annotations-host', 'localhost'], {
+      FAKE_ATTACH_MESSAGES: JSON.stringify([{ type: 'mode', active: true }]),
+      FAKE_ATTACH_EVENTS: JSON.stringify(events),
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    const listed = (await s.tool('annotations_list')).json;
+    assert.equal(listed.mode, true);
+    assert.deepEqual(
+      listed.documents.map((d) => [d.tab, d.loaderId, d.active]),
+      [
+        ['TAB1', 'L2', false],
+        ['TAB2', 'M1', true],
+      ]
     );
     s.child.kill('SIGTERM');
     await stopped(s.child);

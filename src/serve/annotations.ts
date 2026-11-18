@@ -32,6 +32,7 @@ interface Doc {
   tab: string;
   url?: string;
   loaderId?: string;
+  active: boolean;
 }
 
 const LABEL = 'mcpcat serve --annotations';
@@ -138,7 +139,12 @@ export function acceptAnnotation(payload: unknown): Record<string, unknown> | un
 function createStore() {
   const stored: Stored[] = [];
   const docs = new Map<string, Doc>();
-  const state = { mode: false, lastTab: undefined as string | undefined };
+  const state = {
+    lastTab: undefined as string | undefined,
+    get mode() {
+      return [...docs.values()].some((d) => d.active);
+    },
+  };
   let waiters: (() => void)[] = [];
 
   const wake = () => {
@@ -167,15 +173,21 @@ function createStore() {
     } else if (message.type === 'submit' || message.type === 'discard') {
       settle(message.type, message.ids);
     } else if (message.type === 'mode') {
-      state.mode = message.active === true;
+      const key = tab ?? '';
+      const doc = docs.get(key) ?? { tab: key, active: false };
+      docs.set(key, { ...doc, active: message.active === true });
     }
   };
 
   const onEvent = (event: AttachEvent) => {
     if (event.tab) state.lastTab = event.tab;
     if (event.event === 'document-ready' && event.tab) {
-      docs.set(event.tab, { tab: event.tab, url: event.url, loaderId: event.loaderId });
-      state.mode = false;
+      docs.set(event.tab, {
+        tab: event.tab,
+        url: event.url,
+        loaderId: event.loaderId,
+        active: false,
+      });
     } else if (event.event === 'message' && event.payload && typeof event.payload === 'object') {
       onMessage(event.payload as Record<string, unknown>, event.tab);
     }

@@ -117,6 +117,9 @@ export function annotationEditor(channel: string, send: Send, guarded = true): v
     `${element.textContent}`.replace(/\s+/g, ' ').trim().slice(0, 500);
   const containerOf = (element: Element) =>
     element.closest('[oai-annotation-container],[oai-annotation-container-text]');
+  const isField = (element: Element) =>
+    element.closest('input, textarea') !== null ||
+    (element as HTMLElement).isContentEditable === true;
   const inTextContainer = (element: Element) =>
     containerOf(element)?.hasAttribute('oai-annotation-container-text') ?? false;
 
@@ -484,6 +487,7 @@ export function annotationEditor(channel: string, send: Send, guarded = true): v
   };
 
   const openEditor = (pick: Pick, comment?: string) => {
+    mount();
     closeEditor(true);
     if (pick.kind === 'virtual')
       emit(pick.element, 'render', {
@@ -693,7 +697,8 @@ export function annotationEditor(channel: string, send: Send, guarded = true): v
     if (!capturing() || fromUi(event)) return;
     const element = event.target instanceof Element ? event.target : null;
     if (!element) return;
-    const text = inTextContainer(element);
+    const field = isField(element);
+    const text = field || inTextContainer(element);
     event.stopImmediatePropagation();
     if (
       !text ||
@@ -702,7 +707,7 @@ export function annotationEditor(channel: string, send: Send, guarded = true): v
       event.type === 'contextmenu'
     )
       event.preventDefault();
-    if (event.type === 'mouseup' && text) {
+    if (event.type === 'mouseup' && text && !field) {
       setTimeout(() => {
         const selection = getSelection();
         if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
@@ -748,7 +753,7 @@ export function annotationEditor(channel: string, send: Send, guarded = true): v
         return;
       }
       const element = event.target instanceof Element ? event.target : null;
-      if (!element || inTextContainer(element)) {
+      if (!element || isField(element) || inTextContainer(element)) {
         place(highlight, undefined);
         return;
       }

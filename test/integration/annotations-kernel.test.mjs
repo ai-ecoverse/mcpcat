@@ -76,7 +76,7 @@ describe('kernel: serve --annotations', () => {
     assert.equal(body.annotations.length, 1);
     assert.match(body.annotations[0].comment, /^bytes \d{4,}$/);
     assert.deepEqual(body.documents, [
-      { tab: 'TAB1', url: 'https://shop.example.com/', loaderId: 'L1' },
+      { tab: 'TAB1', url: 'https://shop.example.com/', loaderId: 'L1', active: false },
     ]);
   });
 });

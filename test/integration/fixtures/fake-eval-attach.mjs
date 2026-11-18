@@ -64,6 +64,8 @@ if (command === 'eval-attach') {
     setTimeout(() => {
       for (const payload of messages)
         out({ event: 'message', attachmentId, tab, frameId: tab, loaderId: 'L1', payload });
+      for (const extra of JSON.parse(process.env.FAKE_ATTACH_EVENTS ?? '[]'))
+        out({ attachmentId, ...extra });
     }, delay);
   }
   process.stdin.on('data', () => {});
