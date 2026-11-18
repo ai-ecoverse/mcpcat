@@ -97,6 +97,19 @@ async function settled(page, count) {
 }
 
 describe('annotation previews in Chrome', () => {
+  it('warms up keyboard input on a first page', async (t) => {
+    const page = await chrome.page(t);
+    await page.goto('/warm.html');
+    await page.until(() => document.title === 'ready');
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      await page.press('a');
+      if (await page.evaluate(() => document.getElementById('warm').value.length > 0)) return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.fail('keyboard input never reached the warm-up page');
+  });
+
   it('resets every saved preview once on Exit, and re-entry and a later Send add nothing else', async (t) => {
     const { page, sent } = await open(t);
     await save(page, sent, 'multi', [
