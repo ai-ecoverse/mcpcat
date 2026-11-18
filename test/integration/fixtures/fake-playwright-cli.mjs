@@ -7,8 +7,9 @@ import { fileURLToPath } from 'node:url';
 const dir = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
 
-if (args.includes('eval-attach') || args.includes('eval')) {
+if (args.includes('eval-attach') || args.includes('eval') || args.includes('eval-file')) {
   await import('./fake-webmcp-attach.mjs');
+  await new Promise((resolve) => process.stdout.end(resolve));
   process.exit(0);
 }
 

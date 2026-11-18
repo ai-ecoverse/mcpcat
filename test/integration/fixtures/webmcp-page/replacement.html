@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+  <head>
+    <script>
+    if (document.modelContext)
+      document.modelContext.registerTool({ name: 'detached', execute: () => 'detached registry' });
+    document.modelContext = {
+      getTools: async () => [{ name: 'replacement', inputSchema: { type: 'object' } }],
+      executeTool: async () => 'current API',
+    };
+    document.title = 'ready';
+    </script>
+  </head>
+  <body>
+    Replacement API
+  </body>
+</html>

@@ -63,17 +63,11 @@ export function webMcpPage(
   const snapshot = async (): Promise<PageSnapshot> => {
     const api = doc.modelContext;
     const native = 'modelContext' in Document.prototype;
-    const mode = native ? 'native' : bridge ? 'polyfill' : 'page';
+    const mode = native ? 'native' : bridge && !bridge.list().replaced ? 'polyfill' : 'page';
     if (!api || permitted() === false) return { tools: [], unavailable: true, mode };
     if (api !== listening) {
       listening = api;
       if (api instanceof EventTarget) apply(add, api, ['toolchange', () => void refresh(true)]);
-    }
-    if (bridge) {
-      const listed = bridge.list();
-      if (listed.error) throw new Error('WebMCP tool list exceeds 65536 characters');
-      if (!listed.replaced || parse(listed.toolsJson!).length)
-        return { tools: parse(listed.toolsJson!).map(metadata), mode };
     }
     const list = await api.getTools();
     const tools = list
@@ -113,13 +107,6 @@ export function webMcpPage(
     input && typeof input === 'object' && !Array.isArray(input);
   const consequential = (tool: PageTool) =>
     tool.annotations?.consequentialHint || tool.annotations?.consequential;
-  const inBridge = (name: string): boolean => {
-    if (!bridge) return false;
-    const listed = bridge.list();
-    return (
-      !listed.replaced || parse(listed.toolsJson!).some((tool: PageTool) => tool.name === name)
-    );
-  };
   const inputFor = (api: ModelContext, input: object): unknown => {
     const major = /(?:Chrome|Chromium)\/(\d+)/.exec(navigator.userAgent)?.[1];
     return Number(major) >= 155 && api[Symbol.toStringTag] === 'ModelContext'
@@ -131,7 +118,6 @@ export function webMcpPage(
       if (permitted() === false) return { __webmcp_error: 'tools permission policy denies access' };
       if (location.origin !== origin) return { __webmcp_error: 'document changed' };
       if (!validInput(input)) return { __webmcp_error: 'Tool input must be a JSON object' };
-      if (inBridge(name)) return await bridge!.call(name, input, allow);
       const api = doc.modelContext;
       if (!api) return { __webmcp_error: 'absent' };
       const tools = (await api.getTools()).filter((tool) => tool.name === name);

@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+  <head>
+    <script>
+    if (document.modelContext)
+      document.modelContext.registerTool({
+        name: 'parent_ready',
+        execute: async () => {
+          const child = document.createElement('iframe');
+          child.src = 'child.html';
+          const loaded = new Promise((resolve) =>
+            child.addEventListener('load', resolve, { once: true })
+          );
+          document.body.append(child);
+          await loaded;
+          return 'ready';
+        },
+      });
+    document.title = 'ready';
+    </script>
+  </head>
+  <body>
+    Parent tool provider
+  </body>
+</html>

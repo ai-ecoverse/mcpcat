@@ -114,3 +114,75 @@ it('lists and calls a tool registered by the first inline head script through se
   assert.match(called.result.content[0].text, /"echoed":"from head","atParseTime":true/);
   assert.equal(await page.evaluate(() => window.parseTimeWebMcp), true);
 });
+
+async function servePage(t, path, messages) {
+  const page = await chrome.page(t);
+  await page.goto(path);
+  await page.until(() => document.title === 'ready');
+  const { targetInfos } = await chrome.cdp.send('Target.getTargets');
+  const tab = targetInfos.find((target) => target.url === new URL(path, chrome.url).href).targetId;
+  const result = await kernel.run(
+    [
+      'mcpcat',
+      'serve',
+      '--webmcp',
+      '--webmcp-reload',
+      '--webmcp-ttl',
+      '0',
+      '--tab',
+      tab,
+      '--call-timeout',
+      '10',
+    ],
+    {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      stdin: `${messages.map((message, i) => JSON.stringify({ jsonrpc: '2.0', id: i + 1, ...message })).join('\n')}\n`,
+    }
+  );
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+}
+
+it('merges same-origin child tools and routes their calls in the main-world page bridge', async (t) => {
+  const { webMcpScript } = await import('../../src/serve/webmcp-attach.ts');
+  const page = await chrome.page(t);
+  await page.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `(() => { const send = () => {}; ${webMcpScript('testPageBridge', true)} })()`,
+  });
+  await page.goto('/frames.html');
+  await page.until(() => document.title === 'ready');
+  const reply = await page.evaluate(async () => {
+    await document.modelContext.executeTool('parent_ready', {});
+    const tools = (await globalThis.testPageBridge.refresh()).tools;
+    const called = await globalThis.testPageBridge.call(
+      'child_tool',
+      { message: 'from child' },
+      false,
+      location.origin
+    );
+    return { tools, called };
+  });
+  assert.deepEqual(
+    reply.tools.map((tool) => tool.name),
+    ['child_tool', 'parent_ready']
+  );
+  assert.equal(reply.called.__webmcp_result, '{"child":"from child"}');
+});
+
+it('switches listings and calls to a page replacement without executing detached registrations', async (t) => {
+  const replies = await servePage(t, '/replacement.html', [
+    { method: 'tools/list', params: {} },
+    { method: 'tools/call', params: { name: 'replacement', arguments: {} } },
+    { method: 'tools/call', params: { name: 'detached', arguments: {} } },
+  ]);
+  assert.deepEqual(
+    replies[0].result.tools.map((tool) => tool.name),
+    ['replacement']
+  );
+  assert.match(replies[1].result.content[0].text, /current API/);
+  assert.ok(replies[2].error || replies[2].result.isError);
+});

@@ -210,3 +210,29 @@ it('refuses tool names shared by several origins before invoking eval', async (t
   assert.ok(!s.entries().some((entry) => entry.expression?.includes('bridge.call')));
   await s.stop();
 });
+
+it('waits until the early attachment has observed its initial document before reloading', async (t) => {
+  const state = join(scratch, `arming-${++next}`);
+  const s = await serve(t, ['--webmcp-reload'], {
+    FAKE_PWCLI_ATTACH_ARM_DELAY: '400',
+    FAKE_PWCLI_ATTACH_STATE: state,
+  });
+  const reload = s.entries().find((entry) => entry.expression === 'location.reload()');
+  assert.equal(reload.armed, 'armed');
+  assert.ok((await s.rpc('tools/list')).result.tools.some((tool) => tool.name === 'get_price'));
+  await s.stop();
+});
+
+it('keeps large call arguments in private files instead of the process argument list', async (t) => {
+  const s = await serve(t, [], { FAKE_PWCLI_CALL_LENGTH: '1' });
+  const input = 'private-input-'.repeat(16000);
+  const reply = await s.rpc('tools/call', { name: 'get_price', arguments: { productId: input } });
+  assert.notEqual(reply.result.isError, true);
+  assert.ok(reply.result.content[0].text.includes(`"length":${input.length}`));
+  const call = s.entries().find((entry) => entry.command === 'eval-file');
+  assert.equal(call.mode, 0o600);
+  assert.ok(call.expression.length > 200000);
+  assert.ok(call.argv.every((arg) => !arg.includes('private-input')));
+  assert.equal(existsSync(call.file), false);
+  await s.stop();
+});

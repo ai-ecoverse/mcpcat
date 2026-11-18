@@ -866,22 +866,20 @@ function createLister(
   };
 }
 
-function webMcpInvocation(
+async function webMcpInvocation(
   options: WebMcpOptions,
   tool: WebMcpTool,
   args: unknown,
   baseArgs: string[]
-) {
-  if (options.page)
+): Promise<{ argv: string[]; stdin?: string; cleanup?: () => Promise<void> }> {
+  if (options.page) {
+    const page = options.page;
+    const file = await page.callFile(tool.name, args, options.allowConsequential, tool.origin);
     return {
-      argv: [
-        options.playwrightCli,
-        'eval',
-        options.page.callExpression(tool.name, args, options.allowConsequential, tool.origin),
-        ...baseArgs,
-      ],
-      stdin: undefined,
+      argv: [options.playwrightCli, 'eval-file', file, ...baseArgs],
+      cleanup: () => page.releaseCall(file),
     };
+  }
   const argv = [options.playwrightCli, 'webmcp-call', tool.name, '-', ...baseArgs];
   if (options.allowConsequential) argv.push('--allow-consequential');
   return { argv, stdin: JSON.stringify(args ?? {}) };
@@ -1012,7 +1010,7 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
     if (tool.annotations?.consequentialHint && !options.allowConsequential) {
       return { stdout: '', stderr: hiddenToolMessage(name), exitCode: 2 };
     }
-    const invocation = webMcpInvocation(options, tool, args, baseArgs);
+    const invocation = await webMcpInvocation(options, tool, args, baseArgs);
 
     const disarm = dialogs?.arm();
     const result = await runProcess(
@@ -1022,7 +1020,9 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
       options.callTimeoutMs,
       options.page ? Math.max(options.maxOutput, 397312) : options.maxOutput,
       dialogs ? answeringWatch(tab!, dialogs, watcher) : watch
-    ).finally(disarm);
+    )
+      .finally(disarm)
+      .finally(invocation.cleanup);
 
     if (result.exitCode === -1) {
       throw new Error(result.stderr || 'playwright-cli not found');

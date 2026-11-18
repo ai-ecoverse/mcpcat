@@ -13,7 +13,8 @@ export interface AttachedPage extends Holder {
   list(
     watch?: () => string | undefined
   ): Promise<{ tools: WebMcpTool[]; unavailable?: boolean; error?: string }>;
-  callExpression(name: string, input: unknown, allow: boolean, origin: string): string;
+  callFile(name: string, input: unknown, allow: boolean, origin: string): Promise<string>;
+  releaseCall(file: string): Promise<void>;
 }
 
 export async function attachWebMcp(
@@ -46,7 +47,24 @@ export async function attachWebMcp(
       watch
     );
   const native = await evaluate("'modelContext' in Document.prototype");
-  let documentReady: (() => void) | undefined;
+  let documentRevision = 0;
+  const documentWaiters = new Set<() => void>();
+  const documentObserved = () => {
+    documentRevision++;
+    for (const resolve of documentWaiters) resolve();
+  };
+  const waitDocument = (after: number): Promise<void> => {
+    if (documentRevision > after) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        documentWaiters.delete(done);
+        resolve();
+      };
+      const timer = setTimeout(done, options.readyTimeoutMs);
+      documentWaiters.add(done);
+    });
+  };
   const state: HolderStatus = { late: false, native: false };
   const documents: (() => void)[] = [];
   const changes: ((event: ToolsChanged) => void)[] = [];
@@ -86,13 +104,14 @@ export async function attachWebMcp(
       state.refused = false;
       state.error = undefined;
       reset();
-      documentReady?.();
+      documentObserved();
     } else if (event.event === 'refused') {
       state.late = event.reason === 'late';
       state.refused = true;
       state.error = event.reason ?? 'document refused';
       state.loaderId = undefined;
       reset();
+      documentObserved();
       void options.report(
         `mcpcat serve --webmcp: eval-attach refused tab ${options.tab} (${state.error}); ${state.late ? 'reload the tab or use --webmcp-reload to install before its first script' : 'tools are unavailable in this document'}\n`
       );
@@ -112,23 +131,23 @@ export async function attachWebMcp(
     report: options.report,
   });
   attachment.onEvent(onEvent);
+  let reload: Promise<void> | undefined;
+  const reloadOnce = async () => {
+    await waitDocument(0);
+    if (documentRevision === 0 || (state.refused && !state.late)) return;
+    const revision = documentRevision;
+    const result = await evaluate('location.reload()');
+    if (result.exitCode === 0) await waitDocument(revision);
+    else state.error = result.stderr || 'could not reload the tab';
+  };
+  const calls = createCallFiles(platform, dir, key);
   return {
     async ready() {
-      if (!(await attachment.ready()))
+      if (!(await attachment.ready())) {
         state.error = 'playwright-cli eval-attach did not report ready';
-      if (options.reload) {
-        options = { ...options, reload: false };
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const loaded = new Promise<void>((resolve) => {
-          documentReady = resolve;
-          timer = setTimeout(resolve, options.readyTimeoutMs);
-        });
-        const result = await evaluate('location.reload()');
-        if (result.exitCode === 0) await loaded;
-        clearTimeout(timer);
-        documentReady = undefined;
-        if (result.exitCode !== 0) state.error = result.stderr || 'could not reload the tab';
+        return;
       }
+      if (options.reload) await (reload ??= reloadOnce());
     },
     status: () => ({ ...state }),
     onDocument: (listener) => {
@@ -157,14 +176,41 @@ export async function attachWebMcp(
         return { tools: [], error: 'WebMCP eval returned an invalid tool list' };
       }
     },
-    callExpression: (name, input, allow, origin) =>
-      `(async () => { const bridge = globalThis[${JSON.stringify(key)}]; return bridge ? await bridge.call(${JSON.stringify(name)}, ${JSON.stringify(input ?? {})}, ${allow}, ${JSON.stringify(origin)}) : { __webmcp_error: 'absent' }; })()`,
+    callFile: calls.callFile,
+    releaseCall: calls.releaseCall,
     async stop() {
       await attachment.stop();
+      await calls.close();
       if (platform.fs.unlink) {
         await platform.fs.unlink(file).catch(() => {});
         await platform.fs.rmdir(dir).catch(() => {});
       }
     },
+  };
+}
+
+function createCallFiles(platform: Platform, dir: string, key: string) {
+  const callFiles = new Set<string>();
+  let callId = 0;
+  const releaseCall = async (file: string) => {
+    if (!callFiles.delete(file)) return;
+    await platform.fs.unlink?.(file).catch(() => {});
+  };
+  return {
+    async callFile(name: string, input: unknown, allow: boolean, origin: string) {
+      const path = `${dir}/call-${++callId}.js`;
+      const request = JSON.stringify({ name, input: input ?? {}, allow, origin });
+      const source = `(async () => { const request = JSON.parse(${JSON.stringify(request)}); const bridge = globalThis[${JSON.stringify(key)}]; return bridge ? await bridge.call(request.name, request.input, request.allow, request.origin) : { __webmcp_error: 'absent' }; })()`;
+      callFiles.add(path);
+      try {
+        await platform.fs.writeFile(path, source, { mode: 0o600 });
+      } catch (error) {
+        await releaseCall(path);
+        throw error;
+      }
+      return path;
+    },
+    releaseCall,
+    close: () => Promise.all([...callFiles].map(releaseCall)),
   };
 }
