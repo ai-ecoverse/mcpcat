@@ -23,11 +23,14 @@ const tools = () =>
   JSON.parse(
     readFileSync(process.env.FAKE_PWCLI_FIXTURE || join(dir, 'webmcp-tools.json'), 'utf8')
   );
-const snapshot = () => ({
-  tools: process.env.FAKE_PWCLI_UNAVAILABLE ? [] : tools(),
-  unavailable: Boolean(process.env.FAKE_PWCLI_UNAVAILABLE),
-  mode: 'polyfill',
-});
+const snapshot = () =>
+  process.env.FAKE_PWCLI_SNAPSHOT_FILE
+    ? JSON.parse(readFileSync(process.env.FAKE_PWCLI_SNAPSHOT_FILE, 'utf8'))
+    : {
+        tools: process.env.FAKE_PWCLI_UNAVAILABLE ? [] : tools(),
+        unavailable: Boolean(process.env.FAKE_PWCLI_UNAVAILABLE),
+        mode: 'polyfill',
+      };
 if (command === 'eval-attach') {
   const file = value('eval-attach');
   record({
@@ -63,7 +66,7 @@ if (command === 'eval-attach') {
       document('L2');
     }, 20);
   if (process.env.FAKE_PWCLI_ATTACH_REFRESH) {
-    let last = '';
+    let last = JSON.stringify(snapshot());
     setInterval(() => {
       const now = JSON.stringify(snapshot());
       if (now === last) return;

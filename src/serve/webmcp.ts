@@ -1066,5 +1066,10 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
     watcher?.close();
   }
 
-  return { getRpcTools, callTool, invalidateCache, applyToolsChanged: live.apply, close };
+  function applyToolsChanged(event: ToolsChanged): Promise<void> {
+    if (options.page) invalidateCache();
+    return live.apply(event);
+  }
+
+  return { getRpcTools, callTool, invalidateCache, applyToolsChanged, close };
 }

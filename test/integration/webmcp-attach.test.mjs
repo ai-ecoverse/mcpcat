@@ -236,3 +236,42 @@ it('keeps large call arguments in private files instead of the process argument 
   assert.equal(existsSync(call.file), false);
   await s.stop();
 });
+
+it('preserves live listing failures, unavailable hints and recovery throughout a cached TTL', async (t) => {
+  const snapshot = join(scratch, `snapshot-${++next}.json`);
+  const initial = {
+    tools: [
+      { name: 'live_tool', origin: 'https://shop.example.com', inputSchema: { type: 'object' } },
+    ],
+  };
+  writeFileSync(snapshot, JSON.stringify(initial));
+  const s = await serve(t, ['--webmcp-ttl', '60'], {
+    FAKE_PWCLI_SNAPSHOT_FILE: snapshot,
+    FAKE_PWCLI_ATTACH_REFRESH: '1',
+  });
+  assert.equal((await s.rpc('tools/list')).result.tools[0].name, 'live_tool');
+  const change = async (value) => {
+    const notifications = () =>
+      s.lines.filter((line) => line.method === 'notifications/tools/list_changed').length;
+    const before = notifications();
+    writeFileSync(snapshot, JSON.stringify(value));
+    const deadline = Date.now() + 3000;
+    while (notifications() === before && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.ok(notifications() > before);
+    return s.rpc('tools/list');
+  };
+  const failure = await change({ tools: [], error: 'getTools failed in the page' });
+  assert.ok(failure.error, JSON.stringify(failure));
+  assert.match(failure.error.message, /getTools failed in the page/);
+  assert.match(failure.error.message, /untrusted-page-content/);
+  const missing = await change({ tools: [], unavailable: true });
+  assert.deepEqual(missing.result.tools, []);
+  assert.match(missing.result._meta['io.mcpcat/hint'], /WebMCP is unavailable/);
+  const recovered = await change({ tools: [], unavailable: false });
+  assert.deepEqual(recovered.result.tools, []);
+  assert.equal(recovered.result._meta?.['io.mcpcat/hint'], undefined);
+  const restored = await change(initial);
+  assert.equal(restored.result.tools[0].name, 'live_tool');
+  await s.stop();
+});
