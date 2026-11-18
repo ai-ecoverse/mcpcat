@@ -106,7 +106,6 @@ export async function attachWebMcp(
     if (event.attachmentId && attachmentId && event.attachmentId !== attachmentId) return;
     if (event.event === 'ready') {
       attachmentId = event.attachmentId;
-      state.crossOriginOff = false;
       frames.attachment(attachmentId);
       reset();
     } else if (event.event === 'disconnected') {
@@ -117,6 +116,7 @@ export async function attachWebMcp(
     } else if (event.parentFrameId || (event.frameId && event.frameId !== options.tab)) {
       frames.event(event);
     } else if (event.event === 'document-ready') {
+      state.crossOriginOff = false;
       state.loaderId = event.loaderId;
       state.late = false;
       state.refused = false;

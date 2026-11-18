@@ -453,15 +453,58 @@ it('enforces exposure, document policies, every delegation edge and same-origin 
   await s.stop();
 });
 
-it('preserves cross-origin-unavailable hints from attachment refusals', async (t) => {
-  const s = await serve(t, ['--webmcp-from-origin', 'https://bank.example.com'], {
-    FAKE_PWCLI_VERSION: '1.54.0',
-    FAKE_PWCLI_CROSS_ORIGIN_OFF: '1',
-    FAKE_PWCLI_ATTACH_LATE: '1',
-    FAKE_PWCLI_UNAVAILABLE: '1',
-  });
-  const listed = await s.rpc('tools/list');
+async function waitForListing(s, predicate) {
+  const deadline = Date.now() + 5000;
+  let listed;
+  do {
+    listed = await s.rpc('tools/list');
+  } while (!predicate(listed) && Date.now() < deadline);
+  return listed;
+}
+
+it('preserves cross-origin-unavailable hints until top-level navigation', async (t) => {
+  const state = join(scratch, `navigation-${++next}`);
+  const s = await serve(
+    t,
+    ['--webmcp-ttl', '60', '--webmcp-from-origin', 'https://bank.example.com'],
+    {
+      FAKE_PWCLI_VERSION: '1.54.0',
+      FAKE_PWCLI_CROSS_ORIGIN_OFF: '1',
+      FAKE_PWCLI_ATTACH_LATE: '1',
+      FAKE_PWCLI_UNAVAILABLE: '1',
+      FAKE_PWCLI_ATTACH_STATE: state,
+    }
+  );
+  const hint = (reply) => reply.result?._meta?.['io.mcpcat/hint'] ?? '';
+  const listed = await waitForListing(s, (reply) =>
+    hint(reply).includes('cross-origin child tools are unavailable')
+  );
   assert.deepEqual(listed.result.tools, []);
-  assert.match(listed.result._meta['io.mcpcat/hint'], /cross-origin child tools are unavailable/);
+  assert.match(hint(listed), /cross-origin child tools are unavailable/);
+  writeFileSync(state, 'reload');
+  const navigated = await waitForListing(s, (reply) =>
+    hint(reply).includes('child WebMCP tools install late')
+  );
+  assert.match(hint(navigated), /child WebMCP tools install late/);
+  assert.doesNotMatch(hint(navigated), /cross-origin child tools are unavailable/);
+  await s.stop();
+});
+
+it('does not wait for readiness again after a terminal attachment exit', async (t) => {
+  const s = await serve(t, ['--webmcp-ttl', '0', '--call-timeout', '2'], {
+    FAKE_PWCLI_ATTACH_EXIT: '2',
+  });
+  const deadline = Date.now() + 5000;
+  while (!s.stderr().includes('not restarting') && Date.now() < deadline)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.match(s.stderr(), /not restarting/);
+  const started = Date.now();
+  await s.rpc('tools/list');
+  await s.rpc('tools/list');
+  assert.ok(
+    Date.now() - started < 3000,
+    'later readiness checks must return immediately after terminal refusal'
+  );
+  assert.equal(s.entries().filter((entry) => entry.command === 'eval-attach').length, 1);
   await s.stop();
 });

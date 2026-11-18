@@ -109,6 +109,7 @@ export function startAttachment(platform: Platform, options: AttachOptions): Att
   let proc: SpawnResult | undefined;
   let writer: WritableStreamDefaultWriter<Uint8Array> | undefined;
   let stopped = false;
+  let terminal = false;
   let delay = HOLDER_RESTART_MIN_MS;
   let readyAt: number | undefined;
   let restartTimer: ReturnType<typeof setTimeout> | undefined;
@@ -173,6 +174,7 @@ export function startAttachment(platform: Platform, options: AttachOptions): Att
       readyAt = undefined;
       if (stopped) return;
       if (result.status === 2) {
+        terminal = true;
         report(`playwright-cli eval-attach refused (${lastError ?? 'exit 2'}); not restarting`);
         settle(false);
         return;
@@ -198,6 +200,7 @@ export function startAttachment(platform: Platform, options: AttachOptions): Att
 
   return {
     ready() {
+      if (terminal || stopped) return Promise.resolve(false);
       if (isReady) return Promise.resolve(true);
       return new Promise<boolean>((resolve) => {
         const timer = setTimeout(() => {

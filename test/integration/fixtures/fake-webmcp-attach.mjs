@@ -105,9 +105,14 @@ if (command === 'eval-attach') {
     process.stdout.write(
       `${JSON.stringify({ tab, attachmentId: 'A1', frameId: tab, loaderId: 'L1', ...event })}\n`
     );
+  const installed = new Map();
   const frames = () => {
     for (const frame of frameRecords()) {
-      emit({ event: 'document-ready', early: false, ...evidence(frame) });
+      const document = evidence(frame);
+      if (installed.get(frame.frameId) !== document.loaderId) {
+        installed.set(frame.frameId, document.loaderId);
+        emit({ event: 'document-ready', early: false, ...document });
+      }
       emit({
         event: 'message',
         ...evidence(frame),
@@ -116,6 +121,7 @@ if (command === 'eval-attach') {
     }
   };
   const document = (loaderId = 'L1') => {
+    installed.clear();
     emit({ event: 'document-ready', loaderId, early: args.includes('--early') });
     emit({ event: 'message', loaderId, payload: { type: 'tools-changed', origin, ...snapshot() } });
     frames();

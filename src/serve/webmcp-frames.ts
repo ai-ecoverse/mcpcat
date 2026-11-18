@@ -132,6 +132,7 @@ export function createWebMcpFrames(
   };
   return {
     attachment(id: string | undefined) {
+      state.crossOriginOff = false;
       attachmentId = id;
       frames.clear();
     },

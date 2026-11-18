@@ -642,7 +642,7 @@ function createLister(
   watcher: DialogWatcher | undefined,
   watch: Watch | undefined,
   getCache: () => CacheEntry | undefined,
-  setCache: (entry: CacheEntry) => void
+  cacheWriter: () => (entry: CacheEntry) => void
 ) {
   const { tab, dialogs } = options;
 
@@ -663,6 +663,7 @@ function createLister(
       };
     }
 
+    const saveCache = cacheWriter();
     await options.beforeList?.();
     const now = Date.now();
     const pollOrigins = (options.fromOrigins ?? []).length > 0;
@@ -692,7 +693,7 @@ function createLister(
     }
 
     const listed = outcome.tools ?? [];
-    setCache({
+    saveCache({
       tools: listed,
       unavailable: outcome.unavailable === true,
       crossOriginOff: outcome.crossOriginOff,
@@ -776,6 +777,7 @@ function pageCallResult(
 
 export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) {
   let cache: CacheEntry | undefined;
+  let cacheRevision = 0;
   const baseArgs = buildBaseArgs(options);
 
   const { cdp, tab, dialogs } = options;
@@ -787,8 +789,11 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
     watcher,
     watch,
     () => cache,
-    (entry) => {
-      cache = entry;
+    () => {
+      const revision = cacheRevision;
+      return (entry) => {
+        if (revision === cacheRevision) cache = entry;
+      };
     }
   );
 
@@ -884,6 +889,7 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
   }
 
   function invalidateCache(): void {
+    cacheRevision++;
     cache = undefined;
   }
 
