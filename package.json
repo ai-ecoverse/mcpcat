@@ -61,7 +61,7 @@
   },
   "devDependencies": {
     "@ai-ecoverse/slicc-cdp": "1.52.0",
-    "@ai-ecoverse/slicc-kernel": "1.189.2",
+    "@ai-ecoverse/slicc-kernel": "1.191.0",
     "@ai-ecoverse/slicc-shared-web": "2.14.4",
     "@ai-ecoverse/slicc-vault": "1.26.2",
     "@biomejs/biome": "2.6.6",
