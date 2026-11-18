@@ -60,7 +60,7 @@
     "trust:dry": "npx fledgling sync --dry-run -y --skip-publish"
   },
   "devDependencies": {
-    "@ai-ecoverse/slicc-cdp": "1.52.1",
+    "@ai-ecoverse/slicc-cdp": "1.52.4",
     "@ai-ecoverse/slicc-kernel": "1.191.0",
     "@ai-ecoverse/slicc-shared-web": "2.14.4",
     "@ai-ecoverse/slicc-vault": "1.26.3",
