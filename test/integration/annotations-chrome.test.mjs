@@ -12,7 +12,7 @@ let scripts;
 
 before(async () => {
   const mod = await import(pathToFileURL(join(root, 'src/serve/annotations.ts')).href);
-  scripts = mod.pageScripts('mcpcat-annotations-chrome', true);
+  scripts = mod.pageScripts('mcpcat-annotations-chrome');
   chrome = await launch({
     roots: [['/', join(root, 'test/integration/fixtures/annotations-page/')]],
     coverage: [],

@@ -2,7 +2,7 @@ import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createKernelPlatform } from '../../src/platform/kernel.ts';
-import { startHolder } from '../../src/serve/webmcp-polyfill.ts';
+import { startHolder } from '../../src/serve/webmcp-origin.ts';
 
 const stream = (text) =>
   new ReadableStream({

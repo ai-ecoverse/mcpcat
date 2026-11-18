@@ -3,7 +3,12 @@ import type { JsonObjectSchema } from './catalog.ts';
 import type { RpcTool, ToolListing, ToolRunResult } from './jsonrpc.ts';
 import type { AttachedPage } from './webmcp-attach.ts';
 import { DIALOG_CLAIM_MS, type DialogHolder } from './webmcp-dialog.ts';
-import { FALLBACK_UNVERIFIED, type ToolsChanged } from './webmcp-polyfill.ts';
+import {
+  FALLBACK_UNVERIFIED,
+  originCallInvocation,
+  originListArgv,
+  type ToolsChanged,
+} from './webmcp-origin.ts';
 
 export interface WebMcpAnnotations {
   readOnlyHint?: boolean;
@@ -764,7 +769,7 @@ function createLister(
 
   async function listOnce(): Promise<ListOutcome> {
     if (options.page) return listPage(platform, options, watch);
-    const argv = [options.playwrightCli, 'webmcp-list', '--json', ...baseArgs];
+    const argv = originListArgv(options.playwrightCli, baseArgs);
     const result = await runProcess(
       platform,
       argv,
@@ -880,9 +885,13 @@ async function webMcpInvocation(
       cleanup: () => page.releaseCall(file),
     };
   }
-  const argv = [options.playwrightCli, 'webmcp-call', tool.name, '-', ...baseArgs];
-  if (options.allowConsequential) argv.push('--allow-consequential');
-  return { argv, stdin: JSON.stringify(args ?? {}) };
+  return originCallInvocation(
+    options.playwrightCli,
+    baseArgs,
+    tool.name,
+    args,
+    options.allowConsequential
+  );
 }
 
 function refuseLegacyCall(

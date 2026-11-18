@@ -7,10 +7,9 @@ import {
   HOLDER_RESTART_MIN_MS,
   HOLDER_STABLE_MS,
   HOLDER_STOP_GRACE_MS,
-} from './webmcp-polyfill.ts';
+} from './webmcp-origin.ts';
 
-export const EVAL_ATTACH_MIN_VERSION = '1.51.0';
-export const EVAL_ATTACH_EARLY_MIN_VERSION = '1.52.0';
+export const EVAL_ATTACH_MIN_VERSION = '1.52.0';
 
 export type AttachScope = { tab: string } | { hosts: string[] } | { matches: string[] };
 

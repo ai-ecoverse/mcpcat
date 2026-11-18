@@ -12,7 +12,7 @@ const value = (flag) => {
 const out = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
 
 if (args[0] === '--version') {
-  process.stdout.write(`playwright-cli ${process.env.FAKE_ATTACH_VERSION ?? '1.51.0'}\n`);
+  process.stdout.write(`playwright-cli ${process.env.FAKE_ATTACH_VERSION ?? '1.52.0'}\n`);
   process.exit(0);
 }
 
@@ -41,7 +41,7 @@ if (command === 'eval-attach') {
   }
   const attachmentId = `eval-${world}`;
   const tab = 'TAB1';
-  out({ event: 'ready', attachmentId, world, early: false });
+  out({ event: 'ready', attachmentId, world, early: true });
   out({
     event: 'document-ready',
     attachmentId,
@@ -50,7 +50,7 @@ if (command === 'eval-attach') {
     loaderId: 'L1',
     url: 'http://localhost:4789/',
     world,
-    early: false,
+    early: true,
   });
   if (world === 'main' && process.env.FAKE_ATTACH_LATE)
     out({ event: 'refused', attachmentId, tab, reason: 'late' });

@@ -79,4 +79,31 @@ describe('kernel: serve --annotations', () => {
       { tab: 'TAB1', url: 'https://shop.example.com/', loaderId: 'L1', active: false },
     ]);
   });
+  for (const found of ['1.51.0', '1.51.9', 'unknown']) {
+    it(`refuses playwright-cli ${found} in the kernel before attaching`, async () => {
+      const r = await kernel.run(
+        [
+          'mcpcat',
+          '--experimental',
+          'annotations',
+          'serve',
+          '--annotations',
+          '--tab',
+          'TAB1',
+          '--playwright-cli',
+          'kernel-attach',
+        ],
+        {
+          stdout: 'pipe',
+          stderr: 'pipe',
+          env: { FAKE_ATTACH_VERSION: found },
+          stdin: '',
+        }
+      );
+      assert.equal(r.status, 2, r.stderr);
+      assert.ok(r.stderr.includes(`found ${found}`), r.stderr);
+      assert.match(r.stderr, /needs playwright-cli 1\.52\.0.*playwright-cli update/);
+      assert.equal(r.stdout, '');
+    });
+  }
 });

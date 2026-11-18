@@ -53,7 +53,7 @@ function env(dirs, extra = {}) {
     FAKE_PWCLI_FIXTURE: fixture,
     FAKE_PWCLI_LOG: dirs.log,
     FAKE_PWCLI_DIALOG_DIR: dirs.dir,
-    FAKE_PWCLI_VERSION: '1.39.0',
+    FAKE_PWCLI_VERSION: '1.52.0',
     ...extra,
   };
 }
@@ -85,7 +85,19 @@ function run(args, runEnv, input = '') {
 }
 
 function serve(extra, runEnv, input = `${INIT}\n${CALL}\n`) {
-  return run(['serve', '--webmcp', '--playwright-cli', fakePwCli, ...extra], runEnv, input);
+  return run(
+    [
+      'serve',
+      '--webmcp',
+      '--webmcp-from-origin',
+      'https://widgets.example.com',
+      '--playwright-cli',
+      fakePwCli,
+      ...extra,
+    ],
+    runEnv,
+    input
+  );
 }
 
 function responses(stdout) {
@@ -170,6 +182,8 @@ describe('serve --webmcp --webmcp-dialog', () => {
     const { cmd, args } = mcpcatArgs([
       'serve',
       '--webmcp',
+      '--webmcp-from-origin',
+      'https://widgets.example.com',
       '--http',
       '0',
       '--no-auth',
@@ -207,6 +221,8 @@ describe('serve --webmcp --webmcp-dialog', () => {
     const { cmd, args } = mcpcatArgs([
       'serve',
       '--webmcp',
+      '--webmcp-from-origin',
+      'https://widgets.example.com',
       '--http',
       '0',
       '--no-auth',
@@ -262,6 +278,8 @@ describe('serve --webmcp --webmcp-dialog', () => {
       [
         'serve',
         '--webmcp',
+        '--webmcp-from-origin',
+        'https://widgets.example.com',
         '--call-timeout',
         '30',
         '--webmcp-polyfill',
@@ -323,24 +341,14 @@ describe('serve --webmcp --webmcp-dialog', () => {
     assert.equal(readLog(dirs.log).filter((e) => e.command === 'dialog-hold').length, 0);
   });
 
-  it('falls back to report with one warning on playwright-cli older than 1.39.0', async () => {
+  it('refuses an old playwright-cli before starting dialog-hold', async () => {
     const dirs = scratch();
-    const cdp = await fakeCdp();
     const r = await serve(
-      ['--webmcp-dialog', 'dismiss', '--cdp', cdp.url],
-      env(dirs, {
-        FAKE_PWCLI_VERSION: '1.38.0',
-        FAKE_PWCLI_HANG: '1',
-        FAKE_PWCLI_DIALOG_URL: cdp.dialogUrl,
-      })
+      ['--webmcp-dialog', 'dismiss'],
+      env(dirs, { FAKE_PWCLI_VERSION: '1.38.0' })
     );
-    assert.equal(r.status, 0, r.stderr);
-    const warnings = r.stderr.match(
-      /--webmcp-dialog dismiss needs playwright-cli 1\.39\.0 or newer \(found 1\.38\.0\); reporting JavaScript dialogs instead/g
-    );
-    assert.equal(warnings?.length, 1, r.stderr);
-    const [, call] = responses(r.stdout);
-    assert.match(call.error.message, /^tab TAB1 is blocked by a JavaScript confirm dialog; answer/);
+    assert.equal(r.status, 2, r.stderr);
+    assert.match(r.stderr, /needs playwright-cli 1\.52\.0.*found 1\.38\.0.*playwright-cli update/);
     assert.equal(readLog(dirs.log).filter((e) => e.command === 'dialog-hold').length, 0);
   });
 });

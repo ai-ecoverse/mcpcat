@@ -1,9 +1,6 @@
 import type { Platform, SpawnResult } from '../platform/types.ts';
 import { sanitizeTerminal } from '../render/sanitize.ts';
 
-export const POLYFILL_MIN_VERSION = '1.32.0';
-export const TOOLS_CHANGED_MIN_VERSION = '1.40.0';
-export const FROM_ORIGIN_MIN_VERSION = '1.46.7';
 export const HOLDER_RESTART_MIN_MS = 500;
 export const HOLDER_RESTART_MAX_MS = 30_000;
 export const HOLDER_STABLE_MS = 30_000;
@@ -18,7 +15,6 @@ export interface HolderOptions {
   tab: string;
   reload: boolean;
   readyTimeoutMs: number;
-  watch?: boolean;
   fromOrigins?: string[];
   report(line: string): Promise<void> | void;
 }
@@ -144,6 +140,22 @@ function holderArgv(options: HolderOptions, reload: boolean): string[] {
   return argv;
 }
 
+export function originListArgv(playwrightCli: string, baseArgs: string[]): string[] {
+  return [playwrightCli, 'webmcp-list', '--json', ...baseArgs];
+}
+
+export function originCallInvocation(
+  playwrightCli: string,
+  baseArgs: string[],
+  name: string,
+  args: unknown,
+  allowConsequential: boolean
+): { argv: string[]; stdin: string } {
+  const argv = [playwrightCli, 'webmcp-call', name, '-', ...baseArgs];
+  if (allowConsequential) argv.push('--allow-consequential');
+  return { argv, stdin: JSON.stringify(args ?? {}) };
+}
+
 export function startHolder(platform: Platform, options: HolderOptions): Holder {
   const state: HolderStatus = { late: false, native: false };
   const listeners: (() => void)[] = [];
@@ -180,10 +192,6 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
       readyAt = Date.now();
       if (refusal) relay(refusal);
       refusal = undefined;
-      if (state.mode === 'native' && !options.watch) {
-        state.native = true;
-        void closeInput();
-      }
       settle();
     } else if (event.event === 'document-ready') {
       state.late = false;
@@ -248,7 +256,7 @@ export function startHolder(platform: Platform, options: HolderOptions): Holder 
         delay = HOLDER_RESTART_MIN_MS;
       }
       readyAt = undefined;
-      if (stopped || state.native) return;
+      if (stopped) return;
       state.late = false;
       state.mode = undefined;
       state.loaderId = undefined;

@@ -6,7 +6,7 @@ import {
   HOLDER_RESTART_MIN_MS,
   HOLDER_STABLE_MS,
   HOLDER_STOP_GRACE_MS,
-} from './webmcp-polyfill.ts';
+} from './webmcp-origin.ts';
 
 export const DIALOG_HOLD_MIN_VERSION = '1.39.0';
 export const DIALOG_ANSWER_MS = 7000;

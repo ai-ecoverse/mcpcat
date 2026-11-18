@@ -2,7 +2,7 @@ import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createWebMcpHandler } from '../../src/serve/webmcp.ts';
-import { startHolder } from '../../src/serve/webmcp-polyfill.ts';
+import { startHolder } from '../../src/serve/webmcp-origin.ts';
 
 const FALLBACK_UNVERIFIED =
   'webmcp: other-extension fallback could not verify the reloaded document; tools are unavailable';

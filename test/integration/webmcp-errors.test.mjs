@@ -41,6 +41,8 @@ const init = rpc(
 );
 
 function run(args, opts = {}) {
+  if (args.includes('--webmcp'))
+    args = [...args, '--webmcp-from-origin', 'https://widgets.example.com'];
   const { cmd, args: cmdArgs } = mcpcatArgs(args);
   const bin = cmd === 'node' ? process.execPath : cmd;
   return new Promise((resolve) => {
@@ -84,6 +86,8 @@ async function startWebMcpHttp(extraArgs = [], extraEnv = {}) {
   const { cmd, args } = mcpcatArgs([
     'serve',
     '--webmcp',
+    '--webmcp-from-origin',
+    'https://widgets.example.com',
     '--http',
     '0',
     '--no-auth',

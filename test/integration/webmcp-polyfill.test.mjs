@@ -84,7 +84,19 @@ function run(args, env, input) {
 
 function stdioServe(extra, env) {
   const input = `${[INIT, rpc('tools/list', {}, 2)].join('\n')}\n`;
-  return run(['serve', '--webmcp', '--playwright-cli', fakePwCli, ...extra], env, input);
+  return run(
+    [
+      'serve',
+      '--webmcp',
+      '--webmcp-from-origin',
+      'https://widgets.example.com',
+      '--playwright-cli',
+      fakePwCli,
+      ...extra,
+    ],
+    env,
+    input
+  );
 }
 
 function listResult(stdout) {
@@ -95,6 +107,8 @@ async function httpServe(extra, env) {
   const { cmd, args } = mcpcatArgs([
     'serve',
     '--webmcp',
+    '--webmcp-from-origin',
+    'https://widgets.example.com',
     '--http',
     '0',
     '--no-auth',
@@ -160,11 +174,10 @@ describe('serve --webmcp polyfill', () => {
     assert.ok(!readLog(dirs.log).some((e) => e.command === 'webmcp-polyfill'));
   });
 
-  it('a native browser stops the holder and never restarts it', async () => {
+  it('a native browser keeps the origin holder alive for live changes', async () => {
     const dirs = scratch();
     const env = baseEnv(dirs, { FAKE_PWCLI_HOLDER: 'native', FAKE_PWCLI_NEEDS_HOLDER: '' });
     const { child, port } = await httpServe([], env);
-    await until(() => readLog(dirs.log).some((e) => e.command === 'webmcp-polyfill-stdin-closed'));
     await new Promise((r) => setTimeout(r, 1200));
     const resp = await fetch(`http://127.0.0.1:${port}/mcp`, {
       method: 'POST',
@@ -173,6 +186,7 @@ describe('serve --webmcp polyfill', () => {
     }).then((res) => res.json());
     assert.ok(!resp.result.tools.some((t) => t.annotations.late));
     assert.equal(readLog(dirs.log).filter((e) => e.command === 'webmcp-polyfill').length, 1);
+    assert.ok(!readLog(dirs.log).some((e) => e.command === 'webmcp-polyfill-stdin-closed'));
     child.kill('SIGTERM');
     await stopped(child);
   });
@@ -217,6 +231,7 @@ describe('serve --webmcp polyfill', () => {
     const { child, port, stderr } = await httpServe([], env);
     await new Promise((r) => setTimeout(r, 1500));
     assert.equal(readLog(dirs.log).filter((e) => e.command === 'webmcp-polyfill').length, 1);
+    assert.ok(!readLog(dirs.log).some((e) => e.command === 'webmcp-polyfill-stdin-closed'));
     assert.equal(child.exitCode, null);
     const printed = stderr();
     assert.equal(printed.split('breakpoints could run').length - 1, 1, printed);
@@ -237,6 +252,7 @@ describe('serve --webmcp polyfill', () => {
     assert.match(call.stderr, reason);
     assert.match(call.stderr, /retrying won't help/);
     assert.equal(readLog(dirs.log).filter((e) => e.command === 'webmcp-polyfill').length, 1);
+    assert.ok(!readLog(dirs.log).some((e) => e.command === 'webmcp-polyfill-stdin-closed'));
     child.kill('SIGTERM');
     await stopped(child);
 
@@ -296,6 +312,7 @@ describe('serve --webmcp polyfill', () => {
     const { child, stderr } = await httpServe([], env);
     await new Promise((resolve) => setTimeout(resolve, 1500));
     assert.equal(readLog(dirs.log).filter((e) => e.command === 'webmcp-polyfill').length, 1);
+    assert.ok(!readLog(dirs.log).some((e) => e.command === 'webmcp-polyfill-stdin-closed'));
     assert.match(stderr(), /retrying won't help.*won't restart/);
     assert.doesNotMatch(stderr(), /restarting in/);
     child.kill('SIGTERM');
@@ -354,7 +371,9 @@ describe('serve --webmcp polyfill', () => {
     await stopped(child);
   });
 
-  it('hints at --webmcp-reload when a late polyfill shows 0 tools', async () => {
+  it('hints at --webmcp-reload when a late polyfill shows 0 tools', {
+    timeout: 60_000,
+  }, async () => {
     const dirs = scratch();
     const env = baseEnv(dirs, { FAKE_PWCLI_HOLDER_EMPTY: '1' });
     const r = await stdioServe([], env);
@@ -378,14 +397,6 @@ describe('serve --webmcp polyfill', () => {
     await stopped(child);
   });
 
-  it('an older playwright-cli gets a warning and no holder', async () => {
-    const dirs = scratch();
-    const r = await stdioServe([], baseEnv(dirs, { FAKE_PWCLI_VERSION: '1.30.22' }));
-    assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stderr, /needs playwright-cli 1\.32\.0 or newer \(found 1\.30\.22\)/);
-    assert.ok(!readLog(dirs.log).some((e) => e.command === 'webmcp-polyfill'));
-  });
-
   it('passes --webmcp-from-origin to the holder, webmcp-list and webmcp-call', async () => {
     const dirs = scratch();
     const input = `${[INIT, rpc('tools/call', { name: 'get_inbox_state', arguments: {} }, 2)].join('\n')}\n`;
@@ -393,6 +404,8 @@ describe('serve --webmcp polyfill', () => {
       [
         'serve',
         '--webmcp',
+        '--webmcp-from-origin',
+        'https://widgets.example.com',
         '--playwright-cli',
         fakePwCli,
         '--webmcp-from-origin',
@@ -400,7 +413,7 @@ describe('serve --webmcp polyfill', () => {
         '--webmcp-from-origin',
         'https://pay.example.com',
       ],
-      baseEnv(dirs, { FAKE_PWCLI_VERSION: '1.46.7' }),
+      baseEnv(dirs, { FAKE_PWCLI_VERSION: '1.52.0' }),
       input
     );
     assert.equal(r.status, 0, r.stderr);
@@ -414,26 +427,12 @@ describe('serve --webmcp polyfill', () => {
     }
   });
 
-  it('refuses --webmcp-from-origin on playwright-cli older than 1.46.7', async () => {
-    const dirs = scratch();
-    const r = await stdioServe(
-      ['--webmcp-from-origin', 'https://widgets.example.com'],
-      baseEnv(dirs, { FAKE_PWCLI_VERSION: '1.46.6' })
-    );
-    assert.equal(r.status, 2, r.stderr);
-    assert.match(
-      r.stderr,
-      /--webmcp-from-origin needs playwright-cli 1\.46\.7 or newer \(found 1\.46\.6\)/
-    );
-    assert.ok(!readLog(dirs.log).some((e) => e.command === 'webmcp-polyfill'));
-  });
-
   it('polls webmcp-list --from-origin until tools appear', async () => {
     const dirs = scratch();
     const r = await stdioServe(
       ['--webmcp-from-origin', 'https://widgets.example.com'],
       baseEnv(dirs, {
-        FAKE_PWCLI_VERSION: '1.46.7',
+        FAKE_PWCLI_VERSION: '1.52.0',
         FAKE_PWCLI_LIST_EMPTY_UNTIL: '3',
       })
     );
@@ -443,28 +442,13 @@ describe('serve --webmcp polyfill', () => {
     assert.ok(listResult(r.stdout).result.tools.length > 0);
   });
 
-  it('does not poll webmcp-list when no --webmcp-from-origin', async () => {
-    const dirs = scratch();
-    const r = await stdioServe(
-      [],
-      baseEnv(dirs, {
-        FAKE_PWCLI_VERSION: '1.46.7',
-        FAKE_PWCLI_LIST_EMPTY_UNTIL: '3',
-      })
-    );
-    assert.equal(r.status, 0, r.stderr);
-    const lists = readLog(dirs.log).filter((e) => e.command === 'webmcp-list');
-    assert.equal(lists.length, 1);
-    assert.deepEqual(listResult(r.stdout).result.tools, []);
-  });
-
   it('surfaces the guarded-route cross-origin stderr as the empty-tools hint', async () => {
     const dirs = scratch();
     const emptyFixture = join(fixturesDir, 'webmcp-tools-empty.json');
     const r = await stdioServe(
       ['--webmcp-from-origin', 'https://widgets.example.com'],
       baseEnv(dirs, {
-        FAKE_PWCLI_VERSION: '1.46.7',
+        FAKE_PWCLI_VERSION: '1.52.0',
         FAKE_PWCLI_FIXTURE: emptyFixture,
         FAKE_PWCLI_CROSS_ORIGIN_OFF: '1',
         FAKE_PWCLI_HOLDER_EMPTY: '1',
@@ -482,7 +466,7 @@ describe('serve --webmcp polyfill', () => {
   });
 
   it('rejects a bad --webmcp-polyfill, --webmcp-reload with off, and a non-origin', async () => {
-    const env = baseEnv(scratch(), { FAKE_PWCLI_VERSION: '1.46.7' });
+    const env = baseEnv(scratch(), { FAKE_PWCLI_VERSION: '1.52.0' });
     for (const extra of [
       ['--webmcp-polyfill', 'always'],
       ['--webmcp-polyfill', 'off', '--webmcp-reload'],

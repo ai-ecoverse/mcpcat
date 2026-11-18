@@ -168,15 +168,19 @@ describe('serve --annotations', () => {
     assert.match(r.stderr, /does not combine/);
   });
 
-  it('refuses a playwright-cli without eval-attach', async () => {
-    const dir = scratch();
-    const r = await run(
-      ['--experimental', 'annotations', 'serve', '--annotations', '--playwright-cli', fake],
-      env(dir, { FAKE_ATTACH_VERSION: '1.50.1' })
-    );
-    assert.equal(r.status, 2);
-    assert.match(r.stderr, /needs playwright-cli 1\.51\.0 or newer/);
-  });
+  for (const found of ['1.50.1', '1.51.0', '1.51.9', 'unknown'])
+    it(`refuses playwright-cli ${found} before attaching`, async () => {
+      const dir = scratch();
+      const r = await run(
+        ['--experimental', 'annotations', 'serve', '--annotations', '--playwright-cli', fake],
+        env(dir, { FAKE_ATTACH_VERSION: found })
+      );
+      assert.equal(r.status, 2);
+      assert.match(r.stderr, /needs playwright-cli 1\.52\.0 or newer/);
+      assert.ok(r.stderr.includes(`found ${found}`), r.stderr);
+      assert.match(r.stderr, /playwright-cli update/);
+      assert.deepEqual(readLog(dir), []);
+    });
 
   it('refuses mixed scopes', async () => {
     const dir = scratch();
@@ -343,18 +347,6 @@ describe('serve --annotations', () => {
     assert.match(
       s.stderr(),
       /tab TAB1 ran its first script before the page API could be installed early; reload the tab to retry/
-    );
-    s.child.kill('SIGTERM');
-    await stopped(s.child);
-  });
-
-  it('says the page API is late with playwright-cli 1.51.x', async () => {
-    const dir = scratch();
-    const s = await serve(dir, ['--tab', 'TAB1']);
-    assert.ok(readLog(dir).every((e) => !e.argv.includes('--early')));
-    assert.match(
-      s.stderr(),
-      /installs it after page scripts start.*1\.52\.0 or newer installs it first/
     );
     s.child.kill('SIGTERM');
     await stopped(s.child);
