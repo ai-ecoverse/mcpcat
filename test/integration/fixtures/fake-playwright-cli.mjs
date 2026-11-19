@@ -13,18 +13,9 @@ if (args.includes('eval-attach') || args.includes('eval') || args.includes('eval
   process.exit(0);
 }
 
-const listedBefore = () =>
-  Boolean(process.env.FAKE_PWCLI_LOG) &&
-  existsSync(process.env.FAKE_PWCLI_LOG) &&
-  readFileSync(process.env.FAKE_PWCLI_LOG, 'utf8').includes('"command":"webmcp-list"');
-const fixtureFile =
-  process.env.FAKE_PWCLI_FIXTURE_NEXT && listedBefore()
-    ? process.env.FAKE_PWCLI_FIXTURE_NEXT
-    : process.env.FAKE_PWCLI_FIXTURE || join(dir, 'webmcp-tools.json');
-
 if (args[0] === '--version' || args[0] === '-V') {
   if (process.env.FAKE_PWCLI_VERSION === 'fail') process.exit(1);
-  process.stdout.write(`playwright-cli ${process.env.FAKE_PWCLI_VERSION || '1.52.0'}-fake\n`);
+  process.stdout.write(`playwright-cli ${process.env.FAKE_PWCLI_VERSION || '1.54.0'}-fake\n`);
   process.exit(0);
 }
 
@@ -55,69 +46,6 @@ const record = (entry) => {
     appendFileSync(process.env.FAKE_PWCLI_LOG, `${JSON.stringify({ argv: args, ...entry })}\n`);
   }
 };
-const drift = () => {
-  if (stateFile && process.env.FAKE_PWCLI_DRIFT) {
-    const now = currentTab();
-    const next = tabIds[(tabIds.indexOf(now) + 1) % tabIds.length];
-    writeFileSync(stateFile, next);
-  }
-};
-const usedTab = () => tab ?? currentTab();
-
-const holderFile = process.env.FAKE_PWCLI_HOLDER_FILE;
-const holderUp = () => Boolean(holderFile) && existsSync(holderFile);
-const holderRuns = () =>
-  process.env.FAKE_PWCLI_LOG && existsSync(process.env.FAKE_PWCLI_LOG)
-    ? readFileSync(process.env.FAKE_PWCLI_LOG, 'utf8')
-        .split('\n')
-        .filter((l) => l.includes('"command":"webmcp-polyfill"')).length
-    : 1;
-
-const liveScript = process.env.FAKE_PWCLI_LIVE;
-const livePage = liveScript && `${liveScript}.page.json`;
-const fromOrigins = filtered.flatMap((arg, i) =>
-  arg === '--from-origin' && filtered[i + 1] ? [filtered[i + 1]] : []
-);
-const script = () => JSON.parse(readFileSync(liveScript, 'utf8'));
-const page = () =>
-  existsSync(livePage)
-    ? JSON.parse(readFileSync(livePage, 'utf8'))
-    : { loaderId: 'L1', frames: script().frames };
-const pageTools = () => {
-  const { frames } = page();
-  const top = frames[tab ?? currentTab()]?.origin ?? 'https://shop.example.com';
-  return Object.entries(frames).flatMap(([frameId, frame]) =>
-    frame.origin === top || fromOrigins.includes(frame.origin)
-      ? frame.tools.map((tool) => ({ ...tool, origin: frame.origin, frameId }))
-      : []
-  );
-};
-const runLive = (emit) => {
-  const { steps } = script();
-  writeFileSync(livePage, JSON.stringify(page()));
-  let next = 0;
-  setInterval(() => {
-    if (next >= steps.length || !existsSync(`${liveScript}.step${next}`)) return;
-    const step = steps[next++];
-    const state = page();
-    if (step.navigate) {
-      writeFileSync(livePage, JSON.stringify({ loaderId: step.navigate, frames: step.frames }));
-      emit({ event: 'document-ready', loaderId: step.navigate });
-      return;
-    }
-    state.frames[step.frame] = { origin: step.origin, tools: step.tools };
-    writeFileSync(livePage, JSON.stringify(state));
-    emit({
-      event: 'tools-changed',
-      target: step.target ?? tab,
-      frameId: step.frame,
-      loaderId: step.loaderId ?? state.loaderId,
-      origin: step.origin,
-      tools: step.tools.map((tool) => ({ ...tool, origin: step.origin, frameId: step.frame })),
-    });
-  }, 50);
-};
-
 const dialogDir = process.env.FAKE_PWCLI_DIALOG_DIR;
 const dialogOpen = () => Boolean(dialogDir) && existsSync(join(dialogDir, 'open'));
 const holdRuns = () =>
@@ -187,50 +115,6 @@ if (command === 'dialog-hold') {
     }
   });
   process.stdin.on('end', () => stop('stdin-eof', 0));
-} else if (command === 'webmcp-polyfill') {
-  const reload = filtered.includes('--reload');
-  record({ command, tab, reload, fromOrigins });
-  const mode = process.env.FAKE_PWCLI_HOLDER || 'native';
-  if (mode === 'fail') {
-    process.stderr.write(
-      `${process.env.FAKE_PWCLI_HOLDER_STDERR || 'webmcp-polyfill: cannot attach'}\n`
-    );
-    process.exit(2);
-  }
-  const emit = (event) => process.stdout.write(`${JSON.stringify({ tab, ...event })}\n`);
-  if (mode !== 'native' && holderFile) writeFileSync(holderFile, String(process.pid));
-  emit({ event: 'ready', loaderId: 'L1', mode, late: !reload, reloaded: reload });
-  const stop = (code) => {
-    if (holderUp() && readFileSync(holderFile, 'utf8') === String(process.pid)) rmSync(holderFile);
-    process.exit(code);
-  };
-  if (process.env.FAKE_PWCLI_HOLDER_EXIT_ALWAYS) {
-    setTimeout(() => {
-      process.stderr.write('webmcp-polyfill: target closed\n');
-      stop(1);
-    }, Number(process.env.FAKE_PWCLI_HOLDER_EXIT_ALWAYS));
-  }
-  if (process.env.FAKE_PWCLI_HOLDER_EXIT_FIRST && holderRuns() === 1) {
-    setTimeout(() => {
-      process.stderr.write(
-        `${process.env.FAKE_PWCLI_HOLDER_STDERR || 'webmcp-polyfill: target closed, changed or was refused by the guard'}\n`
-      );
-      stop(1);
-    }, Number(process.env.FAKE_PWCLI_HOLDER_EXIT_FIRST));
-  }
-  if (liveScript) runLive(emit);
-  if (process.env.FAKE_PWCLI_HOLDER_NAVIGATE) {
-    setTimeout(
-      () => emit({ event: 'document-ready', loaderId: 'L2' }),
-      Number(process.env.FAKE_PWCLI_HOLDER_NAVIGATE)
-    );
-  }
-  process.stdin.on('data', () => {});
-  process.stdin.on('end', () => {
-    record({ command: 'webmcp-polyfill-stdin-closed', tab });
-    stop(0);
-  });
-  setInterval(() => {}, 1000);
 } else if (command === 'tab-list') {
   record({ command });
   if (process.env.FAKE_PWCLI_TAB_LIST_FAIL) {
@@ -250,170 +134,7 @@ if (command === 'dialog-hold') {
   process.exit(0);
 }
 
-if (command === 'webmcp-list') {
-  const json = filtered.includes('--json');
-  if (!json) {
-    process.stderr.write('webmcp-list requires --json\n');
-    process.exit(2);
-  }
-  record({ command, tab: usedTab(), holder: holderUp(), fromOrigins });
-  drift();
-  if (process.env.FAKE_PWCLI_CROSS_ORIGIN_OFF && fromOrigins.length > 0) {
-    process.stderr.write('cross-origin child tools are unavailable on this guarded route\n');
-  }
-  if (process.env.FAKE_PWCLI_UNAVAILABLE || (process.env.FAKE_PWCLI_NEEDS_HOLDER && !holderUp())) {
-    process.stderr.write(
-      'webmcp-list: WebMCP is unavailable on this page (document.modelContext is absent)\n'
-    );
-    process.exit(2);
-  } else if (process.env.FAKE_PWCLI_HOLDER_EMPTY && holderUp()) {
-    process.stdout.write('[]\n');
-    process.exit(0);
-  } else if (process.env.FAKE_PWCLI_HANG_LIST) {
-    if (process.env.FAKE_PWCLI_DIALOG_URL) fetch(process.env.FAKE_PWCLI_DIALOG_URL).catch(() => {});
-    setInterval(() => {}, 1000);
-  } else if (tab && !tabIds.includes(tab)) {
-    process.stdout.write('[]\n');
-    process.exit(0);
-  } else if (liveScript) {
-    process.stdout.write(`${JSON.stringify(pageTools())}\n`);
-    process.exit(0);
-  } else if (process.env.FAKE_PWCLI_LIST_EMPTY_UNTIL) {
-    const until = Number(process.env.FAKE_PWCLI_LIST_EMPTY_UNTIL);
-    const lists = readFileSync(process.env.FAKE_PWCLI_LOG, 'utf8')
-      .split('\n')
-      .filter((l) => l.includes('"command":"webmcp-list"')).length;
-    if (lists < until) {
-      process.stdout.write('[]\n');
-      process.exit(0);
-    }
-    try {
-      const data = readFileSync(fixtureFile, 'utf8');
-      process.stdout.write(data);
-      process.exit(0);
-    } catch (err) {
-      process.stderr.write(`fixture not found: ${fixtureFile}\n`);
-      process.exit(2);
-    }
-  } else {
-    try {
-      const data = readFileSync(fixtureFile, 'utf8');
-      process.stdout.write(data);
-      process.exit(0);
-    } catch (err) {
-      process.stderr.write(`fixture not found: ${fixtureFile}\n`);
-      process.exit(2);
-    }
-  }
-} else if (command === 'webmcp-call') {
-  const toolName = filtered[1];
-  const stdinFlag = filtered[2];
-  const allowConsequential = filtered.includes('--allow-consequential');
-
-  if (!toolName || stdinFlag !== '-') {
-    process.stderr.write('usage: webmcp-call <name> -\n');
-    process.exit(2);
-  }
-
-  let tools;
-  try {
-    tools = liveScript ? pageTools() : JSON.parse(readFileSync(fixtureFile, 'utf8'));
-  } catch {
-    process.stderr.write('no fixture\n');
-    process.exit(2);
-  }
-
-  const tool = tools.find((t) => t.name === toolName);
-  record({ command, tab: usedTab(), tool: toolName, executedOrigin: tool?.origin });
-  drift();
-  if (!tool) {
-    process.stderr.write(`unknown tool: ${toolName}\n`);
-    process.exit(2);
-  }
-
-  if (tool.annotations?.consequentialHint && !allowConsequential) {
-    process.stderr.write('consequential tool requires --allow-consequential\n');
-    process.exit(2);
-  }
-
-  const chunks = [];
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('data', (c) => chunks.push(c));
-  process.stdin.on('end', () => {
-    const stdinData = chunks.join('');
-    let input;
-    try {
-      input = JSON.parse(stdinData);
-    } catch {
-      process.stderr.write('invalid JSON on stdin\n');
-      process.exit(2);
-      return;
-    }
-
-    if (process.env.FAKE_PWCLI_ECHO_CALL) {
-      const callLog = JSON.stringify({
-        tool: toolName,
-        input,
-        argv: process.argv.slice(2),
-        stdinUsed: true,
-        cdp,
-        tab,
-        allowConsequential,
-      });
-      process.stderr.write(`CALL_LOG:${callLog}\n`);
-    }
-
-    if (process.env.FAKE_PWCLI_CALL_DIALOG) {
-      writeFileSync(join(dialogDir, 'open'), process.env.FAKE_PWCLI_CALL_DIALOG);
-      const wait = setInterval(() => {
-        if (dialogOpen()) return;
-        clearInterval(wait);
-        const answer = readFileSync(join(dialogDir, 'answer'), 'utf8');
-        process.stdout.write(`result for ${toolName} after the dialog was ${answer}`);
-        process.exit(0);
-      }, 50);
-      return;
-    }
-
-    if (process.env.FAKE_PWCLI_HANG) {
-      if (process.env.FAKE_PWCLI_DIALOG_URL)
-        fetch(process.env.FAKE_PWCLI_DIALOG_URL).catch(() => {});
-      setInterval(() => {}, 1000);
-      return;
-    }
-
-    if (process.env.FAKE_PWCLI_EXIT_CODE) {
-      const code = Number(process.env.FAKE_PWCLI_EXIT_CODE);
-      if (code === 1) {
-        process.stderr.write('tool threw an error\n');
-        process.exit(1);
-      }
-      process.exit(code);
-    }
-
-    if (process.env.FAKE_PWCLI_BIG) {
-      const big = Number(process.env.FAKE_PWCLI_BIG);
-      const chunk = 'x'.repeat(65536);
-      let left = big;
-      const pump = () => {
-        while (left > 0) {
-          const piece = chunk.slice(0, Math.min(left, chunk.length));
-          left -= piece.length;
-          if (!process.stdout.write(piece)) {
-            process.stdout.once('drain', pump);
-            return;
-          }
-        }
-        process.stdout.end(() => process.exit(0));
-      };
-      pump();
-      return;
-    }
-
-    process.stdout.write(`result for ${toolName} on ${tool.origin}: ${JSON.stringify(input)}`);
-    process.exit(0);
-  });
-} else if (command !== 'webmcp-polyfill' && command !== 'dialog-hold') {
+if (command !== 'tab-list' && command !== 'dialog-hold') {
   process.stderr.write(`unknown command: ${command}\n`);
   process.exit(2);
 }

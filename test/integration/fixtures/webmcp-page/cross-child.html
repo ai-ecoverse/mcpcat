@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+  <head>
+    <script>
+    const tools = [];
+    const api = new EventTarget();
+    api.registerTool = (tool) => tools.push(tool);
+    api.getTools = async () => tools;
+    api.executeTool = async (tool, input) =>
+      tool.execute(typeof input === 'string' ? JSON.parse(input) : input);
+    Object.defineProperty(document, 'modelContext', { value: api, configurable: true });
+    api.registerTool({
+      name: new URL(location.href).searchParams.get('name'),
+      exposedTo: [new URL(document.referrer).origin],
+      inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
+      annotations: { readOnly: true },
+      execute: (input) => JSON.stringify({ value: input.value, origin: location.origin }),
+    });
+    document.title = 'ready';
+    </script>
+  </head>
+  <body>
+    Child tools
+  </body>
+</html>

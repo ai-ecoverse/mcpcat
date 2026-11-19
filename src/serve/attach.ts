@@ -7,7 +7,7 @@ import {
   HOLDER_RESTART_MIN_MS,
   HOLDER_STABLE_MS,
   HOLDER_STOP_GRACE_MS,
-} from './webmcp-origin.ts';
+} from './holder.ts';
 
 export const EVAL_ATTACH_MIN_VERSION = '1.52.0';
 
@@ -21,6 +21,7 @@ export interface AttachOptions {
   scope: AttachScope;
   world: 'main' | 'isolated';
   early?: boolean;
+  frames?: string[];
   label: string;
   readyTimeoutMs?: number;
   report(line: string): Promise<void> | void;
@@ -37,6 +38,13 @@ export interface AttachEvent {
   early?: boolean;
   reason?: string;
   payload?: unknown;
+  parentFrameId?: string;
+  origin?: string;
+  ancestors?: unknown;
+  permissionsPolicy?: unknown;
+  toolsAllowed?: unknown;
+  allow?: unknown;
+  srcOrigin?: unknown;
 }
 
 export interface Attachment {
@@ -55,6 +63,7 @@ export function attachArgv(options: AttachOptions): string[] {
   else for (const match of scope.matches) argv.push('--match', match);
   argv.push('--world', options.world);
   if (options.early) argv.push('--early');
+  for (const origin of options.frames ?? []) argv.push('--frames', origin);
   return argv;
 }
 
@@ -77,11 +86,21 @@ export function parseAttachEvent(line: string): AttachEvent | undefined {
     'url',
     'world',
     'reason',
+    'parentFrameId',
+    'origin',
   ] as const) {
     if (typeof record[key] === 'string') out[key] = record[key] as string;
   }
   if (typeof record.early === 'boolean') out.early = record.early;
-  if ('payload' in record) out.payload = record.payload;
+  for (const key of [
+    'payload',
+    'ancestors',
+    'permissionsPolicy',
+    'toolsAllowed',
+    'allow',
+    'srcOrigin',
+  ] as const)
+    if (key in record) out[key] = record[key];
   return out;
 }
 
@@ -90,6 +109,7 @@ export function startAttachment(platform: Platform, options: AttachOptions): Att
   let proc: SpawnResult | undefined;
   let writer: WritableStreamDefaultWriter<Uint8Array> | undefined;
   let stopped = false;
+  let terminal = false;
   let delay = HOLDER_RESTART_MIN_MS;
   let readyAt: number | undefined;
   let restartTimer: ReturnType<typeof setTimeout> | undefined;
@@ -148,11 +168,13 @@ export function startAttachment(platform: Platform, options: AttachOptions): Att
       proc = undefined;
       writer = undefined;
       isReady = false;
+      for (const listener of listeners) listener({ event: 'disconnected' });
       if (readyAt !== undefined && Date.now() - readyAt >= HOLDER_STABLE_MS)
         delay = HOLDER_RESTART_MIN_MS;
       readyAt = undefined;
       if (stopped) return;
       if (result.status === 2) {
+        terminal = true;
         report(`playwright-cli eval-attach refused (${lastError ?? 'exit 2'}); not restarting`);
         settle(false);
         return;
@@ -178,6 +200,7 @@ export function startAttachment(platform: Platform, options: AttachOptions): Att
 
   return {
     ready() {
+      if (terminal || stopped) return Promise.resolve(false);
       if (isReady) return Promise.resolve(true);
       return new Promise<boolean>((resolve) => {
         const timer = setTimeout(() => {

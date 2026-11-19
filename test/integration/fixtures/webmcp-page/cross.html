@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+  <head>
+    <script>
+    Object.defineProperty(document, 'modelContext', {
+      value: Object.assign(new EventTarget(), { getTools: async () => [] }),
+      configurable: true,
+    });
+    const other = new URL(location.href).searchParams.get('other');
+    const requested = new URL('/cross-child.html', other);
+    const unrequested = new URL('/cross-child.html', location.href);
+    unrequested.hostname = 'localhost';
+    addEventListener('DOMContentLoaded', () => {
+      for (const [name, url, allow] of [
+        ['requested_tool', requested, 'tools *'],
+        ['denied_tool', requested, "tools 'none'"],
+        ['unrequested_tool', unrequested, 'tools *'],
+      ]) {
+        const child = document.createElement('iframe');
+        const src = new URL(url);
+        src.searchParams.set('name', name);
+        child.src = src.href;
+        child.allow = allow;
+        document.body.append(child);
+      }
+      document.title = 'ready';
+    });
+    </script>
+  </head>
+  <body>
+    <input autofocus>
+  </body>
+</html>

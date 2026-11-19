@@ -32,6 +32,7 @@ import {
 import { EventHub } from './event-hub.ts';
 import { handleEventsMessage } from './event-rpc.ts';
 import { type EventSpec, logLine, parseEventSpec } from './events.ts';
+import { compareVersions, HOLDER_READY_MS, type Holder, parseCliVersion } from './holder.ts';
 import { type HttpRequest, type HttpResponse, handleConnection } from './http.ts';
 import { handleJsonRpc, type RpcTool, type ToolListing, type ToolRunResult } from './jsonrpc.ts';
 import {
@@ -67,14 +68,6 @@ import {
   type DialogHolder,
   startDialogHolder,
 } from './webmcp-dialog.ts';
-import {
-  compareVersions,
-  FALLBACK_UNVERIFIED,
-  HOLDER_READY_MS,
-  type Holder,
-  parseCliVersion,
-  startHolder,
-} from './webmcp-origin.ts';
 
 const CALL_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_DEFAULT = 1_048_576;
@@ -1398,11 +1391,12 @@ async function runWebMcpServe(
       callTimeoutMs: options.callTimeout,
     })
   );
-  if (compareVersions(cliVersion ?? '0.0.0', EVAL_ATTACH_MIN_VERSION) < 0) {
+  const minimum = options.webmcpFromOrigins.length ? '1.54.0' : EVAL_ATTACH_MIN_VERSION;
+  if (compareVersions(cliVersion ?? '0.0.0', minimum) < 0) {
     await platform.write(
       2,
       sanitizeTerminal(
-        `mcpcat serve --webmcp: needs playwright-cli ${EVAL_ATTACH_MIN_VERSION} or newer (found ${cliVersion ?? 'unknown'}); update with: playwright-cli update\n`
+        `mcpcat serve --webmcp: needs playwright-cli ${minimum} or newer (found ${cliVersion ?? 'unknown'}); update with: playwright-cli update\n`
       )
     );
     return 2;
@@ -1427,7 +1421,6 @@ async function runWebMcpServe(
     late: () => isLate(holder),
     emptyHint: (unavailable, crossOriginOff) =>
       emptyToolsHint(options, polyfill, unavailable, crossOriginOff),
-    topLoader: () => holder?.status().loaderId,
     onChange: notifier ? () => notifier.notify() : undefined,
   });
   holder?.onDocument(() => {
@@ -1526,33 +1519,21 @@ async function startPolyfill(
   cdp: string | undefined,
   tab: string
 ): Promise<PolyfillState> {
-  if (options.webmcpFromOrigins.length === 0) {
-    const page = await attachWebMcp(
-      platform,
-      {
-        playwrightCli,
-        cdp,
-        tab,
-        reload: options.webmcpReload,
-        callTimeoutMs: options.callTimeout,
-        readyTimeoutMs: Math.min(options.callTimeout, HOLDER_READY_MS),
-        report: (line) => platform.write(2, line),
-      },
-      options.webmcpPolyfill !== 'off'
-    );
-    return { holder: page, page, live: true };
-  }
-  if (options.webmcpPolyfill === 'off') return {};
-  const holder = startHolder(platform, {
-    playwrightCli,
-    cdp,
-    tab,
-    reload: options.webmcpReload,
-    readyTimeoutMs: Math.min(options.callTimeout, HOLDER_READY_MS),
-    fromOrigins: options.webmcpFromOrigins,
-    report: (line) => platform.write(2, line),
-  });
-  return { holder, live: true };
+  const page = await attachWebMcp(
+    platform,
+    {
+      playwrightCli,
+      cdp,
+      tab,
+      reload: options.webmcpReload,
+      callTimeoutMs: options.callTimeout,
+      readyTimeoutMs: Math.min(options.callTimeout, HOLDER_READY_MS),
+      fromOrigins: options.webmcpFromOrigins,
+      report: (line) => platform.write(2, line),
+    },
+    options.webmcpPolyfill !== 'off'
+  );
+  return { holder: page, page, live: true };
 }
 
 function isLate(holder: Holder | undefined): boolean {
@@ -1567,26 +1548,17 @@ function emptyToolsHint(
   crossOriginOff?: boolean
 ): string | undefined {
   if (crossOriginOff) return CROSS_ORIGIN_OFF_HINT;
-  if (options.webmcpPolyfill === 'off') {
+  const status = polyfill.holder?.status();
+  if (status?.late)
+    return 'the page ran its first script before the WebMCP polyfill could be installed early; reload the tab, or restart with --webmcp-reload (it reloads the tab); no late fallback is used';
+  if (status?.refused)
+    return `WebMCP tools are unavailable: eval-attach refused this document (${status.error})`;
+  if (options.webmcpFromOrigins.length)
+    return 'child WebMCP tools install late and may miss first-script registrations; reload the child. Without native tools policy evidence, children loaded before attachment are denied until they navigate; tools also require exposedTo and delegation along every ancestor';
+  if (options.webmcpPolyfill === 'off')
     return unavailable
       ? 'WebMCP is not enabled in this browser and --webmcp-polyfill is off; drop --webmcp-polyfill off to inject the WebMCP polyfill'
       : undefined;
-  }
-  const status = polyfill.holder?.status();
-  if (polyfill.page && status?.late)
-    return 'the page ran its first script before the WebMCP polyfill could be installed early; reload the tab, or restart with --webmcp-reload (it reloads the tab); no late fallback is used';
-  if (polyfill.page && status?.refused)
-    return `WebMCP tools are unavailable: eval-attach refused this document (${status.error})`;
-  if (status?.refused && status.fallbackUnavailable) return FALLBACK_UNVERIFIED;
-  if (isLate(polyfill.holder)) {
-    return 'the page may check for WebMCP only when it loads, before the polyfill was injected; reload the tab, or restart with --webmcp-reload (it reloads the tab)';
-  }
-  if (status?.refused) {
-    const head = unavailable
-      ? 'WebMCP is unavailable on this page'
-      : 'the page shows no WebMCP tools';
-    return `${head} and the WebMCP polyfill is not running: the guard refused it (${status.error}), and retrying won't help`;
-  }
   if (!unavailable) return undefined;
   if (status?.error) {
     return `WebMCP is unavailable on this page and the WebMCP polyfill is not running (${status.error})`;

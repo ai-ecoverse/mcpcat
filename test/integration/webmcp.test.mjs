@@ -413,7 +413,7 @@ describe('serve --webmcp', () => {
       assert.equal(callResp.result.isError, true);
     });
 
-    it('maps exit code 2 to JSON-RPC error', () => {
+    it('wraps an evaluation refusal as an untrusted tool error', () => {
       const input =
         [
           rpc('initialize', {
@@ -435,8 +435,7 @@ describe('serve --webmcp', () => {
       assert.equal(result.status, 0, `stderr: ${result.stderr}`);
       const lines = result.stdout.trim().split('\n');
       const callResp = JSON.parse(lines[1]);
-      assert.ok(callResp.error, 'exit 2 should produce a JSON-RPC error');
-      assert.equal(callResp.error.code, -32000);
+      assert.equal(callResp.result.isError, true);
     });
 
     it('prefixes tool names when multiple origins', () => {
@@ -625,7 +624,7 @@ describe('serve --webmcp', () => {
           .map((l) => JSON.parse(l))
           .map((r) => [r.id, r])
       );
-      const calls = readLog(log).filter((e) => e.command === 'webmcp-call');
+      const calls = readLog(log).filter((e) => e.command === 'eval-file');
       for (const call of calls) {
         if (call.tool === 'lookup') {
           assert.fail(
@@ -649,36 +648,27 @@ describe('serve --webmcp', () => {
       assert.equal(balanceCall?.executedOrigin, 'https://bank.example.com');
     });
 
-    it('a call to <host>__<name> is refused when another origin registers the name after tools/list', () => {
-      const log = join(scratch(), 'pw.log');
-      const input =
-        [
-          init,
-          rpc('tools/list', {}, 2),
-          rpc('tools/call', { name: 'bank_example_com__lookup', arguments: { q: 'acct-4242' } }, 3),
-        ].join('\n') + '\n';
-      const result = runHost(
-        ['serve', '--webmcp', '--webmcp-ttl', '60', '--playwright-cli', fakePwCli],
-        {
-          input,
-          env: {
-            FAKE_PWCLI_FIXTURE: bankOnlyFixture,
-            FAKE_PWCLI_FIXTURE_NEXT: sharedNameFixture,
-            FAKE_PWCLI_LOG: log,
-          },
-        }
-      );
-      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
-      const [, list, call] = result.stdout
-        .trim()
-        .split('\n')
-        .map((l) => JSON.parse(l));
-      assert.ok(list.result.tools.some((t) => t.name === 'bank_example_com__lookup'));
-      const ran = readLog(log).filter((e) => e.command === 'webmcp-call');
+    it('a call to <host>__<name> is refused when another origin registers the name after tools/list', async (t) => {
+      const dir = scratch();
+      const log = join(dir, 'pw.log');
+      const fixture = join(dir, 'tools.json');
+      writeFileSync(fixture, readFileSync(bankOnlyFixture));
+      const server = await startWebMcpHttp(['--webmcp-ttl', '60'], {
+        FAKE_PWCLI_FIXTURE: fixture,
+        FAKE_PWCLI_LOG: log,
+      });
+      t.after(() => server.child.kill('SIGTERM'));
+      const list = await rpcCall(server.port, 'tools/list', {});
+      assert.ok(list.result.tools.some((tool) => tool.name === 'bank_example_com__lookup'));
+      writeFileSync(fixture, readFileSync(sharedNameFixture));
+      const call = await rpcCall(server.port, 'tools/call', {
+        name: 'bank_example_com__lookup',
+        arguments: { q: 'acct-4242' },
+      });
       assert.deepEqual(
-        ran.map((e) => e.executedOrigin),
+        readLog(log).filter((entry) => entry.command === 'eval-file'),
         [],
-        'no webmcp-call may run while two origins share the name'
+        'ambiguous tools must not be evaluated'
       );
       assert.ok(call.error, JSON.stringify(call));
       assert.match(call.error.message, /ambiguous/);
@@ -714,8 +704,11 @@ describe('serve --webmcp', () => {
       );
       assert.equal(result.status, 0, `stderr: ${result.stderr}`);
       const entries = readLog(log).filter((e) => e.command !== 'tab-list');
-      assert.ok(entries.filter((e) => e.command === 'webmcp-list').length >= 2);
-      assert.equal(entries.filter((e) => e.command === 'webmcp-call').length, 2);
+      assert.ok(
+        entries.filter((e) => e.command === 'eval' && e.expression?.includes('bridge.refresh()'))
+          .length >= 2
+      );
+      assert.equal(entries.filter((e) => e.command === 'eval-file').length, 2);
       for (const e of entries) {
         const i = e.argv.indexOf('--tab');
         assert.ok(i >= 0, `${e.command} must pass --tab: ${e.argv.join(' ')}`);

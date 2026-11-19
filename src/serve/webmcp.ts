@@ -1,14 +1,9 @@
 import type { Platform, SpawnResult, WebSocketChannel } from '../platform/types.ts';
 import type { JsonObjectSchema } from './catalog.ts';
+import type { ToolsChanged } from './holder.ts';
 import type { RpcTool, ToolListing, ToolRunResult } from './jsonrpc.ts';
 import type { AttachedPage } from './webmcp-attach.ts';
 import { DIALOG_CLAIM_MS, type DialogHolder } from './webmcp-dialog.ts';
-import {
-  FALLBACK_UNVERIFIED,
-  originCallInvocation,
-  originListArgv,
-  type ToolsChanged,
-} from './webmcp-origin.ts';
 
 export interface WebMcpAnnotations {
   readOnlyHint?: boolean;
@@ -25,6 +20,10 @@ export interface WebMcpTool {
   annotations?: WebMcpAnnotations;
   policy?: unknown;
   frameId?: unknown;
+  loaderId?: unknown;
+  exposedTo?: unknown;
+  late?: boolean;
+  topOrigin?: string;
 }
 
 export interface WebMcpOptions {
@@ -41,13 +40,7 @@ export interface WebMcpOptions {
   beforeList?: () => Promise<void>;
   late?: () => boolean;
   emptyHint?: (unavailable: boolean, crossOriginOff?: boolean) => string | undefined;
-  topLoader?: () => string | undefined;
   onChange?: () => void;
-}
-
-interface FrameTools {
-  tools: WebMcpTool[];
-  seq: number;
 }
 
 interface CacheEntry {
@@ -57,22 +50,10 @@ interface CacheEntry {
   expiresAt: number;
 }
 
-const UNAVAILABLE_RE = /WebMCP is unavailable on this page/;
-export const CROSS_ORIGIN_OFF_RE = /cross-origin child tools are unavailable/;
 export const FROM_ORIGIN_POLL_MS = 100;
 export const FROM_ORIGIN_POLL_MAX_MS = 15_000;
 export const CROSS_ORIGIN_OFF_HINT =
   'cross-origin child tools are unavailable on this guarded route';
-
-function emptyFallbackOrError(error: string, holderHint?: string): ToolListing {
-  const hint = error.trim();
-  if (hint === 'webmcp: unverified isolated context' && holderHint === FALLBACK_UNVERIFIED)
-    return { tools: [], hint: holderHint };
-  return hint ===
-    'webmcp: no tools are available through the other-extension fallback; page startup or parse-time checks may have happened before installation'
-    ? { tools: [], hint }
-    : { tools: [], error };
-}
 
 function buildBaseArgs(options: WebMcpOptions): string[] {
   const args: string[] = [];
@@ -81,9 +62,6 @@ function buildBaseArgs(options: WebMcpOptions): string[] {
   }
   if (options.tab) {
     args.push('--tab', options.tab);
-  }
-  for (const origin of options.fromOrigins ?? []) {
-    args.push('--from-origin', origin);
   }
   return args;
 }
@@ -545,7 +523,7 @@ function mapDescriptionAnnotations(ann?: WebMcpAnnotations): Record<string, bool
 function bridgeAnnotations(tool: WebMcpTool, late: boolean): Record<string, boolean | string> {
   const mapped: Record<string, boolean | string> = mapDescriptionAnnotations(tool.annotations);
   if (tool.policy === 'allowed' || tool.policy === 'unknown') mapped.policy = tool.policy;
-  if (late) mapped.late = true;
+  if (late || tool.late) mapped.late = true;
   return mapped;
 }
 
@@ -598,7 +576,7 @@ function exposedTools(
 function ambiguityError(name: string, peers: WebMcpTool[]): Error {
   const origins = [...new Set(peers.map((t) => String(t.origin)))].join(', ');
   return new Error(
-    `tool "${name}" is ambiguous: ${peers.length} tools on the page match it (${origins}), and playwright-cli runs the first tool by name and cannot select one by origin, so mcpcat refuses the call`
+    `tool "${name}" is ambiguous: ${peers.length} tools on the page match it (${origins}), so mcpcat refuses the call`
   );
 }
 
@@ -617,21 +595,6 @@ async function blockedNow(
   return open ? dialogMessage(tab!, open) : undefined;
 }
 
-function urlOrigin(url: string): string | undefined {
-  try {
-    return new URL(url).origin;
-  } catch {
-    return undefined;
-  }
-}
-
-async function tabOrigin(platform: Platform, options: WebMcpOptions): Promise<string | undefined> {
-  const listed = await listTabs(platform, options);
-  if ('error' in listed) return undefined;
-  const row = listed.rows.find((r) => r.id === options.tab);
-  return row ? urlOrigin(row.url) : undefined;
-}
-
 async function tabGone(platform: Platform, options: WebMcpOptions): Promise<string | undefined> {
   const { tab } = options;
   if (!tab) return undefined;
@@ -644,88 +607,8 @@ export function hiddenToolMessage(name: string): string {
   return `tool ${name} exists on the page but is hidden because it is consequential (consequentialHint); restart with mcpcat serve --webmcp --allow-consequential to expose it`;
 }
 
-function parseListOutput(
-  result: { stdout: string; cut: boolean },
-  listLimit: number
-): WebMcpTool[] | { error: string } {
-  if (result.cut) return { error: `webmcp-list output exceeds ${listLimit} characters` };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(result.stdout);
-  } catch {
-    return { error: 'webmcp-list returned invalid JSON' };
-  }
-  if (!Array.isArray(parsed)) return { error: 'webmcp-list did not return an array' };
-  return parsed as WebMcpTool[];
-}
-
-interface Mark {
-  epoch: number;
-  seq: number;
-}
-
-function createLiveFrames(platform: Platform, options: WebMcpOptions) {
-  const { tab } = options;
-  const fromOrigins = options.fromOrigins ?? [];
-  const frames = new Map<string, FrameTools>();
-  let seq = 0;
-  let epoch = 0;
-  let topOrigin: Promise<string | undefined> | undefined;
-  let changes: Promise<void> = Promise.resolve();
-
-  const frameOf = (tool: WebMcpTool): string =>
-    typeof tool.frameId === 'string' ? tool.frameId : (tab ?? '');
-
-  async function admitted(frameId: string, origin: string): Promise<boolean> {
-    if (frameId === tab || fromOrigins.includes(origin)) return true;
-    topOrigin ??= tabOrigin(platform, options);
-    const known = await topOrigin.catch(() => undefined);
-    if (known === undefined) topOrigin = undefined;
-    return origin === known;
-  }
-
-  async function applyNow(event: ToolsChanged, at: number): Promise<void> {
-    const { frameId, loaderId, origin, tools } = event;
-    if (typeof frameId !== 'string' || typeof origin !== 'string' || !Array.isArray(tools)) return;
-    const top = options.topLoader?.();
-    if (frameId === tab && top !== undefined && loaderId !== top) return;
-    if (!(await admitted(frameId, origin)) || at !== epoch) return;
-    frames.set(frameId, {
-      tools: (tools as WebMcpTool[]).map((tool) => ({ ...tool, frameId })),
-      seq: ++seq,
-    });
-    options.onChange?.();
-  }
-
-  return {
-    mark: (): Mark => ({ epoch, seq }),
-    keep(mark: Mark): boolean {
-      if (mark.epoch !== epoch) return false;
-      for (const [id, frame] of frames) {
-        if (frame.seq <= mark.seq) frames.delete(id);
-      }
-      return true;
-    },
-    merged(tools: WebMcpTool[]): WebMcpTool[] {
-      if (frames.size === 0) return tools;
-      const out = tools.filter((tool) => !frames.has(frameOf(tool)));
-      for (const frame of frames.values()) out.push(...frame.tools);
-      return out;
-    },
-    reset(): void {
-      frames.clear();
-      topOrigin = undefined;
-      epoch++;
-    },
-    apply(event: ToolsChanged): Promise<void> {
-      const at = epoch;
-      changes = changes.then(() => applyNow(event, at)).catch(() => {});
-      return changes;
-    },
-  };
-}
-
 interface ListOutcome {
+  pendingChildren?: boolean;
   tools?: WebMcpTool[];
   error?: string;
   notFound?: boolean;
@@ -757,61 +640,15 @@ async function listPage(
 function createLister(
   platform: Platform,
   options: WebMcpOptions,
-  baseArgs: string[],
-  listLimit: number,
   watcher: DialogWatcher | undefined,
   watch: Watch | undefined,
-  live: ReturnType<typeof createLiveFrames>,
   getCache: () => CacheEntry | undefined,
-  setCache: (mark: Mark, entry: CacheEntry) => void
+  cacheWriter: () => (entry: CacheEntry) => void
 ) {
   const { tab, dialogs } = options;
 
   async function listOnce(): Promise<ListOutcome> {
-    if (options.page) return listPage(platform, options, watch);
-    const argv = originListArgv(options.playwrightCli, baseArgs);
-    const result = await runProcess(
-      platform,
-      argv,
-      undefined,
-      options.callTimeoutMs,
-      listLimit,
-      watch
-    );
-    const crossOriginOff = CROSS_ORIGIN_OFF_RE.test(result.stderr);
-
-    if (result.exitCode === -1) {
-      return { error: result.stderr, notFound: true };
-    }
-
-    if (result.blocked) {
-      return { error: result.blocked };
-    }
-
-    if (result.exitCode === 124) {
-      return {
-        error: timeoutMessage('webmcp-list', options.callTimeoutMs, tab, watcher),
-      };
-    }
-
-    if (result.exitCode === 2 && UNAVAILABLE_RE.test(result.stderr)) {
-      return { tools: [], unavailable: true, crossOriginOff };
-    }
-
-    if (result.exitCode !== 0) {
-      return { error: result.stderr || `webmcp-list exited ${result.exitCode}` };
-    }
-
-    const parsed = parseListOutput(result, listLimit);
-    if (!Array.isArray(parsed)) return { error: parsed.error };
-
-    if (parsed.length === 0) {
-      const gone = await tabGone(platform, options);
-      if (gone) return { error: gone };
-      return { tools: [], crossOriginOff };
-    }
-
-    return { tools: parsed, crossOriginOff };
+    return listPage(platform, options, watch);
   }
 
   return async function listRaw(fresh = false): Promise<ListRawResult> {
@@ -821,15 +658,15 @@ function createLister(
     const cache = getCache();
     if (!fresh && cache && Date.now() < cache.expiresAt) {
       return {
-        tools: live.merged(cache.tools),
+        tools: cache.tools,
         unavailable: cache.unavailable,
         crossOriginOff: cache.crossOriginOff,
       };
     }
 
+    const saveCache = cacheWriter();
     await options.beforeList?.();
     const now = Date.now();
-    const mark = live.mark();
     const pollOrigins = (options.fromOrigins ?? []).length > 0;
     const deadline = pollOrigins ? now + FROM_ORIGIN_POLL_MAX_MS : now;
 
@@ -839,7 +676,7 @@ function createLister(
       outcome.tools?.length === 0 &&
       !outcome.error &&
       !outcome.notFound &&
-      !outcome.unavailable &&
+      (!outcome.unavailable || outcome.pendingChildren) &&
       !outcome.crossOriginOff &&
       Date.now() < deadline
     ) {
@@ -857,14 +694,14 @@ function createLister(
     }
 
     const listed = outcome.tools ?? [];
-    setCache(mark, {
+    saveCache({
       tools: listed,
       unavailable: outcome.unavailable === true,
       crossOriginOff: outcome.crossOriginOff,
       expiresAt: Date.now() + options.ttlMs,
     });
     return {
-      tools: live.merged(listed),
+      tools: listed,
       unavailable: outcome.unavailable,
       crossOriginOff: outcome.crossOriginOff,
     };
@@ -877,28 +714,19 @@ async function webMcpInvocation(
   args: unknown,
   baseArgs: string[]
 ): Promise<{ argv: string[]; stdin?: string; cleanup?: () => Promise<void> }> {
-  if (options.page) {
-    const page = options.page;
-    const file = await page.callFile(tool.name, args, options.allowConsequential, tool.origin);
-    return {
-      argv: [options.playwrightCli, 'eval-file', file, ...baseArgs],
-      cleanup: () => page.releaseCall(file),
-    };
-  }
-  return originCallInvocation(
-    options.playwrightCli,
-    baseArgs,
+  const page = options.page!;
+  const selectors = page.callArgs(tool);
+  const file = await page.callFile(
     tool.name,
     args,
-    options.allowConsequential
+    options.allowConsequential,
+    tool.origin,
+    tool.topOrigin
   );
-}
-
-function refuseLegacyCall(
-  options: WebMcpOptions,
-  result: { exitCode: number; stderr: string }
-): void {
-  if (result.exitCode === 2 && !options.page) throw new Error(result.stderr || 'webmcp-call error');
+  return {
+    argv: [options.playwrightCli, 'eval-file', file, ...baseArgs, ...selectors],
+    cleanup: () => page.releaseCall(file),
+  };
 }
 
 function capPageText(text: string, limit: number): string {
@@ -950,31 +778,30 @@ function pageCallResult(
 
 export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) {
   let cache: CacheEntry | undefined;
+  let cacheRevision = 0;
   const baseArgs = buildBaseArgs(options);
 
-  const listLimit = Math.max(options.maxOutput, WEBMCP_LIST_FLOOR);
   const { cdp, tab, dialogs } = options;
   const watcher = cdp && tab ? watchJsDialogs(platform, cdp, tab) : undefined;
   const watch = watcher ? reportWatch(tab!, watcher) : undefined;
-  const live = createLiveFrames(platform, options);
   const listRaw = createLister(
     platform,
     options,
-    baseArgs,
-    listLimit,
     watcher,
     watch,
-    live,
     () => cache,
-    (mark, entry) => {
-      if (live.keep(mark)) cache = entry;
+    () => {
+      const revision = cacheRevision;
+      return (entry) => {
+        if (revision === cacheRevision) cache = entry;
+      };
     }
   );
 
   async function getRpcTools(): Promise<ToolListing | null> {
     const { tools, error, notFound, unavailable, crossOriginOff } = await listRaw();
     if (notFound) return null;
-    if (error) return emptyFallbackOrError(error, options.emptyHint?.(false, crossOriginOff));
+    if (error) return { tools: [], error };
     const late = options.late?.() ?? false;
 
     const rpcTools: RpcTool[] = [];
@@ -1027,7 +854,7 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
       invocation.argv,
       invocation.stdin,
       options.callTimeoutMs,
-      options.page ? Math.max(options.maxOutput, 397312) : options.maxOutput,
+      Math.max(options.maxOutput, 397312),
       dialogs ? answeringWatch(tab!, dialogs, watcher) : watch
     )
       .finally(disarm)
@@ -1042,10 +869,8 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
     }
 
     if (result.exitCode === 124) {
-      throw new Error(timeoutMessage('webmcp-call', options.callTimeoutMs, tab, watcher));
+      throw new Error(timeoutMessage('WebMCP call', options.callTimeoutMs, tab, watcher));
     }
-
-    refuseLegacyCall(options, result);
 
     const meta: Record<string, unknown> = {
       'io.mcpcat/untrusted': true,
@@ -1061,23 +886,22 @@ export function createWebMcpHandler(platform: Platform, options: WebMcpOptions) 
       };
     }
 
-    if (options.page) return pageCallResult(result, name, meta, options.maxOutput);
-    const text = wrapUntrusted(result.stdout);
-    return { stdout: text, stderr: result.stderr, exitCode: 0, meta };
+    return pageCallResult(result, name, meta, options.maxOutput);
   }
 
   function invalidateCache(): void {
+    cacheRevision++;
     cache = undefined;
-    live.reset();
   }
 
   function close(): void {
     watcher?.close();
   }
 
-  function applyToolsChanged(event: ToolsChanged): Promise<void> {
-    if (options.page) invalidateCache();
-    return live.apply(event);
+  function applyToolsChanged(_event: ToolsChanged): Promise<void> {
+    invalidateCache();
+    options.onChange?.();
+    return Promise.resolve();
   }
 
   return { getRpcTools, callTool, invalidateCache, applyToolsChanged, close };
