@@ -232,6 +232,17 @@ describe('results are masked like errors', () => {
     });
   }
 
+  for (const value of ['{"user":"alice","pass":"hunter22"}', '["alice","hunter22"]']) {
+    for (const json of [[], ['--json']]) {
+      it(`a JSON header value spanning tokens stays hidden ${json.join('')}: ${value}`, () => {
+        const r = run(['-H', `X-Api-Key: ${value}`, ...json, 'call', target, 'apikey'], env({}));
+        assert.equal(r.status, 0, r.stderr);
+        assertHidden(r, value);
+        assert.ok(r.stdout.includes(MASK), r.stdout);
+      });
+    }
+  }
+
   it('--json masks keys and values that contain a syntax-only header value', () => {
     const r = run(['-H', 'Authorization: :', '--json', 'call', `${srv.base}/mcp`, 'rich'], env({}));
     assert.equal(r.status, 0, r.stderr);

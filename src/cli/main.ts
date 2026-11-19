@@ -38,7 +38,13 @@ import { releaseAllLocks } from '../config/lock.ts';
 import type { McpOAuthConfig, McpServerConfig } from '../config/types.ts';
 import { runAddCandidate, runDiscover, runFromDiscovery, runInbox } from '../discovery/verbs.ts';
 import type { Platform } from '../platform/types.ts';
-import { redactDeep, redactOutput, redactSecrets, redactWrites } from '../render/redact.ts';
+import {
+  redactDeep,
+  redactOutput,
+  redactSecrets,
+  redactWrites,
+  secretRedactor,
+} from '../render/redact.ts';
 import {
   type Redactor,
   renderCallResult,
@@ -1562,7 +1568,7 @@ async function dispatchMultiTarget(
   const { secrets, unset } = expandAndCollect(parsed.headers, platform.env, parsed.extra);
   if (unset.length > 0 && !isKernel(platform)) return refuseUnsetHeaders(platform, unset);
   const hidden = new Set(secrets);
-  const redact: Redactor = (text) => redactSecrets(text, hidden);
+  const redact = secretRedactor(hidden);
   return runMultiTarget(redactWrites(platform, redact), parsed, version, hidden, redact);
 }
 
@@ -2238,7 +2244,7 @@ async function runClientVerb(
   const verbose = createVerboseLogger(platform, parsed.verbose);
   for (const s of secrets) verbose.secrets.add(s);
   const allSecrets = new Set(secrets);
-  const redact: Redactor = (text: string) => redactSecrets(text, allSecrets);
+  const redact = secretRedactor(allSecrets);
   const output = redactWrites(platform, redact);
 
   const timeoutMs = parsed.timeoutMs;
