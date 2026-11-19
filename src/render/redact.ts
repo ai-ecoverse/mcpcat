@@ -5,6 +5,7 @@ import { sanitizeJson, sanitizeTerminal } from './sanitize.ts';
 const ENCODING_DEPTH = 3;
 const NON_ASCII = /[\u007f-\uffff]/g;
 const JSON_TOKEN = /"(?:[^"\\]|\\.)*"|[^\s"{}[\],:]+/g;
+const SYNTAX_ONLY = /^[\s"{}[\],:]*$/;
 
 function jsonForms(text: string): string[] {
   const json = JSON.stringify(text).slice(1, -1);
@@ -45,14 +46,18 @@ function isJson(text: string): boolean {
   }
 }
 
+function maskToken(token: string, redact: Redactor): string {
+  const value = token.startsWith('"') ? (JSON.parse(token) as string) : token;
+  const shown = redact(value);
+  return shown === value ? token : JSON.stringify(shown);
+}
+
 export function redactOutput(text: string, redact: Redactor): string {
   const masked = redact(text);
-  if (masked === text || isJson(masked) || !isJson(text)) return masked;
-  const tokens = text.replace(JSON_TOKEN, (token) => {
-    const shown = redact(token);
-    return shown === token || token.startsWith('"') ? shown : JSON.stringify(shown);
-  });
-  return redact(tokens) === tokens ? tokens : masked;
+  if (masked === text || !isJson(text)) return masked;
+  const tokens = text.replace(JSON_TOKEN, (token) => maskToken(token, redact));
+  const check = redact.data ?? redact;
+  return check(tokens) === tokens ? tokens : masked;
 }
 
 export function redactWrites(platform: Platform, redact: Redactor): Platform {
@@ -87,4 +92,11 @@ export function secretMasker(secrets: Iterable<string>, mask: string): (text: st
 
 export function redactSecrets(text: string, secrets: Iterable<string>): string {
   return secretMasker(secrets, '[REDACTED]')(text);
+}
+
+export function secretRedactor(secrets: Iterable<string>): Redactor {
+  const data = () => [...secrets].filter((s) => !SYNTAX_ONLY.test(s));
+  return Object.assign((text: string) => redactSecrets(text, secrets), {
+    data: (text: string) => redactSecrets(text, data()),
+  });
 }

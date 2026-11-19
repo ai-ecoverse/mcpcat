@@ -28,6 +28,7 @@ const TOOLS = [
   { name: 'nested', description: 'JSON inside a string', inputSchema: { type: 'object' } },
   { name: 'failed', description: 'a tool error', inputSchema: { type: 'object' } },
   { name: 'count', description: 'a number', inputSchema: { type: 'object' } },
+  { name: 'apikey', description: 'the bare x-api-key header', inputSchema: { type: 'object' } },
 ];
 
 function richResult(quoted) {
@@ -170,6 +171,8 @@ const server = createServer((req, res) => {
       out = rpc(id, { content: [{ type: 'text', text: JSON.stringify({ inner }) }] });
     } else if (method === 'tools/call' && params?.name === 'failed') {
       out = rpc(id, { isError: true, content: [{ type: 'text', text: quoted }] });
+    } else if (method === 'tools/call' && params?.name === 'apikey') {
+      out = rpc(id, { content: [{ type: 'text', text: req.headers['x-api-key'] ?? '' }] });
     } else if (method === 'tools/call' && params?.name === 'count') {
       out = rpc(id, {
         content: [{ type: 'text', text: 'plain' }],

@@ -10,7 +10,7 @@ import type { Platform } from '../platform/types.ts';
 import { redactOutput } from './redact.ts';
 import { sanitizeTerminal } from './sanitize.ts';
 
-export type Redactor = (text: string) => string;
+export type Redactor = ((text: string) => string) & { data?: (text: string) => string };
 
 export interface RenderOptions {
   json?: boolean;
