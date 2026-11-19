@@ -222,4 +222,23 @@ describe('results are masked like errors', () => {
     assert.equal(r.status, 0, r.stderr);
     assert.deepEqual(JSON.parse(r.stdout).structuredContent, { count: MASK, label: 'plain' });
   });
+
+  for (const value of [':', ',', '{', '"', '": "']) {
+    it(`--json stays valid when a header value is JSON syntax: ${value}`, () => {
+      const r = run(['-H', `Authorization: ${value}`, '--json', 'call', target, 'count'], env({}));
+      assert.equal(r.status, 0, r.stderr);
+      const plain = run(['--json', 'call', target, 'count'], env({}));
+      assert.equal(r.stdout, plain.stdout);
+    });
+  }
+
+  it('--json masks keys and values that contain a syntax-only header value', () => {
+    const r = run(['-H', 'Authorization: :', '--json', 'call', `${srv.base}/mcp`, 'rich'], env({}));
+    assert.equal(r.status, 0, r.stderr);
+    const { structuredContent } = JSON.parse(r.stdout);
+    const [key] = Object.keys(structuredContent).filter((k) => k !== 'value');
+    for (const text of [structuredContent.value, key]) {
+      assert.ok(text.includes(MASK) && !text.includes(':'), text);
+    }
+  });
 });

@@ -45,14 +45,16 @@ function isJson(text: string): boolean {
   }
 }
 
+function maskToken(token: string, redact: Redactor): string {
+  const value = token.startsWith('"') ? (JSON.parse(token) as string) : token;
+  const shown = redact(value);
+  return shown === value ? token : JSON.stringify(shown);
+}
+
 export function redactOutput(text: string, redact: Redactor): string {
   const masked = redact(text);
-  if (masked === text || isJson(masked) || !isJson(text)) return masked;
-  const tokens = text.replace(JSON_TOKEN, (token) => {
-    const shown = redact(token);
-    return shown === token || token.startsWith('"') ? shown : JSON.stringify(shown);
-  });
-  return redact(tokens) === tokens ? tokens : masked;
+  if (masked === text || !isJson(text)) return masked;
+  return text.replace(JSON_TOKEN, (token) => maskToken(token, redact));
 }
 
 export function redactWrites(platform: Platform, redact: Redactor): Platform {
