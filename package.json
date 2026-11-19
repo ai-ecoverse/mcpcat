@@ -60,11 +60,11 @@
     "trust:dry": "npx fledgling sync --dry-run -y --skip-publish"
   },
   "devDependencies": {
-    "@ai-ecoverse/slicc-cdp": "1.54.0",
+    "@ai-ecoverse/slicc-cdp": "1.54.2",
     "@ai-ecoverse/slicc-kernel": "1.191.2",
-    "@ai-ecoverse/slicc-shared-web": "2.14.4",
+    "@ai-ecoverse/slicc-shared-web": "2.16.0",
     "@ai-ecoverse/slicc-vault": "1.29.0",
-    "@biomejs/biome": "2.6.6",
+    "@biomejs/biome": "2.6.7",
     "@earendil-works/pi-codemode": "1.5.2",
     "@earendil-works/pi-mcp": "1.5.2",
     "@types/node": "26.6.6",
