@@ -1,6 +1,7 @@
 import './helpers/isolate.mjs';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { after, afterEach, before, describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
@@ -24,6 +25,14 @@ afterEach(() => {
   for (const child of live) child.kill('SIGKILL');
   live.clear();
 });
+
+async function freePort() {
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
 
 function launch(args, options) {
   const child = spawnMcpcat(args, options);
@@ -327,10 +336,8 @@ describe('loopback callbackUrl is unchanged', () => {
     },
     {
       name: '127.0.0.1 with a port',
-      oauth: { callbackUrl: 'http://127.0.0.1:47914/cb' },
-      redirect: /^http:\/\/127\.0\.0\.1:47914\/cb$/,
       host: '127.0.0.1',
-      port: 47914,
+      ported: true,
     },
     {
       name: '[::1] without a port',
@@ -345,6 +352,11 @@ describe('loopback callbackUrl is unchanged', () => {
       let ctx;
 
       before(async () => {
+        if (c.ported) {
+          c.port = await freePort();
+          c.oauth = { callbackUrl: `http://127.0.0.1:${c.port}/cb` };
+          c.redirect = new RegExp(`^http://127\\.0\\.0\\.1:${c.port}/cb$`);
+        }
         ctx = await setup(
           `loopback-${c.host}`,
           { clientRegistration: 'dcr', ...c.oauth },
