@@ -4,6 +4,7 @@ import type {
   EventSubscription,
   StreamEnd,
   StreamMessageHandler,
+  StreamOptions,
 } from './connection.ts';
 import { META_SUBSCRIPTION_ID } from './modern.ts';
 
@@ -117,19 +118,25 @@ export function within<T>(promise: Promise<T>, ms: number): Promise<T | typeof S
   return Promise.race([promise, stale]).finally(() => clearTimeout(timer));
 }
 
-const LIVENESS = new Set([
-  'notifications/events/active',
-  'notifications/events/event',
-  'notifications/events/heartbeat',
-]);
+export const DEFAULT_IDLE_MS = 90_000;
 
-export function idleClock(onMessage: StreamMessageHandler, idleMs: number) {
+export function grantedIdleMs(heartbeatMs: unknown): number | undefined {
+  return typeof heartbeatMs === 'number' && Number.isFinite(heartbeatMs) && heartbeatMs > 0
+    ? heartbeatMs * 3
+    : undefined;
+}
+
+export function idleClock(onMessage: StreamMessageHandler, options: StreamOptions) {
+  let idleMs = options.idleMs;
   let deadline = Date.now() + idleMs;
   return {
     left: () => Math.max(0, deadline - Date.now()),
     onMessage: async (method: string, params: Record<string, unknown>) => {
       const out = await onMessage(method, params);
-      if (LIVENESS.has(method)) deadline = Date.now() + idleMs;
+      if (options.followGrant && method === 'notifications/events/active') {
+        idleMs = grantedIdleMs(params.heartbeatMs) ?? idleMs;
+      }
+      deadline = Date.now() + idleMs;
       return out;
     },
   };

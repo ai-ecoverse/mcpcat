@@ -202,7 +202,7 @@ function createStdioJsonRpc(
     const body = wireBody(id, method, params);
     if (verbose?.enabled) verbose.request(method, body);
     await send(body);
-    const clock = idleClock(onMessage, streamOptions.idleMs);
+    const clock = idleClock(onMessage, streamOptions);
     for (;;) {
       const line = await nextLine(clock.left(), signals);
       if (line === ABORTED) {

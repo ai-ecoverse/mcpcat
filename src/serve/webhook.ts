@@ -153,8 +153,8 @@ export class WebhookRegistry {
   private grant(params: unknown): number {
     const ttl = isRecord(params) ? params.ttlMs : undefined;
     if (ttl === undefined || ttl === null) return this.o.ttlMs;
-    if (typeof ttl !== 'number' || !(ttl >= 0)) {
-      throw new EventsRpcError(INVALID_PARAMS, 'ttlMs must be a non-negative number or null');
+    if (typeof ttl !== 'number' || Number.isNaN(ttl)) {
+      throw new EventsRpcError(INVALID_PARAMS, 'ttlMs must be a number or null');
     }
     return Math.min(Math.max(ttl, MIN_TTL_MS), this.o.ttlMs);
   }
@@ -264,14 +264,14 @@ export class WebhookRegistry {
       if (hook.acked < source.oldest - 1) {
         hook.acked = source.oldest - 1;
         const body = JSON.stringify({ type: 'gap', cursor: source.cursor(hook.acked) });
-        await this.deliver(hook, `msg_gap_${randomId(8)}`, body, 'a gap notice');
+        await this.deliver(hook, `msg_gap_${randomId(16)}`, body, 'a gap notice');
         continue;
       }
       const [entry] = source.after(hook.acked, 1);
       if (!entry) break;
       const { eventId } = entry.occurrence;
       const body = JSON.stringify({ ...entry.occurrence, cursor: source.cursor(entry.seq) });
-      await this.deliver(hook, eventId, body, `event ${eventId}`);
+      await this.deliver(hook, `msg_${randomId(16)}`, body, `event ${eventId}`);
       hook.acked = entry.seq;
     }
     hook.pumping = false;

@@ -1,6 +1,5 @@
 import { placeholderAuthProvider } from '../auth/placeholder-auth.ts';
 import { within } from '../client/events.ts';
-import { EVENTS_EXTENSION } from '../client/modern.ts';
 import {
   containsPlaceholders,
   expandPlaceholders,
@@ -29,7 +28,7 @@ import {
   type ServeTool,
   templateToArgv,
 } from './catalog.ts';
-import { EventHub } from './event-hub.ts';
+import { EventHub, eventsExtensions } from './event-hub.ts';
 import { handleEventsMessage } from './event-rpc.ts';
 import { type EventSpec, logLine, parseEventSpec } from './events.ts';
 import { compareVersions, HOLDER_READY_MS, type Holder, parseCliVersion } from './holder.ts';
@@ -1117,10 +1116,6 @@ function buildEventHub(
     stop: (proc) => terminate(proc, KILL_GRACE_MS),
     log: logLine(platform),
   });
-}
-
-function eventsExtensions(hub: EventHub | undefined): Record<string, unknown> | undefined {
-  return hub ? { [EVENTS_EXTENSION]: {} } : undefined;
 }
 
 interface ProxyHandle {

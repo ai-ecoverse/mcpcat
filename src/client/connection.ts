@@ -96,6 +96,7 @@ export type StreamEnd = 'closed' | 'stale' | 'dropped' | 'stopped' | 'aborted';
 
 export interface StreamOptions {
   idleMs: number;
+  followGrant?: boolean;
   signal?: AbortSignal;
 }
 
