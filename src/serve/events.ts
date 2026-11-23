@@ -103,13 +103,20 @@ export interface SourceContext {
   now(): number;
 }
 
+function expand(spec: EventSpec, args: Record<string, string>): string[] {
+  return spec.argv.map((token) => token.replace(PLACEHOLDER, (_w, ph: string) => args[ph]));
+}
+
 export class Source {
   readonly epoch = randomId();
-  readonly spec: EventSpec;
+  spec: EventSpec;
   readonly key: string;
   refs = 0;
   private readonly ctx: SourceContext;
-  private readonly argv: string[];
+  private readonly args: Record<string, string>;
+  private argv: string[];
+  private respawn = false;
+  private launching = false;
   private seq = 0;
   private buffer: Entry[] = [];
   private listeners = new Set<(entry: Entry) => void>();
@@ -122,7 +129,16 @@ export class Source {
     this.ctx = ctx;
     this.spec = spec;
     this.key = key;
-    this.argv = spec.argv.map((token) => token.replace(PLACEHOLDER, (_w, ph: string) => args[ph]));
+    this.args = args;
+    this.argv = expand(spec, args);
+  }
+
+  retarget(spec: EventSpec): void {
+    this.spec = spec;
+    this.argv = expand(spec, this.args);
+    if (!this.running || (!this.proc && !this.launching)) return;
+    this.respawn = true;
+    if (this.proc) void this.ctx.stop(this.proc);
   }
 
   cursor(seq = this.seq): string {
@@ -195,6 +211,7 @@ export class Source {
   private async spawn(): Promise<void> {
     const started = this.ctx.now();
     let status: string;
+    this.launching = true;
     try {
       const proc = await this.ctx.platform.spawn({
         argv: this.argv,
@@ -204,7 +221,8 @@ export class Source {
         dieWithParent: true,
       });
       this.proc = proc;
-      if (!this.running) await this.ctx.stop(proc);
+      this.launching = false;
+      if (!this.running || this.respawn) await this.ctx.stop(proc);
       const [, , exit] = await Promise.all([
         this.lines(proc.stdout),
         this.forward(proc.stderr),
@@ -214,8 +232,15 @@ export class Source {
     } catch (err) {
       status = `could not start (${(err as Error).message})`;
     }
+    this.launching = false;
     if (!this.running) return;
     this.proc = undefined;
+    if (this.respawn) {
+      this.respawn = false;
+      clearTimeout(this.retry);
+      void this.spawn();
+      return;
+    }
     if (this.ctx.now() - started >= STEADY_MS) this.delay = RESTART_START_MS;
     const wait = this.delay;
     this.delay = Math.min(this.delay * 2, RESTART_MAX_MS);

@@ -42,6 +42,7 @@ export function createNotifier(): Notifier {
 export interface Listen {
   id: SubscriptionId;
   tools: boolean;
+  events?: boolean;
 }
 
 function parseMessage(raw: string): Record<string, unknown> | undefined {
@@ -63,13 +64,20 @@ function subscriptionId(value: unknown): SubscriptionId | undefined {
   return typeof value === 'string' || typeof value === 'number' ? value : undefined;
 }
 
-export function parseListen(raw: string): Listen | undefined {
+export function parseListen(
+  raw: string,
+  offer = { tools: true, events: false }
+): Listen | undefined {
   const message = parseMessage(raw);
   if (message?.method !== 'subscriptions/listen') return undefined;
   const id = subscriptionId(message.id);
   if (id === undefined) return undefined;
   const notifications = record(record(message.params).notifications);
-  return { id, tools: notifications.toolsListChanged === true };
+  return {
+    id,
+    tools: offer.tools && notifications.toolsListChanged === true,
+    events: offer.events && notifications.eventsListChanged === true,
+  };
 }
 
 export function parseCancelled(raw: string): SubscriptionId | undefined {
@@ -90,13 +98,24 @@ export function listChangedMessage(id?: SubscriptionId): string {
   });
 }
 
+export function eventsListChangedMessage(id: SubscriptionId): string {
+  return JSON.stringify({
+    jsonrpc: '2.0',
+    method: 'notifications/events/list_changed',
+    params: { _meta: { [SUBSCRIPTION_ID]: id } },
+  });
+}
+
 export function acknowledgedMessage(listen: Listen): string {
   return JSON.stringify({
     jsonrpc: '2.0',
     method: 'notifications/subscriptions/acknowledged',
     params: {
       _meta: { [SUBSCRIPTION_ID]: listen.id },
-      notifications: listen.tools ? { toolsListChanged: true } : {},
+      notifications: {
+        ...(listen.tools ? { toolsListChanged: true } : {}),
+        ...(listen.events ? { eventsListChanged: true } : {}),
+      },
     },
   });
 }

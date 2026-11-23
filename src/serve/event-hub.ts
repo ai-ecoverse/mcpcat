@@ -7,6 +7,7 @@ import {
   type EventSpec,
   EventsRpcError,
   grantHeartbeat,
+  NOT_FOUND,
   notification,
   readMaxEvents,
   readSubscription,
@@ -16,6 +17,7 @@ import {
   streamResult,
   UNSUPPORTED,
 } from './events.ts';
+import { createNotifier, type Notifier } from './live.ts';
 import { type WebhookOptions, WebhookRegistry } from './webhook.ts';
 
 export interface HubOptions {
@@ -27,6 +29,7 @@ export interface HubOptions {
   heartbeatMs: number;
   pollMs: number;
   webhook?: WebhookOptions;
+  reloadable?: boolean;
   stop(proc: SpawnResult): Promise<void>;
   log(text: string): Promise<void>;
   now?: () => number;
@@ -39,7 +42,22 @@ export interface OpenStream {
 }
 
 export function eventsExtensions(hub: EventHub | undefined): Record<string, unknown> | undefined {
-  return hub ? { [EVENTS_EXTENSION]: { listChanged: false } } : undefined;
+  return hub ? { [EVENTS_EXTENSION]: { listChanged: hub.listChanged === true } } : undefined;
+}
+
+export interface Reload {
+  added: string[];
+  removed: string[];
+  changed: string[];
+}
+
+type RpcErrorBody = { code: number; message: string; data: Record<string, unknown> };
+
+function samePlaceholders(a: EventSpec, b: EventSpec): boolean {
+  return (
+    a.placeholders.length === b.placeholders.length &&
+    a.placeholders.every((p) => b.placeholders.includes(p))
+  );
 }
 
 export class EventHub {
@@ -51,8 +69,10 @@ export class EventHub {
     { source: Source; timer: ReturnType<typeof setTimeout> }
   >();
   private readonly closers = new Set<() => void>();
+  private readonly enders = new Set<{ name: string; end(error: RpcErrorBody): void }>();
   private readonly ctx: SourceContext;
   private readonly webhooks: WebhookRegistry | undefined;
+  readonly changes: Notifier = createNotifier();
 
   constructor(options: HubOptions) {
     this.o = options;
@@ -80,6 +100,10 @@ export class EventHub {
           options.webhook
         )
       : undefined;
+  }
+
+  get listChanged(): boolean {
+    return this.o.reloadable === true;
   }
 
   get leaseMs(): number {
@@ -110,8 +134,62 @@ export class EventHub {
   release(source: Source): void {
     source.refs--;
     if (source.refs > 0) return;
-    this.sources.delete(source.key);
+    if (this.sources.get(source.key) === source) this.sources.delete(source.key);
     void source.stop();
+  }
+
+  reload(specs: EventSpec[]): Reload {
+    const next = new Map(specs.map((spec) => [spec.name, spec]));
+    const out: Reload = { added: [], removed: [], changed: [] };
+    const broken = new Map<string, RpcErrorBody>();
+    for (const [name, old] of this.specs) {
+      const spec = next.get(name);
+      if (!spec) {
+        out.removed.push(name);
+        broken.set(name, {
+          code: NOT_FOUND,
+          message: `event ${name} was removed`,
+          data: { kind: 'event' },
+        });
+      } else if (spec.template !== old.template) {
+        out.changed.push(name);
+        if (!samePlaceholders(old, spec)) {
+          broken.set(name, {
+            code: UNSUPPORTED,
+            message: `event ${name} changed its inputSchema`,
+            data: { feature: 'inputSchema', reason: 'schema_changed' },
+          });
+        }
+      }
+    }
+    for (const name of next.keys()) if (!this.specs.has(name)) out.added.push(name);
+    this.specs.clear();
+    for (const [name, spec] of next) this.specs.set(name, spec);
+    this.end(broken);
+    for (const source of this.sources.values()) {
+      const spec = next.get(source.spec.name);
+      if (spec && spec !== source.spec) source.retarget(spec);
+    }
+    if (out.added.length + out.removed.length + out.changed.length > 0) this.changes.notify();
+    return out;
+  }
+
+  private end(broken: Map<string, RpcErrorBody>): void {
+    if (broken.size === 0) return;
+    for (const [key, source] of [...this.sources]) {
+      if (broken.has(source.spec.name)) this.sources.delete(key);
+    }
+    for (const ender of [...this.enders]) {
+      const error = broken.get(ender.name);
+      if (error) ender.end(error);
+    }
+    for (const [key, { source, timer }] of [...this.leases]) {
+      if (!broken.has(source.spec.name)) continue;
+      clearTimeout(timer);
+      this.leases.delete(key);
+      this.release(source);
+    }
+    this.webhooks?.end((name) => broken.get(name));
   }
 
   private lease(spec: EventSpec, args: Record<string, string>): Source {
@@ -182,7 +260,14 @@ export class EventHub {
   ): Promise<void> {
     const source = this.acquire(spec, sub.arguments);
     const pos = source.position(sub.cursor, sub.maxAgeMs);
-    const state = { last: pos.seq, beat: false, closing: false, ended: false, writing: false };
+    const state = {
+      last: pos.seq,
+      beat: false,
+      closing: false,
+      ended: false,
+      writing: false,
+      error: undefined as RpcErrorBody | undefined,
+    };
     let finish: () => void = () => {};
     const ended = new Promise<void>((resolve) => {
       finish = () => {
@@ -191,7 +276,7 @@ export class EventHub {
       };
     });
     const next = (): string | undefined => {
-      if (state.closing) return undefined;
+      if (state.closing || state.error) return undefined;
       if (state.last < source.oldest - 1) {
         state.last = source.oldest - 1;
         return notification(id, 'active', {
@@ -216,6 +301,10 @@ export class EventHub {
       state.writing = true;
       try {
         for (let message = next(); message && !state.ended; message = next()) await send(message);
+        if (state.error && !state.ended) {
+          await send(notification(id, 'terminated', { error: state.error }));
+          finish();
+        }
         if (state.closing && !state.ended) {
           await send(streamResult(id));
           finish();
@@ -240,6 +329,14 @@ export class EventHub {
       void pump();
     };
     this.closers.add(closer);
+    const ender = {
+      name: spec.name,
+      end: (error: RpcErrorBody) => {
+        state.error = error;
+        void pump();
+      },
+    };
+    this.enders.add(ender);
     signal.addEventListener('abort', finish, { once: true });
     if (signal.aborted) finish();
     state.writing = true;
@@ -253,6 +350,7 @@ export class EventHub {
     off();
     clearInterval(beat);
     this.closers.delete(closer);
+    this.enders.delete(ender);
     signal.removeEventListener('abort', finish);
     this.release(source);
   }
@@ -265,6 +363,7 @@ export class EventHub {
     }
     this.leases.clear();
     this.webhooks?.close();
+    this.changes.close();
     await Promise.all([...this.sources.values()].map((source) => source.stop()));
   }
 }

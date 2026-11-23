@@ -640,7 +640,10 @@ describe('host: serve --event', () => {
   });
 
   for (const [args, message] of [
-    [['serve', ...ev('tick: x')], /--event and --webhook-allow need --experimental events/],
+    [
+      ['serve', ...ev('tick: x')],
+      /--event, --event-file and --webhook-allow need --experimental events/,
+    ],
     [['serve', '--webhook-allow', 'https://a/'], /need --experimental events/],
     [
       ['serve', ...X, '--webhook-allow', 'https://a/'],
@@ -1129,6 +1132,23 @@ describe('kernel: serve --event', () => {
     return { sp, address: parsed, port: new URL(parsed.loopbackUrl).port, stderr: () => err };
   }
 
+  async function kspawn(argv) {
+    const dec = new TextDecoder();
+    let out = '';
+    let err = '';
+    const sp = await client.spawn(argv, {
+      stdin: 'pipe',
+      env: { PI_CODING_AGENT_DIR: '/etc/mcpcat-serve-events' },
+      onStdout(c) {
+        out += dec.decode(c, { stream: true });
+      },
+      onStderr(c) {
+        err += dec.decode(c, { stream: true });
+      },
+    });
+    return { sp, lines: () => out.split('\n').filter(Boolean).length, err: () => err };
+  }
+
   const krun = (args) =>
     kernel.run(['mcpcat', ...args], {
       stdout: 'pipe',
@@ -1169,6 +1189,54 @@ describe('kernel: serve --event', () => {
       lines(String(r.stdout)).map((e) => e.data.n),
       [1, 2, 3]
     );
+  });
+
+  it('http: SIGHUP rereads --event-file and a kernel subscriber of a removed event exits 5', async () => {
+    const file = '/etc/mcpcat-serve-events/http-events';
+    await kernel.writeFile(file, 'tick: event-src tick {label} 50\n');
+    const k = await startKernelServe(['--event-file', file]);
+    const sub = await kspawn([
+      'mcpcat',
+      k.address.url,
+      ...X,
+      '--subscribe',
+      'tick',
+      '--label',
+      'k',
+    ]);
+    assert.ok(await until(() => sub.lines() >= 2, 10_000), sub.err());
+    await kernel.writeFile(file, 'other: event-src quiet\n');
+    k.sp.signal('SIGHUP');
+    const status = await sub.sp.exited;
+    k.sp.signal('SIGTERM');
+    await k.sp.exited;
+    assert.equal(status, 5, sub.err());
+    assert.match(sub.err(), /event 'tick' is no longer offered by the server/);
+    assert.match(k.stderr(), /SIGHUP: reloaded .*: added other; removed tick/);
+  });
+
+  it('stdio: SIGHUP to a kernel serve ends a kernel subscriber of a removed event with exit 5', async () => {
+    const file = '/etc/mcpcat-serve-events/stdio-events';
+    await kernel.writeFile(file, 'tick: event-src tick {label} 50\n');
+    const sub = await kspawn([
+      'mcpcat',
+      `stdio:mcpcat serve ${X.join(' ')} --event-file ${file}`,
+      ...X,
+      '--subscribe',
+      'tick',
+      '--label',
+      'k',
+    ]);
+    assert.ok(await until(() => sub.lines() >= 2, 10_000), sub.err());
+    const served = (await client.ps()).filter(
+      (p) => p.argv.includes('serve') && p.argv.includes(file)
+    );
+    assert.equal(served.length, 1);
+    await kernel.writeFile(file, 'other: event-src quiet\n');
+    await client.kill(served[0].pid, 'SIGHUP');
+    const status = await sub.sp.exited;
+    assert.equal(status, 5, sub.err());
+    assert.match(sub.err(), /event 'tick' is no longer offered by the server/);
   });
 
   for (const [label, target] of [

@@ -251,6 +251,10 @@ ${experimentalHelp()}  <target> --experimental events --list-events
                              line per refresh. With it: --webhook-secret-file <path>
                              (kept or created 0600), --webhook-ttl <s>, --webhook-keep,
                              --webhook-once, --webhook-unsubscribe
+                             A server with listChanged gets a subscriptions/listen:
+                             on notifications/events/list_changed mcpcat re-lists,
+                             exits 5 if the event is gone, 2 if its arguments no
+                             longer fit, else resubscribes from the last cursor
 
 WebMCP (serve --webmcp, see serve --help):
   --webmcp                   Serve the tab's WebMCP tools (playwright-cli 1.52.0+)
@@ -355,6 +359,9 @@ Events (--experimental events; can change in any minor release):
                              {placeholders} become string arguments, and cmd runs
                              once per distinct arguments while someone subscribes
                              (repeatable; push and poll delivery)
+  --event-file <path>        More --event specs, one per line (# comments); SIGHUP
+                             rereads it, sends notifications/events/list_changed and
+                             ends subscriptions to removed or reshaped event types
   --webhook-allow <prefix>   Also offer webhook delivery (events/subscribe) to https
                              callback URLs under prefix (an https URL ending in /;
                              repeatable; needs a bearer over HTTP)
@@ -1445,7 +1452,7 @@ async function dispatchServeVerb(
   if (events && !features.has('events')) {
     await platform.write(
       2,
-      'mcpcat serve: --event and --webhook-allow need --experimental events\n'
+      'mcpcat serve: --event, --event-file and --webhook-allow need --experimental events\n'
     );
     return 2;
   }

@@ -35,6 +35,10 @@ export function subscriptionParams(subscription: EventSubscription): Record<stri
   return params;
 }
 
+export function listenParams(): Record<string, unknown> {
+  return { notifications: { eventsListChanged: true }, _events: true };
+}
+
 export async function listAllEvents(
   request: (method: string, params: Record<string, unknown>) => Promise<unknown>
 ): Promise<EventDescriptor[]> {
@@ -75,7 +79,7 @@ export function webhookMethods(
 export function isStreamMessage(message: unknown, id: number): boolean {
   if (!message || typeof message !== 'object') return false;
   const { method, params } = message as { method?: unknown; params?: unknown };
-  if (typeof method !== 'string' || !method.startsWith('notifications/events/')) return false;
+  if (typeof method !== 'string' || !method.startsWith('notifications/')) return false;
   const meta = (params as { _meta?: Record<string, unknown> } | undefined)?._meta;
   const sid = meta?.[META_SUBSCRIPTION_ID];
   return sid === id || sid === String(id);
@@ -114,6 +118,7 @@ const MAX_TIMER_MS = 2_147_483_647;
 const MIN_GRANT_MS = 1000;
 
 export function within<T>(promise: Promise<T>, ms: number): Promise<T | typeof STALE> {
+  if (!Number.isFinite(ms)) return promise;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const stale = new Promise<typeof STALE>((resolve) => {
     timer = setTimeout(() => resolve(STALE), Math.min(ms, MAX_TIMER_MS));

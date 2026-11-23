@@ -110,6 +110,7 @@ export interface EventsApi {
     onMessage: StreamMessageHandler,
     options: StreamOptions
   ): Promise<StreamEnd>;
+  listen(onMessage: StreamMessageHandler, options: StreamOptions): Promise<StreamEnd>;
 }
 
 export interface McpConnection {

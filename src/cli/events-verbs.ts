@@ -15,6 +15,7 @@ import { McpAuthError, StatelessRpcError } from '../client/stateless-connection.
 import type { Platform, SpawnResult } from '../platform/types.ts';
 import { type Redactor, renderErrorJson } from '../render/result.ts';
 import { sanitizeJson, sanitizeTerminal } from '../render/sanitize.ts';
+import { EventWatch, isSchemaChange, isSchemaRpcError } from './events-changes.ts';
 import {
   EXIT_AUTH,
   EXIT_CONNECTION,
@@ -483,6 +484,31 @@ interface SubscriberOptions {
   arguments: Record<string, unknown>;
   signal: AbortSignal;
   redact: Redactor;
+  listChanged: boolean;
+}
+
+function terminationError(name: string, params: Record<string, unknown>): McpcatError {
+  const code = (params.error as { code?: unknown } | undefined)?.code;
+  return new McpcatError(
+    code === FORBIDDEN ? EXIT_AUTH : EXIT_RPC_ERROR,
+    `subscription to ${name} terminated by the server: ${errorText(params)}`
+  );
+}
+
+function createWatch(
+  o: SubscriberOptions,
+  notice: (text: string) => Promise<void>,
+  usable: (event: EventDescriptor) => string | undefined
+): EventWatch {
+  return new EventWatch({
+    api: o.api,
+    event: o.event,
+    arguments: o.arguments,
+    validate: !o.args.noValidate,
+    signal: o.signal,
+    notice,
+    usable,
+  });
 }
 
 class Subscriber {
@@ -491,14 +517,26 @@ class Subscriber {
   private seen: string[] = [];
   private seenSet = new Set<string>();
   private delivered = 0;
+  private polled = false;
+  private active = false;
+  private terminated: Record<string, unknown> | undefined;
   private readonly o: SubscriberOptions;
   private readonly baseIdleMs: number;
   private idleMs: number;
+  private readonly watch: EventWatch;
 
   constructor(options: SubscriberOptions) {
     this.o = options;
     this.baseIdleMs = options.args.heartbeatTimeoutMs ?? DEFAULT_IDLE_MS;
     this.idleMs = this.baseIdleMs;
+    this.watch = createWatch(
+      options,
+      (text) => this.notice(text),
+      (event) => {
+        const mode = pickDelivery(event, options.args.delivery);
+        return mode === 'push' || mode === 'poll' ? undefined : mode;
+      }
+    );
   }
 
   async start(): Promise<number> {
@@ -511,8 +549,24 @@ class Subscriber {
     }
     if (args.sinceNow) this.cursor = null;
     if (args.cursor !== undefined) this.cursor = args.cursor;
-    const mode = pickDelivery(this.o.event, args.delivery);
-    return mode === 'push' ? await this.push() : await this.poll();
+    if (this.o.listChanged) this.watch.listen();
+    try {
+      return await this.run();
+    } finally {
+      await this.watch.stop();
+    }
+  }
+
+  private async run(): Promise<number> {
+    for (;;) {
+      const leg = this.watch.leg();
+      const mode = pickDelivery(this.watch.event, this.o.args.delivery);
+      const out = mode === 'push' ? await this.push(leg) : await this.poll(leg);
+      if (out !== undefined) return out;
+      await this.watch.settled();
+      if (this.watch.failure) throw this.watch.failure;
+      if (this.o.signal.aborted) return EXIT_OK;
+    }
   }
 
   private notice(text: string): Promise<void> {
@@ -627,10 +681,15 @@ class Subscriber {
     }
   }
 
-  private async backoff(delay: number, reason: string, verb = 'retrying'): Promise<number> {
+  private async backoff(
+    delay: number,
+    reason: string,
+    verb: string,
+    leg: AbortSignal
+  ): Promise<number> {
     const wait = delay * (1 + Math.random() * JITTER);
     await this.notice(`${reason}; ${verb} in ${Math.round(wait / 100) / 10}s`);
-    await sleep(wait, this.o.signal);
+    await sleep(wait, leg);
     return Math.min(delay * 2, BACKOFF_MAX_MS);
   }
 
@@ -658,27 +717,32 @@ class Subscriber {
     return Math.max(wait, this.o.args.pollFloorMs);
   }
 
-  private async poll(): Promise<number> {
+  private async poll(leg: AbortSignal): Promise<number | undefined> {
     const { api, signal } = this.o;
-    let ok = false;
     let delay = BACKOFF_START_MS;
-    while (!signal.aborted) {
+    while (!leg.aborted) {
       let result: PollEventsResult;
       try {
-        result = await api.poll(this.subscription(!ok));
+        result = await api.poll(this.subscription(!this.polled));
       } catch (err) {
         if (signal.aborted) break;
-        if (!ok || !isRetryable(err)) throw fatal(err);
-        delay = await this.backoff(delay, `poll failed (${(err as Error).message})`);
+        if (isSchemaRpcError(err) && (await this.watch.resync())) return undefined;
+        if (!this.polled || !isRetryable(err)) throw fatal(err);
+        delay = await this.backoff(
+          delay,
+          `poll failed (${(err as Error).message})`,
+          'retrying',
+          leg
+        );
         continue;
       }
-      ok = true;
+      this.polled = true;
       delay = BACKOFF_START_MS;
       const wait = await this.batch(result);
       if (wait === 0) return EXIT_OK;
-      if (wait !== undefined) await sleep(wait, signal);
+      if (wait !== undefined) await sleep(wait, leg);
     }
-    return EXIT_OK;
+    return signal.aborted ? EXIT_OK : undefined;
   }
 
   private async onStreamMessage(
@@ -706,70 +770,84 @@ class Subscriber {
       return undefined;
     }
     if (method === 'notifications/events/terminated') {
-      const code = (params.error as { code?: unknown } | undefined)?.code;
-      throw new McpcatError(
-        code === FORBIDDEN ? EXIT_AUTH : EXIT_RPC_ERROR,
-        `subscription to ${this.o.event.name} terminated by the server: ${errorText(params)}`
-      );
+      if (!isSchemaChange(params.error)) throw terminationError(this.o.event.name, params);
+      this.terminated = params;
+      return 'stop';
     }
     return undefined;
   }
 
-  private async push(): Promise<number> {
-    const { api, signal, args } = this.o;
-    let active = false;
-    let delay = BACKOFF_START_MS;
-    while (!signal.aborted) {
-      let end: StreamEnd;
-      let opened = false;
-      this.idleMs = this.baseIdleMs;
-      try {
-        end = await api.stream(
-          this.subscription(true),
-          async (method, params) => {
-            if (!opened) {
-              opened = true;
-              active = true;
-              delay = BACKOFF_START_MS;
-            }
-            return this.onStreamMessage(method, params);
-          },
-          {
-            idleMs: this.baseIdleMs,
-            followGrant: args.heartbeatTimeoutMs === undefined,
-            signal,
-          }
-        );
-      } catch (err) {
-        if (signal.aborted) break;
-        if (!active || !isRetryable(err)) throw fatal(err);
-        delay = await this.backoff(
-          delay,
-          `stream failed (${(err as Error).message})`,
-          'reconnecting'
-        );
-        continue;
+  private openStream(leg: AbortSignal, onOpen: () => void): Promise<StreamEnd> {
+    let opened = false;
+    this.idleMs = this.baseIdleMs;
+    return this.o.api.stream(
+      this.subscription(true),
+      async (method, params) => {
+        if (!opened) {
+          opened = true;
+          this.active = true;
+          onOpen();
+        }
+        return this.onStreamMessage(method, params);
+      },
+      {
+        idleMs: this.baseIdleMs,
+        followGrant: this.o.args.heartbeatTimeoutMs === undefined,
+        signal: leg,
       }
-      if (end === 'stopped' || end === 'aborted' || signal.aborted) break;
-      if (!active) {
-        throw new McpcatError(
-          EXIT_CONNECTION,
-          end === 'stale'
-            ? `no notifications/events/active within ${this.baseIdleMs / 1000}s`
-            : 'the server ended events/stream before it was active'
-        );
-      }
-      const reason =
-        end === 'stale'
-          ? `no message on the stream for ${this.idleMs / 1000}s`
-          : end === 'closed'
-            ? 'the server closed the stream'
-            : 'the stream dropped';
-      delay = await this.backoff(delay, reason, 'reconnecting');
+    );
+  }
+
+  private async pushOnce(leg: AbortSignal, onOpen: () => void): Promise<PushStep> {
+    const { signal } = this.o;
+    let end: StreamEnd;
+    try {
+      end = await this.openStream(leg, onOpen);
+    } catch (err) {
+      if (signal.aborted) return { done: true, code: EXIT_OK };
+      if (isSchemaRpcError(err) && (await this.watch.resync())) return { done: true };
+      if (!this.active || !isRetryable(err)) throw fatal(err);
+      return { done: false, reason: `stream failed (${(err as Error).message})` };
     }
-    return EXIT_OK;
+    const terminated = this.terminated;
+    this.terminated = undefined;
+    if (terminated) {
+      if (await this.watch.resync()) return { done: true };
+      throw terminationError(this.o.event.name, terminated);
+    }
+    if (end === 'stopped' || signal.aborted) return { done: true, code: EXIT_OK };
+    if (end === 'aborted') return { done: true };
+    if (!this.active) {
+      throw new McpcatError(
+        EXIT_CONNECTION,
+        end === 'stale'
+          ? `no notifications/events/active within ${this.baseIdleMs / 1000}s`
+          : 'the server ended events/stream before it was active'
+      );
+    }
+    const reason =
+      end === 'stale'
+        ? `no message on the stream for ${this.idleMs / 1000}s`
+        : end === 'closed'
+          ? 'the server closed the stream'
+          : 'the stream dropped';
+    return { done: false, reason };
+  }
+
+  private async push(leg: AbortSignal): Promise<number | undefined> {
+    let delay = BACKOFF_START_MS;
+    while (!leg.aborted) {
+      const step = await this.pushOnce(leg, () => {
+        delay = BACKOFF_START_MS;
+      });
+      if (step.done) return step.code;
+      delay = await this.backoff(delay, step.reason, 'reconnecting', leg);
+    }
+    return this.o.signal.aborted ? EXIT_OK : undefined;
   }
 }
+
+type PushStep = { done: true; code?: number } | { done: false; reason: string };
 
 const REFRESH_MIN_MS = 100;
 const UNSUBSCRIBE_CAP_MS = 3000;
@@ -781,9 +859,18 @@ class WebhookClient {
   private cursor: string | null = null;
   private eventIds: string[] = [];
   private lastError: unknown = null;
+  private readonly watch: EventWatch;
 
   constructor(options: SubscriberOptions) {
     this.o = options;
+    this.watch = createWatch(
+      options,
+      (text) => this.notice(text),
+      (event) => {
+        const mode = pickDelivery(event, 'webhook');
+        return mode === 'webhook' ? undefined : mode;
+      }
+    );
   }
 
   private notice(text: string): Promise<void> {
@@ -820,7 +907,12 @@ class WebhookClient {
     }
     if (args.sinceNow) this.cursor = null;
     if (args.cursor !== undefined) this.cursor = args.cursor;
-    return this.loop();
+    if (this.o.listChanged && !args.webhookOnce) this.watch.listen();
+    try {
+      return await this.loop();
+    } finally {
+      await this.watch.stop();
+    }
   }
 
   private async loop(): Promise<number> {
@@ -829,17 +921,21 @@ class WebhookClient {
     let attempted = false;
     let delay = BACKOFF_START_MS;
     while (!signal.aborted) {
+      await this.watch.settled();
+      if (this.watch.failure) throw this.watch.failure;
+      const leg = this.watch.leg();
       let result: Record<string, unknown>;
       try {
         attempted = true;
         result = await this.o.api.subscribe(this.params(!ok));
       } catch (err) {
         if (signal.aborted) break;
+        if (isSchemaRpcError(err) && (await this.watch.resync())) continue;
         if (!ok || !isRetryable(err)) throw fatal(err);
         await this.notice(
           `refresh failed (${(err as Error).message}); retrying in ${delay / 1000}s`
         );
-        await sleep(delay, signal);
+        await sleep(delay, leg);
         delay = Math.min(delay * 2, BACKOFF_MAX_MS);
         continue;
       }
@@ -847,7 +943,7 @@ class WebhookClient {
       delay = BACKOFF_START_MS;
       await this.record(result);
       if (args.webhookOnce) return EXIT_OK;
-      await sleep(this.refreshIn(result.refreshBefore), signal);
+      await sleep(this.refreshIn(result.refreshBefore), leg);
     }
     if (attempted && !args.webhookKeep && !args.webhookOnce) await this.unsubscribe(ok);
     return EXIT_OK;
@@ -961,7 +1057,8 @@ export async function runEvents(
     );
   }
   const extensions = info.capabilities.extensions as Record<string, unknown> | undefined;
-  if (!extensions || typeof extensions !== 'object' || !extensions[EVENTS_EXTENSION]) {
+  const settings = extensions?.[EVENTS_EXTENSION];
+  if (!extensions || typeof extensions !== 'object' || !settings) {
     return fail(
       platform,
       options,
@@ -989,6 +1086,7 @@ export async function runEvents(
   const eventArgs = eventArguments(event, args, options.base);
   if (typeof eventArgs === 'string')
     return fail(platform, options, args.json, EXIT_USAGE, eventArgs);
+  const listChanged = (settings as { listChanged?: unknown }).listChanged === true;
   if (mode === 'webhook') {
     return new WebhookClient({
       platform,
@@ -998,6 +1096,7 @@ export async function runEvents(
       arguments: eventArgs,
       signal: options.signal,
       redact: options.redact,
+      listChanged,
     }).start();
   }
   const subscriber = new Subscriber({
@@ -1008,6 +1107,7 @@ export async function runEvents(
     arguments: eventArgs,
     signal: options.signal,
     redact: options.redact,
+    listChanged,
   });
   return subscriber.start();
 }

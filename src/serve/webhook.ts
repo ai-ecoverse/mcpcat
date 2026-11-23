@@ -60,6 +60,7 @@ interface Hook {
   abort: AbortController;
   off?: () => void;
   status: DeliveryStatus;
+  ending?: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -144,6 +145,7 @@ export class WebhookRegistry {
   private readonly host: WebhookHost;
   private readonly o: WebhookOptions;
   private readonly hooks = new Map<string, Hook>();
+  private readonly ending = new Set<Hook>();
 
   constructor(host: WebhookHost, options: WebhookOptions) {
     this.host = host;
@@ -245,7 +247,7 @@ export class WebhookRegistry {
   }
 
   private remove(hook: Hook): void {
-    this.hooks.delete(hook.id);
+    if (this.hooks.get(hook.id) === hook) this.hooks.delete(hook.id);
     clearTimeout(hook.expires);
     hook.off?.();
     hook.abort.abort();
@@ -253,14 +255,36 @@ export class WebhookRegistry {
   }
 
   close(): void {
-    for (const hook of [...this.hooks.values()]) this.remove(hook);
+    for (const hook of [...this.hooks.values(), ...this.ending]) this.remove(hook);
+    this.ending.clear();
+  }
+
+  end(reason: (name: string) => Record<string, unknown> | undefined): void {
+    for (const hook of [...this.hooks.values()]) {
+      const error = reason(hook.source.spec.name);
+      if (!error) continue;
+      this.hooks.delete(hook.id);
+      clearTimeout(hook.expires);
+      hook.off?.();
+      hook.ending = true;
+      this.ending.add(hook);
+      const body = JSON.stringify({ type: 'terminated', error });
+      void this.deliver(
+        hook,
+        `msg_terminated_${randomId(16)}`,
+        body,
+        'a terminated notice'
+      ).finally(() => {
+        if (this.ending.delete(hook)) this.remove(hook);
+      });
+    }
   }
 
   private async pump(hook: Hook): Promise<void> {
     if (hook.pumping) return;
     hook.pumping = true;
     const { source } = hook;
-    while (!hook.abort.signal.aborted) {
+    while (!hook.abort.signal.aborted && !hook.ending) {
       if (hook.acked < source.oldest - 1) {
         hook.acked = source.oldest - 1;
         const body = JSON.stringify({ type: 'gap', cursor: source.cursor(hook.acked) });
