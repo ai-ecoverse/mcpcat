@@ -17,6 +17,7 @@ const noAck = argv.includes('--no-ack');
 const at = Number(flag('--at') ?? 2);
 const slowPoll = Number(flag('--slow-poll') ?? 0);
 const slowSubscribe = Number(flag('--slow-subscribe') ?? 0);
+let failSubscribes = Number(flag('--fail-subscribes') ?? 0);
 let failLists = Number(flag('--fail-lists') ?? 0);
 
 const obj = (properties, required) => ({
@@ -182,6 +183,10 @@ function handle(msg, open) {
   if (method === 'events/poll') return poll(id, params, open);
   if (method === 'events/unsubscribe') return reply(id, {});
   if (method === 'events/subscribe') {
+    if (changed && failSubscribes > 0) {
+      failSubscribes--;
+      return { http: 503 };
+    }
     const out = reply(id, {
       id: 'sub_0000000000000001',
       refreshBefore: new Date(Date.now() + 60_000).toISOString(),

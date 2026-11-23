@@ -323,6 +323,38 @@ describe('client: a failed refresh after list_changed', () => {
     );
   });
 
+  it('http: the webhook keeper retries a resubscribe that fails after an overtaken first refresh', async () => {
+    const log = tmp('log');
+    const r = client([
+      await startMorph([
+        '--change',
+        'payload',
+        '--slow-subscribe',
+        '300',
+        '--fail-subscribes',
+        '1',
+        '--log',
+        log,
+      ]),
+      ...X,
+      '--webhook-url',
+      'https://hooks.example.com/x',
+      '--subscribe',
+      'morph',
+    ]);
+    await waitUntil(
+      () => logOf(log).filter((e) => e.method === 'events/subscribe').length >= 3,
+      'a third events/subscribe',
+      10_000
+    );
+    r.child.kill('SIGINT');
+    const out = await r.done;
+    assert.equal(out.status, 130, out.stderr);
+    assert.match(out.stderr, /changed its payload schema; resubscribing/);
+    assert.match(out.stderr, /refresh failed \(MCP HTTP 503 .*\); retrying in 0\.5s/);
+    assert.ok(logOf(log).some((e) => e.method === 'events/unsubscribe'));
+  });
+
   it('http: a schema-change termination keeps re-listing through a transient failure', async () => {
     const r = await run([
       await startMorph(['--change', 'terminate', '--quiet', '--fail-lists', '1']),
