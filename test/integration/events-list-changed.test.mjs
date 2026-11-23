@@ -271,6 +271,23 @@ function morphChecks(label, target) {
     assert.ok(!logOf(log).some((e) => e.method === 'events/unsubscribe'));
   });
 
+  it(`${label}: a webhook refresh answered after the event went away is not recorded`, async () => {
+    const cursor = tmp('cursor');
+    const r = await run([
+      await target(['--change', 'gone', '--slow-subscribe', '500']),
+      ...X,
+      '--webhook-url',
+      'https://hooks.example.com/x',
+      '--cursor-file',
+      cursor,
+      '--subscribe',
+      'morph',
+    ]);
+    assert.equal(r.status, 5, r.stderr);
+    assert.equal(r.stdout, '');
+    assert.equal(existsSync(cursor), false);
+  });
+
   it(`${label}: the webhook keeper exits 2 when webhook delivery goes away`, async () => {
     const r = await run([
       await target(['--change', 'delivery']),

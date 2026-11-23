@@ -940,6 +940,7 @@ class WebhookClient {
         delay = Math.min(delay * 2, BACKOFF_MAX_MS);
         continue;
       }
+      if (leg.aborted && !signal.aborted) continue;
       ok = true;
       delay = BACKOFF_START_MS;
       await this.record(result);
