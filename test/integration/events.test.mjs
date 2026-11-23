@@ -126,6 +126,36 @@ function checks(run, targets, sink) {
       assert.ok(Date.now() - t < 5000);
     });
 
+    it(`${label}: --poll-floor bounds the wait between polls when nextPollMs is lower`, async () => {
+      const poll = (floor) =>
+        run([
+          target(),
+          ...X,
+          ...(floor ? ['--poll-floor', floor] : []),
+          '--count',
+          '3',
+          '--subscribe',
+          'mail.received',
+          '--from',
+          'f@example.com',
+        ]);
+      let t = Date.now();
+      const r = await poll('0.3');
+      const quick = Date.now() - t;
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(
+        lines(r.stdout).map((e) => e.eventId),
+        ['mail-1', 'mail-2', 'mail-3']
+      );
+      assert.ok(quick >= 900, `three 0.3 s waits took ${quick} ms`);
+      t = Date.now();
+      const d = await poll();
+      const slow = Date.now() - t;
+      assert.equal(d.status, 0, d.stderr);
+      assert.ok(slow >= 3000, `three default 1 s waits took ${slow} ms`);
+      assert.ok(quick < slow, `${quick} ms with --poll-floor 0.3, ${slow} ms without`);
+    });
+
     it(`${label}: a poll-only event falls back to events/poll`, async () => {
       const r = await run([
         target(),
@@ -631,6 +661,7 @@ describe('host: events extension', () => {
     for (const args of [
       [`stdio:node ${script}`, '--subscribe', 'tick'],
       [`stdio:node ${script}`, '--list-events'],
+      [`stdio:node ${script}`, '--poll-floor', '0.5', '--subscribe', 'tick'],
     ]) {
       const r = await run(args);
       assert.equal(r.status, 2, r.stderr);
@@ -652,6 +683,10 @@ describe('host: events extension', () => {
     [['x', ...X, '--subscribe', 'tick', '--'], /no command after --/],
     [['x', ...X, '--subscribe'], /--subscribe needs an event name/],
     [['x', ...X, '--count', '0', '--subscribe', 'tick'], /--count needs a positive integer/],
+    [
+      ['x', ...X, '--poll-floor', '0', '--subscribe', 'tick'],
+      /--poll-floor needs a positive number of seconds/,
+    ],
     [
       ['x', ...X, '--delivery', 'smtp', '--subscribe', 'tick'],
       /--delivery must be push, poll or webhook/,
