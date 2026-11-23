@@ -48,6 +48,7 @@ export function webMcpPage(
   let dirty = false;
   let stopped = false;
   const changed = () => void refresh(true);
+  const sourceOf = (tool: PageTool) => tool.source ?? tool.window;
   const unlisten = () => {
     if (listening instanceof Target) apply(remove, listening, ['toolchange', changed]);
     listening = undefined;
@@ -74,7 +75,7 @@ export function webMcpPage(
     const tools = list
       .filter(
         (tool) =>
-          !tool.window || tool.window === window || (!localOnly && tool.origin === ownOrigin)
+          !sourceOf(tool) || sourceOf(tool) === window || (!localOnly && tool.origin === ownOrigin)
       )
       .map((tool) => metadata(tool, ownOrigin, permitted()));
     if (stringify(tools).length > 65536)
@@ -142,7 +143,7 @@ export function webMcpPage(
   };
   const localMatches = (list: PageTool[], name: string) =>
     list.filter(
-      (tool) => tool.name === name && (!localOnly || !tool.window || tool.window === window)
+      (tool) => tool.name === name && (!localOnly || !sourceOf(tool) || sourceOf(tool) === window)
     );
   const localRegistry = () => {
     if (!localOnly) return;
@@ -208,7 +209,7 @@ export function webMcpMetadata(
   }
   return {
     name: tool.name,
-    title: tool.title ?? null,
+    title: tool.title || null,
     description: tool.description ?? '',
     inputSchema: tool.inputSchema ?? { type: 'object' },
     origin: tool.origin ?? ownOrigin,

@@ -170,7 +170,8 @@ it('merges same-origin child tools and routes their calls in the main-world page
   await page.goto('/frames.html');
   await page.until(() => document.title === 'ready');
   const reply = await page.evaluate(async () => {
-    await document.modelContext.executeTool('parent_ready', {});
+    const [parent] = await document.modelContext.getTools();
+    await document.modelContext.executeTool(parent, {});
     const tools = (await globalThis.testPageBridge.refresh()).tools;
     const called = await globalThis.testPageBridge.call(
       'child_tool',
@@ -185,6 +186,114 @@ it('merges same-origin child tools and routes their calls in the main-world page
     ['child_tool', 'parent_ready']
   );
   assert.equal(reply.called.__webmcp_result, '{"child":"from child"}');
+});
+
+it('shims getTools with Tool objects bound to one registration', async (t) => {
+  const { webMcpScript } = await import('../../src/serve/webmcp-attach.ts');
+  const page = await chrome.page(t);
+  await page.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `(() => { const send = () => {}; ${webMcpScript('testToolBridge', true, true)} })()`,
+  });
+  await page.goto('/frames.html');
+  await page.until(() => document.title === 'ready');
+  const reply = await page.evaluate(async () => {
+    const api = document.modelContext;
+    const controller = new AbortController();
+    const registered = api.registerTool(
+      {
+        name: 'swap',
+        description: 'first',
+        execute: () => 'first',
+      },
+      { signal: controller.signal, exposedTo: ['https://agent.example'] }
+    );
+    const [, old] = await api.getTools();
+    const shape = {
+      promise: registered instanceof Promise,
+      settled: (await registered) === undefined,
+      tag: Object.prototype.toString.call(old),
+      json: JSON.stringify(old),
+      spread: Object.keys({ ...old }),
+      name: old.name,
+      title: old.title,
+      inputSchema: old.inputSchema,
+      outputSchema: old.outputSchema,
+      annotations: old.annotations,
+      source: old.source === window,
+      origin: old.origin === location.origin,
+      fresh: (await api.getTools())[1] !== old,
+      exposedTo: (await globalThis.testToolBridge.refresh()).tools.find(
+        (tool) => tool.name === 'swap'
+      ).exposedTo,
+      first: await api.executeTool(old),
+    };
+    controller.abort();
+    await api.registerTool({
+      name: 'swap',
+      description: 'second',
+      inputSchema: { type: 'object' },
+      annotations: { readOnlyHint: true },
+      execute: () => 'second',
+    });
+    const [, current] = await api.getTools();
+    const failure = (promise) =>
+      promise.then(
+        () => 'resolved',
+        (error) => error.name
+      );
+    const aborted = new AbortController();
+    aborted.abort();
+    return {
+      ...shape,
+      stale: await failure(api.executeTool(old, {})),
+      second: await api.executeTool(current, {}),
+      currentSchema: current.inputSchema,
+      currentAnnotations: current.annotations,
+      byName: await failure(api.executeTool('swap', {})),
+      forged: await failure(api.executeTool({ name: 'swap', source: window }, {})),
+      duplicate: await failure(
+        api.registerTool({ name: 'swap', description: 'x', execute: () => 'x' })
+      ),
+      preAborted: await failure(
+        api.registerTool(
+          { name: 'later', description: 'x', execute: () => 'x' },
+          { signal: aborted.signal }
+        )
+      ),
+      names: (await api.getTools()).map((tool) => tool.name),
+    };
+  });
+  assert.deepEqual(reply, {
+    promise: true,
+    settled: true,
+    tag: '[object Tool]',
+    json: '{}',
+    spread: [],
+    name: 'swap',
+    title: '',
+    inputSchema: null,
+    outputSchema: null,
+    annotations: null,
+    source: true,
+    origin: true,
+    fresh: true,
+    exposedTo: ['https://agent.example'],
+    first: 'first',
+    stale: 'NotFoundError',
+    second: 'second',
+    currentSchema: { type: 'object' },
+    currentAnnotations: {
+      readOnlyHint: true,
+      untrustedContentHint: false,
+      consequentialHint: false,
+      debugging: false,
+    },
+    byName: 'TypeError',
+    forged: 'TypeError',
+    duplicate: 'InvalidStateError',
+    preAborted: 'AbortError',
+    names: ['parent_ready', 'swap'],
+  });
 });
 
 it('switches listings and calls to a page replacement without executing detached registrations', async (t) => {
