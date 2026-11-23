@@ -541,7 +541,7 @@ function checks(run, targets, sink) {
       );
     });
 
-    it(`${label}: a stream is dead after three granted heartbeatMs without a message`, async () => {
+    it(`${label}: a stream is dead after three granted heartbeatMs, at least 1 s each, without a message`, async () => {
       const t = Date.now();
       const r = await run([
         target(),
@@ -558,7 +558,7 @@ function checks(run, targets, sink) {
         lines(r.stdout).map((e) => e.eventId),
         ['granted-1', 'granted-2']
       );
-      assert.match(r.stderr, /no message on the stream for 0\.3s; reconnecting in 0\.[56]s/);
+      assert.match(r.stderr, /no message on the stream for 3s; reconnecting in 0\.[56]s/);
       assert.ok(Date.now() - t < 20_000);
     });
   }

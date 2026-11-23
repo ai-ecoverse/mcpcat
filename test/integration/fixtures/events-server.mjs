@@ -60,7 +60,7 @@ const EVENTS = [
   },
   {
     name: 'granted',
-    description: 'Grants a 100 ms heartbeat and goes quiet after one event',
+    description: 'Grants a 100 ms heartbeat, below the 1 s floor, and goes quiet after one event',
     delivery: ['push'],
     inputSchema: obj({ run: { type: 'string' } }, ['run']),
   },

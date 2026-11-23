@@ -110,10 +110,13 @@ export function createSseParser(): (chunk: string) => string[] {
 
 export const STALE = Symbol('stale');
 
+const MAX_TIMER_MS = 2_147_483_647;
+const MIN_GRANT_MS = 1000;
+
 export function within<T>(promise: Promise<T>, ms: number): Promise<T | typeof STALE> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const stale = new Promise<typeof STALE>((resolve) => {
-    timer = setTimeout(() => resolve(STALE), ms);
+    timer = setTimeout(() => resolve(STALE), Math.min(ms, MAX_TIMER_MS));
   });
   return Promise.race([promise, stale]).finally(() => clearTimeout(timer));
 }
@@ -122,7 +125,7 @@ export const DEFAULT_IDLE_MS = 90_000;
 
 export function grantedIdleMs(heartbeatMs: unknown): number | undefined {
   return typeof heartbeatMs === 'number' && Number.isFinite(heartbeatMs) && heartbeatMs > 0
-    ? heartbeatMs * 3
+    ? Math.min(Math.max(heartbeatMs, MIN_GRANT_MS) * 3, MAX_TIMER_MS)
     : undefined;
 }
 
