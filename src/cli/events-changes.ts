@@ -190,22 +190,36 @@ export class EventWatch {
 
   async resync(): Promise<boolean> {
     const before = this.event;
-    const verdict = await this.check();
+    let verdict = await this.queue();
+    while (typeof verdict === 'number') {
+      await sleep(verdict, this.o.signal);
+      verdict = this.o.signal.aborted ? undefined : await this.queue();
+    }
     if (this.failure) throw this.failure;
-    if (!verdict || verdict.kind === 'gone') return false;
+    if (!verdict) return this.o.signal.aborted;
+    if (verdict.kind === 'gone') return false;
     if (verdict.kind === 'changed') return true;
     if (sameJson(before, verdict.event)) return false;
     await this.o.notice(`event '${before.name}' changed; resubscribing from the last cursor`);
     return true;
   }
 
-  check(): Promise<Verdict | undefined> {
+  async check(): Promise<Verdict | undefined> {
+    const verdict = await this.queue();
+    if (typeof verdict !== 'number') return verdict;
+    void sleep(verdict, this.stopper.signal).then(() => {
+      if (!this.stopper.signal.aborted) void this.check();
+    });
+    return undefined;
+  }
+
+  private queue(): Promise<Verdict | number | undefined> {
     const next = this.chain.then(() => this.refresh());
     this.chain = next.catch(() => {});
     return next;
   }
 
-  private async refresh(): Promise<Verdict | undefined> {
+  private async refresh(): Promise<Verdict | number | undefined> {
     if (this.failure || this.o.signal.aborted) return undefined;
     let events: EventDescriptor[];
     try {
@@ -220,10 +234,7 @@ export class EventWatch {
       const delay = this.retryMs;
       this.retryMs = Math.min(delay * 2, BACKOFF_MAX_MS);
       await this.o.notice(`${message}; retrying in ${Math.round(delay / 100) / 10}s`);
-      void sleep(delay, this.stopper.signal).then(() => {
-        if (!this.stopper.signal.aborted) void this.check();
-      });
-      return undefined;
+      return delay;
     }
     this.retryMs = BACKOFF_START_MS;
     const verdict = compareEvent(this.event, events, this.o.arguments, this.o.validate);

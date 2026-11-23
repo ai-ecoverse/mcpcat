@@ -305,6 +305,19 @@ describe('client: a failed refresh after list_changed', () => {
       Array.from({ length: 30 }, (_, i) => `m-${i + 1}`)
     );
   });
+
+  it('http: a schema-change termination keeps re-listing through a transient failure', async () => {
+    const r = await run([
+      await startMorph(['--change', 'terminate', '--quiet', '--fail-lists', '1']),
+      ...X,
+      '--subscribe',
+      'morph',
+    ]);
+    assert.equal(r.status, 5, r.stderr);
+    assert.match(r.stderr, /could not refresh events\/list \(MCP HTTP 503 .*\); retrying in 0\.5s/);
+    assert.match(r.stderr, /event 'morph' is no longer offered by the server/);
+    assert.doesNotMatch(r.stderr, /terminated by the server/);
+  });
 });
 
 describe('client: notifications/events/list_changed', () => {
