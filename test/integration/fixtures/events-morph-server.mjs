@@ -15,6 +15,8 @@ const logFile = flag('--log');
 const quiet = argv.includes('--quiet');
 const noAck = argv.includes('--no-ack');
 const at = Number(flag('--at') ?? 2);
+const slowPoll = Number(flag('--slow-poll') ?? 0);
+let failLists = Number(flag('--fail-lists') ?? 0);
 
 const obj = (properties, required) => ({
   type: 'object',
@@ -117,17 +119,24 @@ function stream(id, params, sink) {
   sink.onClose(stop);
 }
 
-function poll(id, params) {
+function poll(id, params, open) {
   if (!params?.cursor) return reply(id, { events: [], cursor: `c${n}`, nextPollMs: 1 });
   const k = start(params) + 1;
   n = Math.max(n, k);
-  if (k >= at) setTimeout(mutate, 0);
-  return reply(id, {
+  const out = reply(id, {
     events: [occurrence(k)].map(({ cursor: _c, ...e }) => e),
     cursor: `c${k}`,
-    hasMore: false,
+    hasMore: slowPoll > 0,
     nextPollMs: 1,
   });
+  if (slowPoll > 0 && k > at) {
+    mutate();
+    const sink = open(id);
+    setTimeout(() => sink.end(out), slowPoll);
+    return undefined;
+  }
+  if (slowPoll === 0 && k >= at) setTimeout(mutate, 0);
+  return out;
 }
 
 function handle(msg, open) {
@@ -161,9 +170,15 @@ function handle(msg, open) {
     });
     return undefined;
   }
-  if (method === 'events/list') return reply(id, { events: present ? [morph, other] : [other] });
+  if (method === 'events/list') {
+    if (changed && failLists > 0) {
+      failLists--;
+      return { http: 503 };
+    }
+    return reply(id, { events: present ? [morph, other] : [other] });
+  }
   if (params?.name !== 'morph' || !present) return fail(id, -32023, 'NotFound', { kind: 'event' });
-  if (method === 'events/poll') return poll(id, params);
+  if (method === 'events/poll') return poll(id, params, open);
   if (method === 'events/unsubscribe') return reply(id, {});
   if (method === 'events/subscribe') {
     setTimeout(mutate, 200);
@@ -199,6 +214,7 @@ if (argv.includes('--http')) {
         });
         return {
           send: (m) => res.write(`data: ${JSON.stringify(m)}\n\n`),
+          end: (m) => res.end(`data: ${JSON.stringify(m)}\n\n`),
           onClose: (fn) => closers.push(fn),
         };
       };
@@ -207,6 +223,11 @@ if (argv.includes('--http')) {
       if (!out) {
         res.writeHead(202);
         res.end();
+        return;
+      }
+      if (out.http) {
+        res.writeHead(out.http, { 'Content-Type': 'text/plain' });
+        res.end('busy');
         return;
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -223,7 +244,7 @@ if (argv.includes('--http')) {
   });
 } else {
   const send = (m) => process.stdout.write(`${JSON.stringify(m)}\n`);
-  const open = () => ({ send, onClose() {} });
+  const open = () => ({ send, end: send, onClose() {} });
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
   rl.on('line', (line) => {
     const out = line.trim() ? handle(JSON.parse(line), open) : null;

@@ -165,6 +165,7 @@ export class EventWatch {
   private chain: Promise<unknown> = Promise.resolve();
   private readonly stopper = new AbortController();
   private listening: Promise<void> | undefined;
+  private retryMs = BACKOFF_START_MS;
 
   constructor(options: WatchOptions) {
     this.o = options;
@@ -210,11 +211,21 @@ export class EventWatch {
     try {
       events = await this.o.api.list();
     } catch (err) {
-      if (!this.o.signal.aborted) {
-        await this.o.notice(`could not refresh events/list (${(err as Error).message})`);
+      if (this.o.signal.aborted || this.stopper.signal.aborted) return undefined;
+      const message = `could not refresh events/list (${(err as Error).message})`;
+      if (!retryable(err)) {
+        await this.o.notice(message);
+        return undefined;
       }
+      const delay = this.retryMs;
+      this.retryMs = Math.min(delay * 2, BACKOFF_MAX_MS);
+      await this.o.notice(`${message}; retrying in ${Math.round(delay / 100) / 10}s`);
+      void sleep(delay, this.stopper.signal).then(() => {
+        if (!this.stopper.signal.aborted) void this.check();
+      });
       return undefined;
     }
+    this.retryMs = BACKOFF_START_MS;
     const verdict = compareEvent(this.event, events, this.o.arguments, this.o.validate);
     const name = this.event.name;
     if (verdict.kind === 'gone') {

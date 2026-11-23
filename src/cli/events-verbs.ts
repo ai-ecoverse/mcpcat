@@ -736,6 +736,7 @@ class Subscriber {
         );
         continue;
       }
+      if (leg.aborted) break;
       this.polled = true;
       delay = BACKOFF_START_MS;
       const wait = await this.batch(result);

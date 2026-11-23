@@ -206,6 +206,22 @@ function morphChecks(label, target) {
     );
   });
 
+  it(`${label}: a poll in flight when the event goes is not delivered`, async () => {
+    const r = await run([
+      await target(['--change', 'gone', '--slow-poll', '500']),
+      ...X,
+      '--delivery',
+      'poll',
+      '--subscribe',
+      'morph',
+    ]);
+    assert.equal(r.status, 5, r.stderr);
+    assert.deepEqual(
+      lines(r.stdout).map((e) => e.eventId),
+      ['m-1', 'm-2']
+    );
+  });
+
   it(`${label}: --list-events opens no subscriptions/listen`, async () => {
     const log = tmp('log');
     const r = await run([await target(['--log', log]), ...X, '--list-events']);
@@ -268,6 +284,28 @@ function morphChecks(label, target) {
     assert.match(r.stderr, /event 'morph' does not offer webhook delivery \(offers: poll\)/);
   });
 }
+
+describe('client: a failed refresh after list_changed', () => {
+  it('http: a transient events/list failure is retried and the change still lands', async () => {
+    const log = tmp('log');
+    const r = await run([
+      await startMorph(['--change', 'payload', '--fail-lists', '1', '--log', log]),
+      ...X,
+      '--count',
+      '30',
+      '--subscribe',
+      'morph',
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /could not refresh events\/list \(MCP HTTP 503 .*\); retrying in 0\.5s/);
+    assert.match(r.stderr, /changed its payload schema; resubscribing from the last cursor/);
+    assert.equal(logOf(log).filter((e) => e.method === 'events/stream').length, 2);
+    assert.deepEqual(
+      lines(r.stdout).map((e) => e.eventId),
+      Array.from({ length: 30 }, (_, i) => `m-${i + 1}`)
+    );
+  });
+});
 
 describe('client: notifications/events/list_changed', () => {
   morphChecks('http', (extra) => startMorph(extra));
