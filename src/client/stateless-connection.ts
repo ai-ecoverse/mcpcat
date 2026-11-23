@@ -30,6 +30,7 @@ import {
   EVENTS_METHODS,
   idleClock,
   listAllEvents,
+  listenParams,
   STALE,
   subscriptionParams,
   webhookMethods,
@@ -486,6 +487,7 @@ async function readEventStream(
 
 async function streamAttempt(
   t: HttpStreamTransport,
+  method: string,
   params: Record<string, unknown>,
   body: string,
   id: number,
@@ -500,7 +502,7 @@ async function streamAttempt(
   try {
     let fetched: Awaited<ReturnType<HttpStreamTransport['doFetch']>>;
     try {
-      fetched = await t.doFetch('events/stream', params, body, local.signal);
+      fetched = await t.doFetch(method, params, body, local.signal);
     } catch (err) {
       if (stopped()) return 'aborted';
       throw err;
@@ -508,7 +510,7 @@ async function streamAttempt(
     try {
       if (fetched.res.status >= 400) {
         try {
-          await t.handleErrorStatus(fetched.res, 'events/stream');
+          await t.handleErrorStatus(fetched.res, method);
         } catch (err) {
           if (!(err instanceof AuthRetryableError) || lastAttempt) throw err;
           return { retry: err, token: fetched.token };
@@ -525,24 +527,34 @@ async function streamAttempt(
   }
 }
 
+async function httpStream(
+  t: HttpStreamTransport,
+  method: string,
+  params: Record<string, unknown>,
+  onMessage: StreamMessageHandler,
+  options: StreamOptions
+): Promise<StreamEnd> {
+  const wire = t.wireParams(params);
+  for (let attempt = 0; ; attempt++) {
+    if (options.signal?.aborted || t.externalSignal?.aborted) return 'aborted';
+    const id = t.nextId();
+    const body = JSON.stringify({ jsonrpc: '2.0', id, method, params: wire });
+    const out = await streamAttempt(t, method, params, body, id, onMessage, options, attempt > 0);
+    if (typeof out === 'string') return out;
+    await t.handleAuthError(out.retry, out.token);
+  }
+}
+
 function createHttpEventsApi(request: RequestFn, t: HttpStreamTransport): EventsApi {
   return {
     list: () => listAllEvents(request),
     ...webhookMethods(request),
     poll: async (subscription) =>
       ((await request('events/poll', subscriptionParams(subscription))) ?? {}) as PollEventsResult,
-    async stream(subscription, onMessage, options) {
-      const params = subscriptionParams(subscription);
-      const wire = t.wireParams(params);
-      for (let attempt = 0; ; attempt++) {
-        if (options.signal?.aborted || t.externalSignal?.aborted) return 'aborted';
-        const id = t.nextId();
-        const body = JSON.stringify({ jsonrpc: '2.0', id, method: 'events/stream', params: wire });
-        const out = await streamAttempt(t, params, body, id, onMessage, options, attempt > 0);
-        if (typeof out === 'string') return out;
-        await t.handleAuthError(out.retry, out.token);
-      }
-    },
+    stream: (subscription, onMessage, options) =>
+      httpStream(t, 'events/stream', subscriptionParams(subscription), onMessage, options),
+    listen: (onMessage, options) =>
+      httpStream(t, 'subscriptions/listen', listenParams(), onMessage, options),
   };
 }
 

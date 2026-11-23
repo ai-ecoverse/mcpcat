@@ -25,6 +25,7 @@ import {
   EventsTransportClosedError,
   idleClock,
   listAllEvents,
+  listenParams,
   STALE,
   subscriptionParams,
   webhookMethods,
@@ -77,9 +78,99 @@ interface StdioJsonRpc {
 }
 
 const ABORTED = Symbol('aborted');
+const MAX_BACKLOG = 1000;
 
 function rpcError(code: number, message: string, data?: unknown): Error {
   return new StatelessRpcError(code, message, data);
+}
+
+type Line = string | typeof STALE | typeof ABORTED;
+
+interface LineFeed {
+  next(ms: number, signals: (AbortSignal | undefined)[]): Promise<Line>;
+  close(): void;
+}
+
+function raceAbort<T>(
+  promise: Promise<T>,
+  signals: (AbortSignal | undefined)[]
+): Promise<T | typeof ABORTED> {
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<typeof ABORTED>((resolve) => {
+    onAbort = () => resolve(ABORTED);
+    for (const s of signals) {
+      if (s?.aborted) onAbort();
+      else s?.addEventListener('abort', onAbort, { once: true });
+    }
+  });
+  return Promise.race([promise, aborted]).finally(() => {
+    for (const s of signals) if (onAbort) s?.removeEventListener('abort', onAbort);
+  });
+}
+
+export function createLineRouter(
+  readLine: () => Promise<string>,
+  seen?: (line: string) => void,
+  backlog = MAX_BACKLOG
+): { open(): LineFeed } {
+  const log: string[] = [];
+  let base = 0;
+  let reading: Promise<void> | undefined;
+  let waiters: (() => void)[] = [];
+  const feeds = new Set<{ at: number }>();
+  const trim = () => {
+    let min = base + log.length;
+    for (const feed of feeds) min = Math.min(min, feed.at);
+    log.splice(0, min - base);
+    base = min;
+    if (log.length >= backlog) return;
+    const ready = waiters;
+    waiters = [];
+    for (const wake of ready) wake();
+  };
+  const room = () => new Promise<void>((resolve) => waiters.push(resolve));
+  const fill = (): Promise<void> => {
+    reading ??= readLine()
+      .then((line) => {
+        seen?.(line);
+        log.push(line);
+      })
+      .finally(() => {
+        reading = undefined;
+      });
+    return reading;
+  };
+  return {
+    open(): LineFeed {
+      const feed = { at: base + log.length };
+      feeds.add(feed);
+      let pending: Promise<string> | undefined;
+      const take = async (): Promise<string> => {
+        while (feed.at >= base + log.length) await (log.length >= backlog ? room() : fill());
+        const line = log[feed.at - base];
+        feed.at++;
+        trim();
+        return line;
+      };
+      return {
+        async next(ms, signals) {
+          pending ??= take();
+          try {
+            const got = await raceAbort(within(pending, ms), signals);
+            if (typeof got === 'string') pending = undefined;
+            return got;
+          } catch (err) {
+            pending = undefined;
+            throw err;
+          }
+        },
+        close() {
+          feeds.delete(feed);
+          trim();
+        },
+      };
+    },
+  };
 }
 
 function createStdioJsonRpc(
@@ -91,7 +182,6 @@ function createStdioJsonRpc(
   const decoder = new TextDecoder();
   let nextId = 1;
   let readBuffer = '';
-  let pendingLine: Promise<string> | undefined;
   const reader = proc.stdout.getReader();
   const { version = '0.0.0', timeoutMs = 60_000, signal: externalSignal, verbose } = options;
 
@@ -110,39 +200,23 @@ function createStdioJsonRpc(
     }
   }
 
-  async function nextLine(
-    ms: number,
-    signals: (AbortSignal | undefined)[]
-  ): Promise<string | typeof STALE | typeof ABORTED> {
-    pendingLine ??= readLine();
-    const line = pendingLine;
-    let onAbort: (() => void) | undefined;
-    const aborted = new Promise<typeof ABORTED>((resolve) => {
-      onAbort = () => resolve(ABORTED);
-      for (const s of signals) {
-        if (s?.aborted) onAbort();
-        else s?.addEventListener('abort', onAbort, { once: true });
-      }
-    });
-    try {
-      const got = await Promise.race([within(line, ms), aborted]);
-      if (typeof got === 'string') pendingLine = undefined;
-      return got;
-    } catch (err) {
-      pendingLine = undefined;
-      throw err;
-    } finally {
-      for (const s of signals) if (onAbort) s?.removeEventListener('abort', onAbort);
-    }
-  }
+  const router = createLineRouter(readLine, (line) => {
+    if (verbose?.enabled) verbose.response(line);
+  });
 
-  async function send(msg: string): Promise<void> {
-    const writer = proc.stdin.getWriter();
-    try {
-      await writer.write(encoder.encode(`${msg}\n`));
-    } finally {
-      writer.releaseLock();
-    }
+  let writing: Promise<void> = Promise.resolve();
+  function send(msg: string): Promise<void> {
+    const write = async () => {
+      const writer = proc.stdin.getWriter();
+      try {
+        await writer.write(encoder.encode(`${msg}\n`));
+      } finally {
+        writer.releaseLock();
+      }
+    };
+    const next = writing.then(write);
+    writing = next.catch(() => {});
+    return next;
   }
 
   function wireBody(id: number, method: string, params: Record<string, unknown>): string {
@@ -157,25 +231,26 @@ function createStdioJsonRpc(
   async function request(method: string, params: Record<string, unknown>): Promise<unknown> {
     const id = nextId++;
     const body = wireBody(id, method, params);
-
-    if (verbose?.enabled) verbose.request(method, body);
-    await send(body);
-
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
+    const feed = router.open();
+    try {
+      if (verbose?.enabled) verbose.request(method, body);
+      await send(body);
+      const deadline = Date.now() + timeoutMs;
       const signal = params._detached === true ? undefined : externalSignal;
-      const line = await nextLine(deadline - Date.now(), [signal]);
-      if (typeof line !== 'string') throw new McpTimeoutError(method, timeoutMs);
-      const parsed = JSON.parse(line) as JsonRpcMessage;
-      if (verbose?.enabled) verbose.response(line);
-      if (parsed.id === id && parsed.method === undefined) {
-        if (parsed.error) {
-          throw new StatelessRpcError(parsed.error.code, parsed.error.message, parsed.error.data);
+      for (;;) {
+        const line = await feed.next(Math.max(0, deadline - Date.now()), [signal]);
+        if (typeof line !== 'string') throw new McpTimeoutError(method, timeoutMs);
+        const parsed = JSON.parse(line) as JsonRpcMessage;
+        if (parsed.id === id && parsed.method === undefined) {
+          if (parsed.error) {
+            throw new StatelessRpcError(parsed.error.code, parsed.error.message, parsed.error.data);
+          }
+          return parsed.result;
         }
-        return parsed.result;
       }
+    } finally {
+      feed.close();
     }
-    throw new McpTimeoutError(method, timeoutMs);
   }
 
   async function cancel(id: number, reason: string): Promise<void> {
@@ -200,22 +275,27 @@ function createStdioJsonRpc(
     if (signals.some((s) => s?.aborted)) return 'aborted';
     const id = nextId++;
     const body = wireBody(id, method, params);
-    if (verbose?.enabled) verbose.request(method, body);
-    await send(body);
-    const clock = idleClock(onMessage, streamOptions);
-    for (;;) {
-      const line = await nextLine(clock.left(), signals);
-      if (line === ABORTED) {
-        await cancel(id, 'interrupted');
-        return 'aborted';
+    const feed = router.open();
+    try {
+      if (verbose?.enabled) verbose.request(method, body);
+      await send(body);
+      const clock = idleClock(onMessage, streamOptions);
+      for (;;) {
+        const line = await feed.next(clock.left(), signals);
+        if (line === ABORTED) {
+          await cancel(id, 'interrupted');
+          return 'aborted';
+        }
+        if (line === STALE) {
+          await cancel(id, 'no heartbeat');
+          return 'stale';
+        }
+        const end = await dispatchStreamData(line, id, clock.onMessage, undefined, rpcError);
+        if (end === 'stopped') await cancel(id, 'done');
+        if (end) return end;
       }
-      if (line === STALE) {
-        await cancel(id, 'no heartbeat');
-        return 'stale';
-      }
-      const end = await dispatchStreamData(line, id, clock.onMessage, verbose, rpcError);
-      if (end === 'stopped') await cancel(id, 'done');
-      if (end) return end;
+    } finally {
+      feed.close();
     }
   }
 
@@ -336,6 +416,8 @@ function buildConnectionMethods(
           {}) as PollEventsResult,
       stream: (subscription, onMessage, options) =>
         rpc.stream('events/stream', subscriptionParams(subscription), onMessage, options),
+      listen: (onMessage, options) =>
+        rpc.stream('subscriptions/listen', listenParams(), onMessage, options),
     },
     async close(): Promise<void> {
       rpc.close();

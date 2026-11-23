@@ -38,6 +38,7 @@ import {
   acknowledgedMessage,
   completedMessage,
   createNotifier,
+  eventsListChangedMessage,
   isInitialize,
   listChangedMessage,
   type Notifier,
@@ -112,6 +113,7 @@ export interface ServeOptions {
   eventPollMs: number;
   webhookAllow: string[];
   webhookTtlMs: number;
+  eventFile?: string;
 }
 
 function parseHttpFlag(args: string[], i: number): { host: string; port: number; next: number } {
@@ -172,6 +174,7 @@ function parseSingleFlag(
     eventPollMs: number;
     webhookAllow: string[];
     webhookTtlMs: number;
+    eventFile?: string;
   }
 ): number {
   const arg = args[i];
@@ -234,6 +237,7 @@ function parseValueFlag(
     eventPollMs: number;
     webhookAllow: string[];
     webhookTtlMs: number;
+    eventFile?: string;
   }
 ): number {
   const arg = args[i];
@@ -322,9 +326,11 @@ function parseEventFlag(
     eventPollMs: number;
     webhookAllow: string[];
     webhookTtlMs: number;
+    eventFile?: string;
   }
 ): boolean {
   if (arg === '--event') opts.events.push(value);
+  else if (arg === '--event-file') opts.eventFile = value;
   else if (arg === '--webhook-allow') opts.webhookAllow.push(value);
   else if (arg === '--event-buffer') opts.eventBuffer = Number(value);
   else if (arg === '--event-heartbeat') opts.eventHeartbeatMs = Number(value) * 1000;
@@ -335,7 +341,9 @@ function parseEventFlag(
 }
 
 export function eventFlagsUsed(options: ServeOptions): boolean {
-  return options.events.length > 0 || options.webhookAllow.length > 0;
+  return (
+    options.events.length > 0 || options.webhookAllow.length > 0 || options.eventFile !== undefined
+  );
 }
 
 export function parseServeFlags(args: string[]): ServeOptions {
@@ -615,15 +623,18 @@ async function terminate(proc: SpawnResult, graceMs: number): Promise<void> {
   }
 }
 
+const LISTEN_OFFER = { tools: false, events: true };
+
 const SIGNAL_EXIT = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const;
 
 async function trapShutdown(
   platform: Platform,
-  handler: (sig: keyof typeof SIGNAL_EXIT) => void
+  handler: (sig: keyof typeof SIGNAL_EXIT) => void,
+  reload?: () => void
 ): Promise<void> {
   await Promise.all(
     (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map((sig) =>
-      platform.onSignal?.(sig, () => handler(sig))
+      platform.onSignal?.(sig, () => (sig === 'SIGHUP' && reload ? reload() : handler(sig)))
     )
   );
 }
@@ -1032,16 +1043,25 @@ export async function runServe(
   }
 
   const executor = createToolExecutor(platform, clis, allTools, childEnv, options, serveCwd);
-  const hub = buildEventHub(platform, options, childEnv, serveCwd);
+  const hub = await buildEventHub(platform, options, childEnv, serveCwd);
   if (typeof hub === 'string') {
     await platform.write(2, sanitizeTerminal(`mcpcat serve: ${hub}\n`));
     return 2;
   }
+  const reload = hub?.listChanged ? eventReloader(platform, options, hub) : undefined;
 
   const serverName = 'mcpcat-serve';
 
   if (options.transport === 'stdio') {
-    return runStdioServer(platform, executor.rpcTools, executor.invoke, serverName, version, hub);
+    return runStdioServer(
+      platform,
+      executor.rpcTools,
+      executor.invoke,
+      serverName,
+      version,
+      hub,
+      reload
+    );
   }
 
   return runHttpServer(
@@ -1053,7 +1073,8 @@ export async function runServe(
     version,
     resolvedBearer,
     generatedBearer,
-    hub
+    hub,
+    reload
   );
 }
 
@@ -1062,8 +1083,8 @@ function positive(value: number): boolean {
 }
 
 function eventOptionsError(options: ServeOptions): string | undefined {
-  if (options.webhookAllow.length > 0 && options.events.length === 0) {
-    return '--webhook-allow needs at least one --event';
+  if (options.webhookAllow.length > 0 && options.events.length === 0 && !options.eventFile) {
+    return '--webhook-allow needs at least one --event or an --event-file';
   }
   for (const prefix of options.webhookAllow) {
     const url = URL.canParse(prefix) ? new URL(prefix) : undefined;
@@ -1085,27 +1106,77 @@ function eventOptionsError(options: ServeOptions): string | undefined {
   return undefined;
 }
 
-function buildEventHub(
+export function eventFileLines(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'));
+}
+
+async function loadEventSpecs(
   platform: Platform,
-  options: ServeOptions,
-  env: Record<string, string>,
-  cwd: string
-): EventHub | string | undefined {
-  const error = eventOptionsError(options);
-  if (error) return error;
-  if (options.events.length === 0) return undefined;
+  options: ServeOptions
+): Promise<EventSpec[] | string> {
+  const raws = [...options.events];
+  const file = options.eventFile;
+  if (file !== undefined) {
+    try {
+      raws.push(...eventFileLines(new TextDecoder().decode(await platform.fs.readFile(file))));
+    } catch (err) {
+      return `cannot read --event-file ${file}: ${(err as Error).message}`;
+    }
+  }
   const specs: EventSpec[] = [];
-  for (const raw of options.events) {
+  for (const raw of raws) {
     const spec = parseEventSpec(raw);
     if (!spec) return `invalid --event spec: ${raw}`;
     if (specs.some((s) => s.name === spec.name)) return `duplicate --event name: ${spec.name}`;
     specs.push(spec);
   }
+  return specs;
+}
+
+function eventReloader(platform: Platform, options: ServeOptions, hub: EventHub): () => void {
+  const log = logLine(platform);
+  let chain = Promise.resolve();
+  const reload = async () => {
+    const specs = await loadEventSpecs(platform, options);
+    if (typeof specs === 'string') {
+      await log(`SIGHUP: ${specs}; the event types stay as they were`);
+      return;
+    }
+    const { added, removed, changed } = hub.reload(specs);
+    const parts = [
+      ['added', added],
+      ['removed', removed],
+      ['changed', changed],
+    ]
+      .filter(([, names]) => names.length > 0)
+      .map(([what, names]) => `${what} ${(names as string[]).join(', ')}`);
+    await log(`SIGHUP: reloaded ${options.eventFile}: ${parts.join('; ') || 'no change'}`);
+  };
+  return () => {
+    chain = chain.then(reload).catch(() => {});
+  };
+}
+
+async function buildEventHub(
+  platform: Platform,
+  options: ServeOptions,
+  env: Record<string, string>,
+  cwd: string
+): Promise<EventHub | string | undefined> {
+  const error = eventOptionsError(options);
+  if (error) return error;
+  if (options.events.length === 0 && options.eventFile === undefined) return undefined;
+  const specs = await loadEventSpecs(platform, options);
+  if (typeof specs === 'string') return specs;
   return new EventHub({
     platform,
     specs,
     env,
     cwd,
+    reloadable: options.eventFile !== undefined,
     bufferSize: options.eventBuffer,
     heartbeatMs: options.eventHeartbeatMs,
     pollMs: options.eventPollMs,
@@ -2280,7 +2351,8 @@ async function runStdioServer(
   call: (name: string, args: unknown) => Promise<ToolRunResult>,
   serverName: string,
   version: string,
-  hub: EventHub | undefined
+  hub: EventHub | undefined,
+  reload?: () => void
 ): Promise<number> {
   const reader = platform.stdin.getReader();
   let buffer = '';
@@ -2303,7 +2375,7 @@ async function runStdioServer(
   const stopped = new Promise<number>((resolve) => {
     stop = resolve;
   });
-  await trapShutdown(platform, (sig) => stop(SIGNAL_EXIT[sig]));
+  await trapShutdown(platform, (sig) => stop(SIGNAL_EXIT[sig]), reload);
 
   const serve = async (): Promise<number> => {
     for (;;) {
@@ -2345,17 +2417,31 @@ class StdioStreams {
   private readonly hub: EventHub;
   private readonly out: (body: string) => Promise<void>;
   private readonly open = new Map<string | number, AbortController>();
+  private readonly listens = new Set<string | number>();
 
   constructor(hub: EventHub, out: (body: string) => Promise<void>) {
     this.hub = hub;
     this.out = out;
+    hub.changes.subscribe({
+      change: () => {
+        for (const id of this.listens) void out(eventsListChangedMessage(id)).catch(() => {});
+      },
+      close: () => this.listens.clear(),
+    });
   }
 
   async take(line: string): Promise<boolean> {
+    const listen = this.hub.listChanged ? parseListen(line, LISTEN_OFFER) : undefined;
+    if (listen) {
+      if (listen.events) this.listens.add(listen.id);
+      await this.out(acknowledgedMessage(listen));
+      return true;
+    }
     const outcome = await handleEventsMessage(this.hub, line, 'stdio');
     if (!outcome) return false;
     if (outcome.kind === 'cancel') {
       this.open.get(outcome.id)?.abort();
+      this.listens.delete(outcome.id);
       return false;
     }
     if (outcome.kind === 'reply') {
@@ -2383,7 +2469,8 @@ async function runHttpServer(
   version: string,
   resolvedBearer: string | undefined,
   generatedBearer: boolean,
-  hub: EventHub | undefined
+  hub: EventHub | undefined,
+  reload?: () => void
 ): Promise<number> {
   if (!platform.listen) {
     await platform.write(2, 'mcpcat serve: HTTP transport requires platform.listen\n');
@@ -2426,7 +2513,7 @@ async function runHttpServer(
     }
   };
 
-  await trapShutdown(platform, shutdown);
+  await trapShutdown(platform, shutdown, reload);
 
   if (generatedBearer && resolvedBearer) {
     tokenFilePath = await publishBearer(
@@ -2595,6 +2682,15 @@ async function handleMcpRequest(
     }
   }
 
+  const listen = hub?.listChanged ? parseListen(request.body, LISTEN_OFFER) : undefined;
+  if (hub && listen) {
+    return sseResponse(
+      hub.changes,
+      [acknowledgedMessage(listen)],
+      listen.events ? eventsListChangedMessage(listen.id) : undefined,
+      completedMessage(listen.id)
+    );
+  }
   const events = hub ? await httpEvents(hub, request, resolvedBearer) : undefined;
   if (events) return events;
   const outcome = await handleJsonRpc(
