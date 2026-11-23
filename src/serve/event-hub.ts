@@ -1,10 +1,12 @@
 import type { EventDescriptor } from '../client/connection.ts';
+import { EVENTS_EXTENSION } from '../client/modern.ts';
 import type { Platform, SpawnResult } from '../platform/types.ts';
 import {
   canonicalArgs,
   descriptor,
   type EventSpec,
   EventsRpcError,
+  grantHeartbeat,
   notification,
   readMaxEvents,
   readSubscription,
@@ -34,6 +36,10 @@ export type Send = (message: string) => Promise<void>;
 
 export interface OpenStream {
   run(send: Send, signal: AbortSignal): Promise<void>;
+}
+
+export function eventsExtensions(hub: EventHub | undefined): Record<string, unknown> | undefined {
+  return hub ? { [EVENTS_EXTENSION]: { listChanged: false } } : undefined;
 }
 
 export class EventHub {
@@ -162,13 +168,15 @@ export class EventHub {
 
   openStream(id: string | number, params: unknown): OpenStream {
     const { spec, sub } = readSubscription(params, this.specs);
-    return { run: (send, signal) => this.runStream(id, spec, sub, send, signal) };
+    const heartbeatMs = grantHeartbeat(params, this.o.heartbeatMs);
+    return { run: (send, signal) => this.runStream(id, spec, sub, heartbeatMs, send, signal) };
   }
 
   private async runStream(
     id: string | number,
     spec: EventSpec,
     sub: Subscription,
+    heartbeatMs: number,
     send: Send,
     signal: AbortSignal
   ): Promise<void> {
@@ -186,7 +194,11 @@ export class EventHub {
       if (state.closing) return undefined;
       if (state.last < source.oldest - 1) {
         state.last = source.oldest - 1;
-        return notification(id, 'active', { cursor: source.cursor(state.last), truncated: true });
+        return notification(id, 'active', {
+          cursor: source.cursor(state.last),
+          truncated: true,
+          heartbeatMs,
+        });
       }
       const [entry] = source.after(state.last, 1);
       if (entry) {
@@ -216,12 +228,13 @@ export class EventHub {
     const first = notification(id, 'active', {
       cursor: source.cursor(pos.seq),
       truncated: pos.truncated,
+      heartbeatMs,
     });
     const off = source.on(() => void pump());
     const beat = setInterval(() => {
       state.beat = true;
       void pump();
-    }, this.o.heartbeatMs);
+    }, heartbeatMs);
     const closer = () => {
       state.closing = true;
       void pump();

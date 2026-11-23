@@ -241,8 +241,9 @@ ${experimentalHelp()}  <target> --experimental events --list-events
                              MCPCAT_EVENT_NAME, MCPCAT_EVENT_CURSOR set. Options go
                              before --subscribe: --delivery push|poll, --cursor <c>,
                              --since now|<c>, --cursor-file <path>, --max-age <s>,
-                             --count <n>, --heartbeat-timeout <s> (default 60), -d
-                             <json>. After --subscribe <event> come its arguments;
+                             --count <n>, --heartbeat-timeout <s> (default 3 × the
+                             server's heartbeatMs, else 90), --poll-floor <s> (default
+                             1), -d <json>. After --subscribe <event> come its arguments;
                              after -- the command (a stdio server is a stdio: target)
                              --webhook-url <https> registers a webhook subscription
                              (events/subscribe) to that URL and keeps refreshing it

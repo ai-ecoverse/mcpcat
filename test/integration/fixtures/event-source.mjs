@@ -28,6 +28,9 @@ if (mode === 'shape') {
   };
   write();
   setInterval(() => {}, 1000);
+} else if (mode === 'unsafe') {
+  out(JSON.stringify({ eventId: 'évent \u2603 1.2', data: { ok: true } }));
+  setInterval(() => {}, 1000);
 } else if (mode === 'quiet') {
   setInterval(() => {}, 1000);
 } else {

@@ -452,7 +452,7 @@ async function readEventStream(
   res: Response,
   id: number,
   onMessage: StreamMessageHandler,
-  idleMs: number,
+  options: StreamOptions,
   t: HttpStreamTransport
 ): Promise<StreamEnd> {
   const ct = res.headers.get('content-type') ?? '';
@@ -463,7 +463,7 @@ async function readEventStream(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   const parse = createSseParser();
-  const clock = idleClock(onMessage, idleMs);
+  const clock = idleClock(onMessage, options);
   try {
     for (;;) {
       let chunk: ReadableStreamReadResult<Uint8Array> | typeof STALE;
@@ -514,7 +514,7 @@ async function streamAttempt(
           return { retry: err, token: fetched.token };
         }
       }
-      const end = await readEventStream(fetched.res, id, onMessage, options.idleMs, t);
+      const end = await readEventStream(fetched.res, id, onMessage, options, t);
       return stopped() ? 'aborted' : end;
     } finally {
       local.abort();

@@ -52,6 +52,18 @@ const EVENTS = [
     delivery: ['push'],
     inputSchema: obj({ run: { type: 'string' } }, ['run']),
   },
+  {
+    name: 'grumbly',
+    description: 'Sends only stream errors between two events',
+    delivery: ['push'],
+    inputSchema: obj({ run: { type: 'string' } }, ['run']),
+  },
+  {
+    name: 'granted',
+    description: 'Grants a 100 ms heartbeat, below the 1 s floor, and goes quiet after one event',
+    delivery: ['push'],
+    inputSchema: obj({ run: { type: 'string' } }, ['run']),
+  },
 ];
 
 const PAGE = 3;
@@ -272,13 +284,44 @@ export function createEventsServer({ advertise = true } = {}) {
           method: 'notifications/events/heartbeat',
           params: { cursor: 'c99', _meta: { [SID]: `other-${id}` } },
         });
-        note('notifications/events/error', { error: { code: -32603, message: 'still here' } });
-        note('notifications/events/unknown', {});
       });
+      later(20, () =>
+        note('notifications/events/error', { error: { code: -32603, message: 'still here' } })
+      );
       later(2000, () => {
         stop();
         sink.end({ jsonrpc: '2.0', id, result: { resultType: 'complete', _meta: { [SID]: id } } });
       });
+      return;
+    }
+    if (name === 'grumbly') {
+      note('notifications/events/active', { cursor: 'c0', truncated: false });
+      const occurrence = (n) => ({ eventId: `grumbly-${n}`, name, timestamp: STAMP, data: { n } });
+      later(10, () => note('notifications/events/event', { ...occurrence(1), cursor: 'c1' }));
+      every(50, () =>
+        note('notifications/events/error', { error: { code: -32603, message: 'retrying' } })
+      );
+      later(800, () => note('notifications/events/event', { ...occurrence(2), cursor: 'c2' }));
+      return;
+    }
+    if (name === 'granted') {
+      const state = run(`granted:${params.arguments?.run}`);
+      state.streams++;
+      const n = state.streams;
+      note('notifications/events/active', {
+        cursor: params.cursor ?? 'c0',
+        truncated: false,
+        heartbeatMs: 100,
+      });
+      later(10, () =>
+        note('notifications/events/event', {
+          eventId: `granted-${n}`,
+          name,
+          timestamp: STAMP,
+          data: { stream: n },
+          cursor: `c${n}`,
+        })
+      );
       return;
     }
     if (name === 'tricky') {

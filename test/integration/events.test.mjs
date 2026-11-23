@@ -80,6 +80,8 @@ function checks(run, targets, sink) {
         'nocursor',
         'leaky',
         'chatty',
+        'grumbly',
+        'granted',
       ]);
     });
 
@@ -122,6 +124,36 @@ function checks(run, targets, sink) {
         ]
       );
       assert.ok(Date.now() - t < 5000);
+    });
+
+    it(`${label}: --poll-floor bounds the wait between polls when nextPollMs is lower`, async () => {
+      const poll = (floor) =>
+        run([
+          target(),
+          ...X,
+          ...(floor ? ['--poll-floor', floor] : []),
+          '--count',
+          '3',
+          '--subscribe',
+          'mail.received',
+          '--from',
+          'f@example.com',
+        ]);
+      let t = Date.now();
+      const r = await poll('0.3');
+      const quick = Date.now() - t;
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(
+        lines(r.stdout).map((e) => e.eventId),
+        ['mail-1', 'mail-2', 'mail-3']
+      );
+      assert.ok(quick >= 900, `three 0.3 s waits took ${quick} ms`);
+      t = Date.now();
+      const d = await poll();
+      const slow = Date.now() - t;
+      assert.equal(d.status, 0, d.stderr);
+      assert.ok(slow >= 3000, `three default 1 s waits took ${slow} ms`);
+      assert.ok(quick < slow, `${quick} ms with --poll-floor 0.3, ${slow} ms without`);
     });
 
     it(`${label}: a poll-only event falls back to events/poll`, async () => {
@@ -233,7 +265,7 @@ function checks(run, targets, sink) {
         ['flaky-1', 'flaky-2']
       );
       assert.equal(events[1].data.resumedFrom, 'c1');
-      assert.match(r.stderr, /no event or heartbeat for 0\.3s; reconnecting in 0\.5s/);
+      assert.match(r.stderr, /no message on the stream for 0\.3s; reconnecting in 0\.[56]s/);
     });
 
     it(`${label}: a stream the server closes reconnects with the last cursor`, async () => {
@@ -483,9 +515,51 @@ function checks(run, targets, sink) {
         lines(r.stdout).map((e) => e.eventId),
         ['chatty-1', 'chatty-2']
       );
-      assert.match(r.stderr, /no event or heartbeat for 0\.3s; reconnecting/);
+      assert.match(r.stderr, /no message on the stream for 0\.3s; reconnecting/);
       assert.match(r.stderr, /server reported an error for chatty: still here/);
       assert.doesNotMatch(r.stderr, /the server closed the stream/);
+    });
+
+    it(`${label}: notifications/events/error keeps a stream alive`, async () => {
+      const r = await run([
+        target(),
+        ...X,
+        '--silent',
+        '--heartbeat-timeout',
+        '0.3',
+        '--count',
+        '2',
+        '--subscribe',
+        'grumbly',
+        '--run',
+        runId(),
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(
+        lines(r.stdout).map((e) => e.eventId),
+        ['grumbly-1', 'grumbly-2']
+      );
+    });
+
+    it(`${label}: a stream is dead after three granted heartbeatMs, at least 1 s each, without a message`, async () => {
+      const t = Date.now();
+      const r = await run([
+        target(),
+        ...X,
+        '--count',
+        '2',
+        '--subscribe',
+        'granted',
+        '--run',
+        runId(),
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(
+        lines(r.stdout).map((e) => e.eventId),
+        ['granted-1', 'granted-2']
+      );
+      assert.match(r.stderr, /no message on the stream for 3s; reconnecting in 0\.[56]s/);
+      assert.ok(Date.now() - t < 20_000);
     });
   }
 }
@@ -587,6 +661,7 @@ describe('host: events extension', () => {
     for (const args of [
       [`stdio:node ${script}`, '--subscribe', 'tick'],
       [`stdio:node ${script}`, '--list-events'],
+      [`stdio:node ${script}`, '--poll-floor', '0.5', '--subscribe', 'tick'],
     ]) {
       const r = await run(args);
       assert.equal(r.status, 2, r.stderr);
@@ -609,6 +684,10 @@ describe('host: events extension', () => {
     [['x', ...X, '--subscribe'], /--subscribe needs an event name/],
     [['x', ...X, '--count', '0', '--subscribe', 'tick'], /--count needs a positive integer/],
     [
+      ['x', ...X, '--poll-floor', '0', '--subscribe', 'tick'],
+      /--poll-floor needs a positive number of seconds/,
+    ],
+    [
       ['x', ...X, '--delivery', 'smtp', '--subscribe', 'tick'],
       /--delivery must be push, poll or webhook/,
     ],
@@ -625,7 +704,7 @@ describe('host: events extension', () => {
   it('--experimental=events works too', async () => {
     const r = await run([stdio, '--experimental=events', '--list-events', '--json']);
     assert.equal(r.status, 0, r.stderr);
-    assert.equal(JSON.parse(r.stdout).events.length, 11);
+    assert.equal(JSON.parse(r.stdout).events.length, 13);
   });
 
   it('--version --verbose lists the experimental features and their revision', async () => {
@@ -637,7 +716,7 @@ describe('host: events extension', () => {
     assert.match(r.stdout, /^ {2}events {21}MCP Events client/m);
     assert.match(
       r.stdout,
-      /^ +SEP-3415 at modelcontextprotocol\/modelcontextprotocol@b0efd116faca$/m
+      /^ +Events extension Beta at modelcontextprotocol\/ext-events@c77b84395eff$/m
     );
   });
 

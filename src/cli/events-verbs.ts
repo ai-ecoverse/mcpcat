@@ -8,7 +8,7 @@ import type {
   PollEventsResult,
   StreamEnd,
 } from '../client/connection.ts';
-import { EventsTransportClosedError } from '../client/events.ts';
+import { DEFAULT_IDLE_MS, EventsTransportClosedError, grantedIdleMs } from '../client/events.ts';
 import { EVENTS_EXTENSION, META_SUBSCRIPTION_ID } from '../client/modern.ts';
 import { reap } from '../client/reap.ts';
 import { McpAuthError, StatelessRpcError } from '../client/stateless-connection.ts';
@@ -29,9 +29,9 @@ export const EVENTS_USAGE =
   '       mcpcat <target> --experimental events [options] --subscribe <event> [--<arg> value…] [-- cmd…]';
 
 const DELIVERY_MODES = new Set(['push', 'poll', 'webhook']);
-const DEFAULT_HEARTBEAT_TIMEOUT_MS = 60_000;
 const DEFAULT_POLL_MS = 30_000;
 const POLL_FLOOR_MS = 1000;
+const JITTER = 0.25;
 const BACKOFF_START_MS = 500;
 const BACKOFF_MAX_MS = 30_000;
 const SEEN_LIMIT = 256;
@@ -58,7 +58,8 @@ export interface EventsArgs {
   cursorFile?: string;
   maxAgeMs?: number;
   count?: number;
-  heartbeatTimeoutMs: number;
+  heartbeatTimeoutMs?: number;
+  pollFloorMs: number;
   noValidate: boolean;
   headers: Record<string, string>;
   protocolVersion?: string;
@@ -92,6 +93,7 @@ export const EVENTS_VALUE_FLAGS = new Set([
   '--max-age',
   '--count',
   '--heartbeat-timeout',
+  '--poll-floor',
   '--webhook-url',
   '--webhook-secret-file',
   '--webhook-ttl',
@@ -123,7 +125,9 @@ function seconds(flag: string, raw: string): number | string {
 
 type Setter = (out: EventsArgs, value: string, flag: string) => string | undefined;
 
-function millis(key: 'maxAgeMs' | 'heartbeatTimeoutMs' | 'timeoutMs' | 'webhookTtlMs'): Setter {
+function millis(
+  key: 'maxAgeMs' | 'heartbeatTimeoutMs' | 'pollFloorMs' | 'timeoutMs' | 'webhookTtlMs'
+): Setter {
   return (out, value, flag) => {
     const ms = seconds(flag, value);
     if (typeof ms === 'string') return ms;
@@ -185,6 +189,7 @@ const VALUE_OPTIONS: Record<string, Setter> = {
   },
   '--max-age': millis('maxAgeMs'),
   '--heartbeat-timeout': millis('heartbeatTimeoutMs'),
+  '--poll-floor': millis('pollFloorMs'),
   '-m': millis('timeoutMs'),
   '--timeout': millis('timeoutMs'),
   '-H': header,
@@ -265,7 +270,7 @@ export function parseEventsArgs(args: string[]): EventsArgs | string {
     mode: 'list',
     eventArgs: [],
     sinceNow: false,
-    heartbeatTimeoutMs: DEFAULT_HEARTBEAT_TIMEOUT_MS,
+    pollFloorMs: POLL_FLOOR_MS,
     noValidate: false,
     headers: {},
     verbose: false,
@@ -487,9 +492,13 @@ class Subscriber {
   private seenSet = new Set<string>();
   private delivered = 0;
   private readonly o: SubscriberOptions;
+  private readonly baseIdleMs: number;
+  private idleMs: number;
 
   constructor(options: SubscriberOptions) {
     this.o = options;
+    this.baseIdleMs = options.args.heartbeatTimeoutMs ?? DEFAULT_IDLE_MS;
+    this.idleMs = this.baseIdleMs;
   }
 
   async start(): Promise<number> {
@@ -619,8 +628,9 @@ class Subscriber {
   }
 
   private async backoff(delay: number, reason: string, verb = 'retrying'): Promise<number> {
-    await this.notice(`${reason}; ${verb} in ${Math.round(delay / 100) / 10}s`);
-    await sleep(delay, this.o.signal);
+    const wait = delay * (1 + Math.random() * JITTER);
+    await this.notice(`${reason}; ${verb} in ${Math.round(wait / 100) / 10}s`);
+    await sleep(wait, this.o.signal);
     return Math.min(delay * 2, BACKOFF_MAX_MS);
   }
 
@@ -645,7 +655,7 @@ class Subscriber {
     if (this.done()) return 0;
     if (result.hasMore === true) return undefined;
     const wait = typeof result.nextPollMs === 'number' ? result.nextPollMs : DEFAULT_POLL_MS;
-    return Math.max(wait, POLL_FLOOR_MS);
+    return Math.max(wait, this.o.args.pollFloorMs);
   }
 
   private async poll(): Promise<number> {
@@ -676,6 +686,9 @@ class Subscriber {
     params: Record<string, unknown>
   ): Promise<'stop' | undefined> {
     if (method === 'notifications/events/active') {
+      if (this.o.args.heartbeatTimeoutMs === undefined) {
+        this.idleMs = grantedIdleMs(params.heartbeatMs) ?? this.idleMs;
+      }
       await this.moveTo(params.cursor, params.truncated);
       return undefined;
     }
@@ -709,6 +722,7 @@ class Subscriber {
     while (!signal.aborted) {
       let end: StreamEnd;
       let opened = false;
+      this.idleMs = this.baseIdleMs;
       try {
         end = await api.stream(
           this.subscription(true),
@@ -720,7 +734,11 @@ class Subscriber {
             }
             return this.onStreamMessage(method, params);
           },
-          { idleMs: args.heartbeatTimeoutMs, signal }
+          {
+            idleMs: this.baseIdleMs,
+            followGrant: args.heartbeatTimeoutMs === undefined,
+            signal,
+          }
         );
       } catch (err) {
         if (signal.aborted) break;
@@ -737,13 +755,13 @@ class Subscriber {
         throw new McpcatError(
           EXIT_CONNECTION,
           end === 'stale'
-            ? `no notifications/events/active within ${args.heartbeatTimeoutMs / 1000}s`
+            ? `no notifications/events/active within ${this.baseIdleMs / 1000}s`
             : 'the server ended events/stream before it was active'
         );
       }
       const reason =
         end === 'stale'
-          ? `no event or heartbeat for ${args.heartbeatTimeoutMs / 1000}s`
+          ? `no message on the stream for ${this.idleMs / 1000}s`
           : end === 'closed'
             ? 'the server closed the stream'
             : 'the stream dropped';

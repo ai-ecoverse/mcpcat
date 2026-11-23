@@ -16,6 +16,7 @@ const DEFAULT_MAX_EVENTS = 100;
 const RESTART_START_MS = 500;
 const RESTART_MAX_MS = 30_000;
 const STEADY_MS = 30_000;
+const MIN_HEARTBEAT_MS = 1000;
 
 export class EventsRpcError extends Error {
   readonly code: number;
@@ -345,6 +346,15 @@ export function readMaxEvents(params: unknown): number {
     throw new EventsRpcError(INVALID_PARAMS, 'maxEvents must be a positive integer');
   }
   return Math.min(value, DEFAULT_MAX_EVENTS);
+}
+
+export function grantHeartbeat(params: unknown, maxMs: number): number {
+  const value = isRecord(params) ? field(params, 'heartbeatMs') : undefined;
+  if (value === undefined || value === null) return Math.round(maxMs);
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    throw new EventsRpcError(INVALID_PARAMS, 'heartbeatMs must be a number');
+  }
+  return Math.round(Math.min(Math.max(value, Math.min(MIN_HEARTBEAT_MS, maxMs)), maxMs));
 }
 
 export function logLine(platform: Platform) {

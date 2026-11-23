@@ -293,7 +293,7 @@ describe('host: serve --event', () => {
       _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' },
     });
     assert.deepEqual(r.body.result.capabilities.extensions, {
-      'io.modelcontextprotocol/events': {},
+      'io.modelcontextprotocol/events': { listChanged: false },
     });
   });
 
@@ -321,9 +321,29 @@ describe('host: serve --event', () => {
     const beat = await s.next();
     s.close();
     assert.equal(active.params.truncated, false);
+    assert.equal(active.params.heartbeatMs, 100);
     assert.equal(beat.method, 'notifications/events/heartbeat');
     assert.equal(beat.params.cursor, active.params.cursor);
     assert.equal(beat.params._meta[SID], 7);
+  });
+
+  it('grants a suggested heartbeatMs within 1 s and --event-heartbeat', async () => {
+    const serve = await startServe(['--no-auth', ...ev(`quiet: node ${source} quiet`)]);
+    const granted = async (extra) => {
+      const s = await openSse(serve, { name: 'quiet', ...extra });
+      const active = await s.next();
+      s.close();
+      return active.params.heartbeatMs;
+    };
+    assert.equal(await granted({}), 15_000);
+    assert.equal(await granted({ heartbeatMs: null }), 15_000);
+    assert.equal(await granted({ heartbeatMs: 2000 }), 2000);
+    assert.equal(await granted({ heartbeatMs: 10 }), 1000);
+    assert.equal(await granted({ heartbeatMs: 60_000 }), 15_000);
+    const bad = await rpc(serve, 'events/stream', { name: 'quiet', heartbeatMs: 'x' });
+    assert.equal(bad.body.error.code, -32602);
+    assert.match(bad.body.error.message, /heartbeatMs/);
+    serve.child.kill('SIGTERM');
   });
 
   it('one source runs per distinct arguments, only while someone subscribes', async () => {
@@ -743,6 +763,7 @@ describe('host: serve --event --webhook-allow', { skip: !hasOpenssl && 'needs op
         '${SERVE_TOKEN}',
         ...ev(tickSpec(50, pid)),
         ...ev(`shape: node ${source} shape`),
+        ...ev(`unsafe: node ${source} unsafe`),
         '--webhook-allow',
         hook.url('/ok/'),
         '--webhook-ttl',
@@ -785,7 +806,7 @@ describe('host: serve --event --webhook-allow', { skip: !hasOpenssl && 'needs op
     assert.ok(verifies(first, params.delivery.secret));
     assert.equal(first.headers['x-mcp-subscription-id'], id);
     assert.equal(first.headers['content-type'], 'application/json');
-    assert.equal(first.headers['webhook-id'], first.body.eventId);
+    assert.match(first.headers['webhook-id'], /^msg_[0-9a-f]{32}$/);
     assert.ok(Math.abs(Number(first.headers['webhook-timestamp']) - Date.now() / 1000) < 10);
     assert.deepEqual(first.body.data, { n: 1, label: 'a' });
     assert.match(first.body.cursor, /\.1$/);
@@ -801,6 +822,57 @@ describe('host: serve --event --webhook-allow', { skip: !hasOpenssl && 'needs op
     const gone = await call('events/unsubscribe', params);
     assert.equal(gone.body.error.code, -32023);
     assert.deepEqual(gone.body.error.data, { kind: 'subscription' });
+  });
+
+  it('webhook-id is per message and subscription, kept across retries, never the eventId', async () => {
+    hook.plan('/ok/wid-a', [500]);
+    const a = { ...sub('wid-a'), name: 'shape', arguments: {} };
+    const b = { ...sub('wid-b'), name: 'shape', arguments: {} };
+    await call('events/subscribe', a);
+    await call('events/subscribe', b);
+    const ups = (path) => hook.at(path).filter((d) => d.body.eventId === 'up-1');
+    assert.ok(await until(() => ups('/ok/wid-a').length >= 3 && ups('/ok/wid-b').length >= 2));
+    await call('events/unsubscribe', a);
+    await call('events/unsubscribe', b);
+    const all = [...hook.at('/ok/wid-a'), ...hook.at('/ok/wid-b')];
+    for (const d of all) assert.match(d.headers['webhook-id'], /^msg_[0-9a-f]{32}$/);
+    const [retried, retry, later] = ups('/ok/wid-a');
+    assert.equal(retried.body.cursor, retry.body.cursor);
+    assert.equal(retry.headers['webhook-id'], retried.headers['webhook-id']);
+    assert.notEqual(retry.headers['webhook-signature'], retried.headers['webhook-signature']);
+    assert.notEqual(later.body.cursor, retried.body.cursor);
+    assert.notEqual(later.headers['webhook-id'], retried.headers['webhook-id']);
+    const onB = new Map(ups('/ok/wid-b').map((d) => [d.body.cursor, d]));
+    const shared = ups('/ok/wid-a').filter((d) => onB.has(d.body.cursor));
+    assert.ok(shared.length > 0, 'the same event reached both subscriptions');
+    for (const d of shared) {
+      assert.equal(d.body.eventId, onB.get(d.body.cursor).body.eventId);
+      assert.notEqual(d.headers['webhook-id'], onB.get(d.body.cursor).headers['webhook-id']);
+    }
+    const messages = new Map();
+    for (const d of all) messages.set(d.headers['webhook-id'], `${d.path} ${d.body.cursor}`);
+    assert.equal(new Set(all.map((d) => `${d.path} ${d.body.cursor}`)).size, messages.size);
+  });
+
+  it('delivers an event whose eventId is not header-safe', async () => {
+    const params = { ...sub('unsafe'), name: 'unsafe', arguments: {} };
+    await call('events/subscribe', params);
+    assert.ok(await until(() => hook.at('/ok/unsafe').length >= 1));
+    await sleep(300);
+    await call('events/unsubscribe', params);
+    const deliveries = hook.at('/ok/unsafe');
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0].body.eventId, 'évent \u2603 1.2');
+    assert.match(deliveries[0].headers['webhook-id'], /^msg_[0-9a-f]{32}$/);
+    assert.ok(verifies(deliveries[0], params.delivery.secret));
+  });
+
+  it('clamps a negative ttlMs to the 1 s floor', async () => {
+    const params = sub('neg', { ttlMs: -5 });
+    const r = await call('events/subscribe', params);
+    const left = Date.parse(r.body.result.refreshBefore) - Date.now();
+    assert.ok(left > 0 && left <= 1000, `granted ${left}`);
+    await call('events/unsubscribe', params);
   });
 
   it('a rotated secret is signed alongside the old one', async () => {
@@ -861,7 +933,7 @@ describe('host: serve --event --webhook-allow', { skip: !hasOpenssl && 'needs op
     const bodies = hook.at('/ok/slow').map((d) => d.body);
     const gap = hook.at('/ok/slow').find((d) => d.body.type === 'gap');
     assert.ok(gap, 'a gap envelope was posted');
-    assert.match(gap.headers['webhook-id'], /^msg_gap_[0-9a-f]{16}$/);
+    assert.match(gap.headers['webhook-id'], /^msg_gap_[0-9a-f]{32}$/);
     assert.ok(verifies(gap, secret));
     assert.match(gap.body.cursor, /\.\d+$/);
     assert.ok(bodies.length < 50, `${bodies.length} deliveries`);

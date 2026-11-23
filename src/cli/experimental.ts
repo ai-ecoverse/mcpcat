@@ -6,7 +6,7 @@ interface Feature {
 export const EXPERIMENTAL_FEATURES: Record<string, Feature> = {
   events: {
     summary: 'MCP Events client, poll and push (SEP-3415)',
-    revision: 'SEP-3415 at modelcontextprotocol/modelcontextprotocol@b0efd116faca',
+    revision: 'Events extension Beta at modelcontextprotocol/ext-events@c77b84395eff',
   },
   annotations: {
     summary: 'serve --annotations: Browser Annotation API polyfill over eval-attach',
