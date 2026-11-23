@@ -553,6 +553,29 @@ describe('serve: --event-file and SIGHUP', () => {
     serve.child.kill('SIGTERM');
   });
 
+  it('http client: an unrelated or empty change keeps the source and its sequence', async () => {
+    const file = tmp('events');
+    const pid = tmp('pid');
+    writeFileSync(file, `${tick(pid)}\n`);
+    const serve = await startServe(['--event-file', file]);
+    const c = client([serve.url, ...X, '--count', '8', '--subscribe', 'tick', '--label', 'a']);
+    await waitUntil(() => lines(c.stdout()).length >= 2 && existsSync(pid), 'two events');
+    const first = readFileSync(pid, 'utf8');
+    serve.child.kill('SIGHUP');
+    await waitUntil(() => /SIGHUP: reloaded .*: no change/.test(serve.stderr()), 'a no-op reload');
+    writeFileSync(file, `${tick(pid)}\nother: node ${source} quiet\n`);
+    serve.child.kill('SIGHUP');
+    await waitUntil(() => /SIGHUP: reloaded .*: added other/.test(serve.stderr()), 'the reload');
+    const r = await c.done;
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(readFileSync(pid, 'utf8'), first);
+    assert.deepEqual(
+      lines(r.stdout).map((e) => e.data.n),
+      [1, 2, 3, 4, 5, 6, 7, 8]
+    );
+    serve.child.kill('SIGTERM');
+  });
+
   it('stdio client: a removed event ends the subscription with exit 5', {
     skip: !hasPgrep && 'needs pgrep',
   }, async () => {
@@ -613,12 +636,17 @@ describe('serve: webhook subscriptions on SIGHUP', { skip: !hasOpenssl && 'needs
       const chunks = [];
       req.on('data', (d) => chunks.push(d));
       req.on('end', () => {
-        deliveries.push({
+        const delivery = {
           headers: req.headers,
           body: JSON.parse(Buffer.concat(chunks).toString()),
-        });
-        res.writeHead(200);
-        res.end();
+          received: Date.now(),
+        };
+        deliveries.push(delivery);
+        setTimeout(() => {
+          delivery.answered = Date.now();
+          res.writeHead(200);
+          res.end();
+        }, 300);
       });
     });
     servers.push(server);
@@ -682,7 +710,11 @@ describe('serve: webhook subscriptions on SIGHUP', { skip: !hasOpenssl && 'needs
     writeFileSync(file, `other: node ${source} quiet\n`);
     child.kill('SIGHUP');
     await waitUntil(() => deliveries.some((d) => d.body.type === 'terminated'), 'terminated');
-    const ended = deliveries.find((d) => d.body.type === 'terminated');
+    const at = deliveries.findIndex((d) => d.body.type === 'terminated');
+    const ended = deliveries[at];
+    for (const d of deliveries.slice(0, at)) {
+      assert.ok(d.answered <= ended.received, 'terminated waits for the event in flight');
+    }
     assert.match(ended.headers['webhook-id'], /^msg_terminated_[0-9a-f]{32}$/);
     assert.equal(ended.headers['x-mcp-subscription-id'], sub.result.id);
     assert.deepEqual(ended.body.error.data, { kind: 'event' });

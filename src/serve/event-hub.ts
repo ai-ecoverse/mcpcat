@@ -167,8 +167,9 @@ export class EventHub {
     for (const [name, spec] of next) this.specs.set(name, spec);
     this.end(broken);
     for (const source of this.sources.values()) {
-      const spec = next.get(source.spec.name);
-      if (spec && spec !== source.spec) source.retarget(spec);
+      const spec = next.get(source.spec.name) ?? source.spec;
+      if (spec.template === source.spec.template) source.spec = spec;
+      else source.retarget(spec);
     }
     if (out.added.length + out.removed.length + out.changed.length > 0) this.changes.notify();
     return out;

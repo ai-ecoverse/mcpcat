@@ -60,7 +60,7 @@ interface Hook {
   abort: AbortController;
   off?: () => void;
   status: DeliveryStatus;
-  ending?: boolean;
+  ending?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -266,18 +266,15 @@ export class WebhookRegistry {
       this.hooks.delete(hook.id);
       clearTimeout(hook.expires);
       hook.off?.();
-      hook.ending = true;
+      hook.ending = JSON.stringify({ type: 'terminated', error });
       this.ending.add(hook);
-      const body = JSON.stringify({ type: 'terminated', error });
-      void this.deliver(
-        hook,
-        `msg_terminated_${randomId(16)}`,
-        body,
-        'a terminated notice'
-      ).finally(() => {
-        if (this.ending.delete(hook)) this.remove(hook);
-      });
+      void this.pump(hook);
     }
+  }
+
+  private async terminate(hook: Hook, body: string): Promise<void> {
+    await this.deliver(hook, `msg_terminated_${randomId(16)}`, body, 'a terminated notice');
+    if (this.ending.delete(hook)) this.remove(hook);
   }
 
   private async pump(hook: Hook): Promise<void> {
@@ -299,6 +296,9 @@ export class WebhookRegistry {
       hook.acked = entry.seq;
     }
     hook.pumping = false;
+    if (hook.ending !== undefined && !hook.abort.signal.aborted) {
+      await this.terminate(hook, hook.ending);
+    }
   }
 
   private async deliver(hook: Hook, webhookId: string, body: string, what: string): Promise<void> {
