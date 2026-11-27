@@ -63,7 +63,7 @@
     "@ai-ecoverse/slicc-cdp": "2.1.30",
     "@ai-ecoverse/slicc-kernel": "1.193.1",
     "@ai-ecoverse/slicc-shared-web": "2.18.0",
-    "@ai-ecoverse/slicc-vault": "1.30.2",
+    "@ai-ecoverse/slicc-vault": "1.30.3",
     "@biomejs/biome": "2.6.8",
     "@earendil-works/pi-codemode": "1.5.2",
     "@earendil-works/pi-mcp": "1.5.2",
